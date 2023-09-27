@@ -18,6 +18,7 @@ import (
 
 	"github.com/cilium/ebpf/rlimit"
 
+	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
 	dpdef "github.com/cilium/cilium/pkg/datapath/linux/config/defines"
 	"github.com/cilium/cilium/pkg/datapath/loader"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
@@ -91,7 +92,9 @@ func writeConfig(c *C, header string, write writeFn) {
 	}
 	for _, test := range tests {
 		c.Logf("  Testing %s configuration: %s", header, test.description)
-		cfg := &HeaderfileWriter{}
+		cfg := &HeaderfileWriter{
+			bwmgr: &bandwidth.Manager{},
+		}
 		c.Assert(write(test.output, cfg), test.expResult)
 	}
 }

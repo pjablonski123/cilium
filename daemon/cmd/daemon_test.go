@@ -19,6 +19,7 @@ import (
 	fakecni "github.com/cilium/cilium/daemon/cmd/cni/fake"
 	"github.com/cilium/cilium/pkg/controller"
 	fakeDatapath "github.com/cilium/cilium/pkg/datapath/fake"
+	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/endpoint"
@@ -166,6 +167,7 @@ func (ds *DaemonSuite) SetUpTest(c *C) {
 			func() authmap.Map { return fakeauthmap.NewFakeAuthMap() },
 			func() egressmap.PolicyMap { return nil },
 			func() ctmapgc.Enabler { return ctmapgc.NewFake() },
+			func() bandwidth.ManagerInterface { return &bandwidth.Manager{} },
 		),
 		monitorAgent.Cell,
 		ControlPlane,
