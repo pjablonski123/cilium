@@ -60,19 +60,15 @@ func devicesControllerTestSetup(t *testing.T) {
 	})
 }
 
-const (
-	secondaryAddress = true
-	primaryAddress   = false
-)
-
-func containsAddress(dev *tables.Device, addrStr string, secondary bool) bool {
+func containsAddress(dev *tables.Device, addrStr string) bool {
 	addr := netip.MustParseAddr(addrStr)
 	for _, a := range dev.Addrs {
-		if a.Addr == addr && a.Secondary == secondary {
+		if a.Addr == addr {
 			return true
 		}
 	}
 	return false
+
 }
 
 func TestDevicesController(t *testing.T) {
@@ -101,7 +97,7 @@ func TestDevicesController(t *testing.T) {
 		for _, r := range routes {
 			if !indexes[r.LinkIndex] {
 				// A route exists without a device.
-				t.Logf("Orphan route found: %+v", r)
+				t.Logf("orphan route: %+v", r)
 				return true
 			}
 		}
@@ -148,22 +144,6 @@ func TestDevicesController(t *testing.T) {
 			},
 		},
 
-		{
-			"secondary address",
-			func(t *testing.T) {
-				require.NoError(t, addAddrScoped("dummy1", "192.168.1.2/24", netlink.SCOPE_SITE, unix.IFA_F_SECONDARY))
-			},
-			func(t *testing.T, devs []*tables.Device, routes []*tables.Route) bool {
-				// Since we're indexing by ifindex, we expect these to be in the order
-				// they were added.
-				return len(devs) == 2 &&
-					"dummy1" == devs[1].Name &&
-					devs[1].Selected &&
-					containsAddress(devs[1], "192.168.1.1", primaryAddress) &&
-					containsAddress(devs[1], "192.168.1.2", secondaryAddress)
-			},
-		},
-
 		{ // Only consider veth devices when they have a default route.
 			"veth-without-default-gw",
 			func(t *testing.T) {
@@ -185,7 +165,8 @@ func TestDevicesController(t *testing.T) {
 			func(t *testing.T, devs []*tables.Device, routes []*tables.Route) bool {
 				return len(devs) == 1 &&
 					"dummy1" == devs[0].Name &&
-					containsAddress(devs[0], "192.168.1.1", primaryAddress)
+					containsAddress(devs[0], "192.168.1.1") &&
+					!orphanRoutes(devs, routes)
 			},
 		},
 
@@ -200,7 +181,7 @@ func TestDevicesController(t *testing.T) {
 					devs[0].Name == "dummy1" &&
 					devs[0].Selected &&
 					devs[1].Name == "veth0" &&
-					containsAddress(devs[1], "192.168.4.1", primaryAddress) &&
+					containsAddress(devs[1], "192.168.4.1") &&
 					devs[1].Selected
 			},
 		},
@@ -253,6 +234,7 @@ func TestDevicesController(t *testing.T) {
 		)
 		h := hive.New(
 			statedb.Cell,
+			tables.Cell,
 			DevicesControllerCell,
 			cell.Provide(func() (*netlinkFuncs, error) {
 				// Provide the normal netlink interface, but restrict it to the test network
@@ -261,9 +243,7 @@ func TestDevicesController(t *testing.T) {
 			}),
 
 			cell.Provide(func() DevicesConfig {
-				return DevicesConfig{
-					Devices: []string{},
-				}
+				return DevicesConfig{}
 			}),
 
 			cell.Invoke(func(db_ *statedb.DB, devicesTable_ statedb.Table[*tables.Device], routesTable_ statedb.Table[*tables.Route]) {
@@ -291,9 +271,12 @@ func TestDevicesController(t *testing.T) {
 				routesIter, routesIterInvalidated := routesTable.All(txn)
 				routes := statedb.Collect(routesIter)
 
-				// Stop if the test case passes and there are no orphan routes left in the
-				// route table.
-				if step.check(t, devs, routes) && !orphanRoutes(allDevs, routes) {
+				if step.check(t, devs, routes) {
+					break
+				}
+
+				// Check that there are no orphan routes
+				if !orphanRoutes(allDevs, routes) {
 					break
 				}
 
@@ -334,6 +317,7 @@ func TestDevicesController_Wildcards(t *testing.T) {
 		)
 		h := hive.New(
 			statedb.Cell,
+			tables.Cell,
 			DevicesControllerCell,
 			cell.Provide(func() DevicesConfig {
 				return DevicesConfig{

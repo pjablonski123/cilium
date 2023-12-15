@@ -33,7 +33,7 @@ func (n *NatEntry4) String() string {
 }
 
 // Dump dumps NAT entry to string.
-func (n *NatEntry4) Dump(key NatKey, toDeltaSecs func(uint64) string) string {
+func (n *NatEntry4) Dump(key NatKey, start uint64) string {
 	var which string
 
 	if key.GetFlags()&tuple.TUPLE_F_IN != 0 {
@@ -45,7 +45,7 @@ func (n *NatEntry4) Dump(key NatKey, toDeltaSecs func(uint64) string) string {
 		which,
 		n.Addr,
 		n.Port,
-		toDeltaSecs(n.Created),
+		NatDumpCreated(start, n.Created),
 		n.NeedsCT)
 }
 

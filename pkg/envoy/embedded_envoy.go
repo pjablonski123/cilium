@@ -20,7 +20,6 @@ import (
 	envoy_config_cluster "github.com/cilium/proxy/go/envoy/config/cluster/v3"
 	envoy_config_core "github.com/cilium/proxy/go/envoy/config/core/v3"
 	envoy_config_endpoint "github.com/cilium/proxy/go/envoy/config/endpoint/v3"
-	envoy_extensions_bootstrap_internal_listener_v3 "github.com/cilium/proxy/go/envoy/extensions/bootstrap/internal_listener/v3"
 	envoy_config_upstream "github.com/cilium/proxy/go/envoy/extensions/upstreams/http/v3"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
@@ -55,8 +54,7 @@ var (
 )
 
 const (
-	ciliumEnvoyStarter = "cilium-envoy-starter"
-	ciliumEnvoy        = "cilium-envoy"
+	ciliumEnvoy = "cilium-envoy-starter"
 )
 
 // EnableTracing changes Envoy log level to "trace", producing the most logs.
@@ -118,7 +116,7 @@ func startEmbeddedEnvoy(runDir, logPath string, baseID uint64) (*EmbeddedEnvoy, 
 				Filename:   logPath,
 				MaxSize:    100, // megabytes
 				MaxBackups: 3,
-				MaxAge:     28,   // days
+				MaxAge:     28,   //days
 				Compress:   true, // disabled by default
 			}
 			logWriter = logger
@@ -137,7 +135,7 @@ func startEmbeddedEnvoy(runDir, logPath string, baseID uint64) (*EmbeddedEnvoy, 
 
 		for {
 			logLevel := logging.GetLevel(logging.DefaultLogger)
-			cmd := exec.Command(ciliumEnvoyStarter, "-l", mapLogLevel(logLevel), "-c", bootstrapPath, "--base-id", strconv.FormatUint(baseID, 10), "--log-format", logFormat)
+			cmd := exec.Command(ciliumEnvoy, "-l", mapLogLevel(logLevel), "-c", bootstrapPath, "--base-id", strconv.FormatUint(baseID, 10), "--log-format", logFormat)
 			cmd.Stderr = logWriter
 			cmd.Stdout = logWriter
 
@@ -156,7 +154,7 @@ func startEmbeddedEnvoy(runDir, logPath string, baseID uint64) (*EmbeddedEnvoy, 
 			}
 
 			log.Infof("Envoy: Proxy started with pid %d", cmd.Process.Pid)
-			metrics.SubprocessStart.WithLabelValues(ciliumEnvoyStarter).Inc()
+			metrics.SubprocessStart.WithLabelValues(ciliumEnvoy).Inc()
 
 			// We do not return after a successful start, but watch the Envoy process
 			// and restart it if it crashes.
@@ -248,10 +246,9 @@ func newEnvoyLogPiper() io.WriteCloser {
 			case "off", "critical", "error":
 				scopedLog.Error(msg)
 			case "warning":
-				// Silently drop expected warnings if Envoy tracing is not enabled
-				// TODO: Remove this what at Envoy 1.28, as this warning is no
-				// longer be issued then.
-				if !tracing && strings.Contains(msg, "message 'envoy.extensions.bootstrap.internal_listener.v3.InternalListener' is contained in proto file 'envoy/extensions/bootstrap/internal_listener/v3/internal_listener.proto' marked as work-in-progress.") {
+				// Silently drop expected warnings if flowdebug is not enabled
+				// TODO: Remove this special case when https://github.com/envoyproxy/envoy/issues/13504 is fixed.
+				if !flowdebug.Enabled() && strings.Contains(msg, "Unable to use runtime singleton for feature envoy.http.headermap.lazy_map_min_size") {
 					continue
 				}
 				scopedLog.Warn(msg)
@@ -394,8 +391,7 @@ func createBootstrap(filePath string, nodeId, cluster string, xdsSock, egressClu
 									Endpoint: &envoy_config_endpoint.Endpoint{
 										Address: &envoy_config_core.Address{
 											Address: &envoy_config_core.Address_Pipe{
-												Pipe: &envoy_config_core.Pipe{Path: xdsSock},
-											},
+												Pipe: &envoy_config_core.Pipe{Path: xdsSock}},
 										},
 									},
 								},
@@ -417,8 +413,7 @@ func createBootstrap(filePath string, nodeId, cluster string, xdsSock, egressClu
 									Endpoint: &envoy_config_endpoint.Endpoint{
 										Address: &envoy_config_core.Address{
 											Address: &envoy_config_core.Address_Pipe{
-												Pipe: &envoy_config_core.Pipe{Path: adminPath},
-											},
+												Pipe: &envoy_config_core.Pipe{Path: adminPath}},
 										},
 									},
 								},
@@ -437,12 +432,6 @@ func createBootstrap(filePath string, nodeId, cluster string, xdsSock, egressClu
 				Address: &envoy_config_core.Address_Pipe{
 					Pipe: &envoy_config_core.Pipe{Path: adminPath},
 				},
-			},
-		},
-		BootstrapExtensions: []*envoy_config_core.TypedExtensionConfig{
-			{
-				Name:        "envoy.bootstrap.internal_listener",
-				TypedConfig: toAny(&envoy_extensions_bootstrap_internal_listener_v3.InternalListener{}),
 			},
 		},
 		LayeredRuntime: &envoy_config_bootstrap.LayeredRuntime{

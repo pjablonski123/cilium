@@ -28,7 +28,6 @@ LOCALSTATEDIR?=/var
 RUNDIR?=/var/run
 CONFDIR?=/etc
 
-export GO ?= go
 NATIVE_ARCH = $(shell GOARCH= $(GO) env GOARCH)
 export GOARCH ?= $(NATIVE_ARCH)
 
@@ -66,10 +65,8 @@ endif
 CONSUL_IMAGE=consul:1.7.2
 
 export CILIUM_CLI ?= cilium
+export GO ?= go
 export KUBECTL ?= kubectl
-
-SWAGGER_VERSION := v0.30.3
-SWAGGER := $(CONTAINER_ENGINE) run -u $(shell id -u):$(shell id -g) --rm -v $(ROOT_DIR):$(ROOT_DIR) -w $(ROOT_DIR) --entrypoint swagger quay.io/goswagger/swagger:$(SWAGGER_VERSION)
 
 # go build/test/clean flags
 # these are declared here so they are treated explicitly
@@ -98,8 +95,8 @@ endif
 endif
 
 # renovate: datasource=docker depName=golangci/golangci-lint
-GOLANGCILINT_WANT_VERSION = v1.55.2
-GOLANGCILINT_IMAGE_SHA = sha256:e699df940be1810b08ba6ec050bfc34cc1931027283b5a7f607fb6a67b503876
+GOLANGCILINT_WANT_VERSION = v1.55.1
+GOLANGCILINT_IMAGE_SHA = sha256:c4e67eb904109ade78e2f38d98a424502f016db5676409390469bcdafea0f57d
 GOLANGCILINT_VERSION = $(shell golangci-lint version --format short 2>/dev/null)
 
 VERSION = $(shell cat $(dir $(lastword $(MAKEFILE_LIST)))/VERSION)
@@ -144,7 +141,7 @@ CILIUM_DATAPATH_SHA256=$(shell cd $(ROOT_DIR); cat $(BPF_SRCFILES) | sha256sum |
 GO_BUILD_LDFLAGS += -X "github.com/cilium/cilium/pkg/datapath/loader.DatapathSHA256=$(CILIUM_DATAPATH_SHA256)"
 
 GO_BUILD_FLAGS += -mod=vendor
-GO_TEST_FLAGS += -mod=vendor -vet=all
+GO_TEST_FLAGS += -mod=vendor
 GO_CLEAN_FLAGS += -mod=vendor
 
 GO_BUILD = CGO_ENABLED=0 $(GO) build

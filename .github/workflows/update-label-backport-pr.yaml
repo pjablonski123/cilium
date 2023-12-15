@@ -27,7 +27,7 @@
         steps:
           - name: Pre-process PR body
             id: pre-process
-            uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+            uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 #v6.4.1
             with:
               script: |
                 const { body } = process.env
@@ -43,7 +43,7 @@
             run: |
               echo "${{steps.pre-process.outputs.result}}" | sed -En "/upstream-prs/ { n; p }" | cut -d ';' -f 1 | grep -Eo '[0-9]+' | while read -r pr; do
                 echo "Removing label backport-pending/${{ inputs.branch }} from pr #${pr}."
-                gh pr edit ${pr} --repo "${GITHUB_REPOSITORY}" --remove-label backport-pending/${{ inputs.branch }}
+                gh pr edit ${pr} --repo "${GITHUB_REPOSITORY}" --remove-label backport-pending/"${{ inputs.branch }}"
                 echo "Adding label backport-done/${{ inputs.branch }} to pr #${pr}."
-                gh pr edit ${pr} --repo "${GITHUB_REPOSITORY}" --add-label backport-done/${{ inputs.branch }}
+                gh pr edit ${pr} --repo "${GITHUB_REPOSITORY}" --add-label backport-done/"${{ inputs.branch }}"
               done

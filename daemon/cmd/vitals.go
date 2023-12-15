@@ -7,12 +7,13 @@ import (
 	"net/http"
 
 	"github.com/go-openapi/runtime/middleware"
+	"k8s.io/apimachinery/pkg/util/duration"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/daemon"
 	"github.com/cilium/cilium/pkg/api"
-	"github.com/cilium/cilium/pkg/health/client"
 	"github.com/cilium/cilium/pkg/hive/cell"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 type getHealth struct {
@@ -58,7 +59,15 @@ func toModuleHealth(m cell.Status) (*models.ModuleHealth, error) {
 		ModuleID:    m.FullModuleID.String(),
 		Message:     string(d),
 		Level:       string(m.Level()),
-		LastOk:      client.ToAgeHuman(m.LastOK),
-		LastUpdated: client.ToAgeHuman(m.LastUpdated),
+		LastOk:      toAgeHuman(m.LastOK),
+		LastUpdated: toAgeHuman(m.LastUpdated),
 	}, nil
+}
+
+func toAgeHuman(t time.Time) string {
+	if t.IsZero() {
+		return "n/a"
+	}
+
+	return duration.HumanDuration(time.Since(t))
 }

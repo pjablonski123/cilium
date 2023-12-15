@@ -9,7 +9,6 @@ import (
 	"github.com/sirupsen/logrus"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	controllerruntime "github.com/cilium/cilium/operator/pkg/controller-runtime"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
@@ -26,5 +25,5 @@ func (r *referenceGrantReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// TODO(tam): implement the reconcile logic once ReferenceGrant status is available.
 	scopedLog.Info("Successfully reconciled ReferenceGrant")
-	return controllerruntime.Success()
+	return success()
 }

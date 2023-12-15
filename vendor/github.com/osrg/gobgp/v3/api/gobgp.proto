@@ -265,8 +265,6 @@ message ListPathRequest {
   // enable_only_binary == true means that only nlri_binary and pattrs_binary
   // will be used instead of nlri and pattrs for each Path in ListPathResponse.
   bool enable_only_binary = 9;
-  // max ammount of paths to be allocated, unlimited by default
-  uint64 batch_size = 10;
 }
 
 message ListPathResponse { Destination destination = 1; }
@@ -322,10 +320,7 @@ message SetPoliciesRequest {
   repeated PolicyAssignment assignments = 3;
 }
 
-message AddDefinedSetRequest {
-  DefinedSet defined_set = 1;
-  bool replace = 2;
-}
+message AddDefinedSetRequest { DefinedSet defined_set = 1; }
 
 message DeleteDefinedSetRequest {
   DefinedSet defined_set = 1;

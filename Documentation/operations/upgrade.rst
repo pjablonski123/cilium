@@ -329,19 +329,8 @@ Annotations:
 * ``enable-endpoint-routes`` now automatically sets ``enable-local-node-route``
   to false, as local node routes are redundant when per-endpoint routes are enabled.
 * L7 visibility using Pod annotations (``policy.cilium.io/proxy-visibility``) is
-  no longer supported.
+  no longer supported. 
   We recommend users to switch to L7 policies instead (see :ref:`proxy_visibility`).
-* If you are using Gateway API, please make sure that new v1 CRDs are installed.
-  The existing Gateway API resources will continue to work as usual, however, it is
-  better to migrate your resources from v1beta1 to v1 for GatewayClass, Gateway and
-  HTTPRoute resources.
-* The tunnel protocol is no longer automatically set to ``geneve`` when Cilium
-  is configured in native routing mode and :ref:`DSR mode with Geneve` is enabled.
-  Explicitly configure ``--tunnel-protocol=geneve`` (or the equivalent
-  ``tunnelProtocol=geneve`` helm value) when DSR with Geneve is enabled.
-* The ``CILIUM_PREPEND_IPTABLES_CHAIN`` environment variable has been renamed
-  to ``CILIUM_PREPEND_IPTABLES_CHAINS`` (note the trailing ``S``) to more accurately
-  match the name of the associated command line flag ``--prepend-iptables-chains``.
 
 .. _upgrade_cilium_cli_helm_mode:
 
@@ -371,18 +360,6 @@ Removed Options
   datapath has been improved to not require any additional routes in
   ENI environments.
 
-* The ``tunnel`` option (deprecated in Cilium 1.14) has been removed. To
-  enable native-routing mode, set ``routing-mode=native`` (previously
-  ``tunnel=disabled``). To configure the tunneling protocol, set
-  ``tunnel-protocol=vxlan|geneve`` (previously ``tunnel=vxlan|geneve``).
-
-* The long defunct and undocumented ``single-cluster-route`` flag has been removed.
-
-* The ``dnsproxy-lock-count`` and ``dnsproxy-lock-timeout`` flags no longer have
-  any effect and are deprecated. They will be removed in v1.16.
-
-* Deprecated options ``enable-k8s-event-handover`` and ``cnp-status-update-interval`` has been removed.
-
 Helm Options
 ~~~~~~~~~~~~
 
@@ -400,11 +377,6 @@ Helm Options
 
 * ``egressGateway.installRoutes`` has been deprecated because the setting is no
   longer necessary.
-
-* Value ``tunnel`` was deprecated in Cilium 1.14 in favor of ``routingMode`` and
-  ``tunnelProtocol``, and has been removed.
-
-* Values  ``enableK8sEventHandover`` and ``enableCnpStatusUpdates`` have been removed.
 
 Added Metrics
 ~~~~~~~~~~~~~

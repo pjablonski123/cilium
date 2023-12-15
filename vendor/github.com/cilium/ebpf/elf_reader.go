@@ -373,7 +373,7 @@ func (ec *elfCode) loadFunctions(section *elfSection) (map[string]asm.Instructio
 	r := bufio.NewReader(section.Open())
 
 	// Decode the section's instruction stream.
-	insns := make(asm.Instructions, 0, section.Size/asm.InstructionSize)
+	var insns asm.Instructions
 	if err := insns.Unmarshal(r, ec.ByteOrder); err != nil {
 		return nil, fmt.Errorf("decoding instructions for section %s: %w", section.Name, err)
 	}
@@ -467,12 +467,8 @@ func (ec *elfCode) relocateInstruction(ins *asm.Instruction, rel elf.Symbol) err
 
 	switch target.kind {
 	case mapSection, btfMapSection:
-		if bind == elf.STB_LOCAL {
-			return fmt.Errorf("possible erroneous static qualifier on map definition: found reference to %q", name)
-		}
-
 		if bind != elf.STB_GLOBAL {
-			return fmt.Errorf("map %q: unsupported relocation %s", name, bind)
+			return fmt.Errorf("possible erroneous static qualifier on map definition: found reference to %q", name)
 		}
 
 		if typ != elf.STT_OBJECT && typ != elf.STT_NOTYPE {

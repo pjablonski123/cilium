@@ -89,7 +89,7 @@ static __always_inline int __per_packet_lb_svc_xlate_4(void *ctx, struct iphdr *
 
 	ret = lb4_extract_tuple(ctx, ip4, ETH_HLEN, &l4_off, &tuple);
 	if (IS_ERR(ret)) {
-		if (ret == DROP_UNSUPP_SERVICE_PROTO || ret == DROP_UNKNOWN_L4)
+		if (ret == DROP_NO_SERVICE || ret == DROP_UNKNOWN_L4)
 			goto skip_service_lookup;
 		else
 			return ret;
@@ -105,17 +105,9 @@ static __always_inline int __per_packet_lb_svc_xlate_4(void *ctx, struct iphdr *
 			goto skip_service_lookup;
 		}
 #endif /* ENABLE_L7_LB */
-		ret = lb4_local(get_ct_map4(&tuple), ctx, ipv4_is_fragment(ip4),
-				ETH_HLEN, l4_off, &key, &tuple, svc, &ct_state_new,
+		ret = lb4_local(get_ct_map4(&tuple), ctx, ETH_HLEN, l4_off,
+				&key, &tuple, svc, &ct_state_new,
 				has_l4_header, false, &cluster_id, ext_err);
-
-#ifdef SERVICE_NO_BACKEND_RESPONSE
-		if (ret == DROP_NO_SERVICE) {
-			ep_tail_call(ctx, CILIUM_CALL_IPV4_NO_SERVICE);
-			return DROP_MISSED_TAIL_CALL;
-		}
-#endif
-
 		if (IS_ERR(ret))
 			return ret;
 	}
@@ -141,7 +133,7 @@ static __always_inline int __per_packet_lb_svc_xlate_6(void *ctx, struct ipv6hdr
 
 	ret = lb6_extract_tuple(ctx, ip6, ETH_HLEN, &l4_off, &tuple);
 	if (IS_ERR(ret)) {
-		if (ret == DROP_UNSUPP_SERVICE_PROTO || ret == DROP_UNKNOWN_L4)
+		if (ret == DROP_NO_SERVICE || ret == DROP_UNKNOWN_L4)
 			goto skip_service_lookup;
 		else
 			return ret;
@@ -166,14 +158,6 @@ static __always_inline int __per_packet_lb_svc_xlate_6(void *ctx, struct ipv6hdr
 #endif /* ENABLE_L7_LB */
 		ret = lb6_local(get_ct_map6(&tuple), ctx, ETH_HLEN, l4_off,
 				&key, &tuple, svc, &ct_state_new, false, ext_err);
-
-#ifdef SERVICE_NO_BACKEND_RESPONSE
-		if (ret == DROP_NO_SERVICE) {
-			ep_tail_call(ctx, CILIUM_CALL_IPV6_NO_SERVICE);
-			return DROP_MISSED_TAIL_CALL;
-		}
-#endif
-
 		if (IS_ERR(ret))
 			return ret;
 	}
@@ -280,7 +264,7 @@ int NAME(struct __ctx_buff *ctx)						\
 	if (!map)								\
 		return drop_for_direction(ctx, DIR, DROP_CT_NO_MAP_FOUND);	\
 										\
-	ct_buffer.ret = ct_lookup4(map, tuple, ctx, ip4, ct_buffer.l4_off,	\
+	ct_buffer.ret = ct_lookup4(map, tuple, ctx, ct_buffer.l4_off,		\
 				   DIR, ct_state, &ct_buffer.monitor);		\
 	if (ct_buffer.ret < 0)							\
 		return drop_for_direction(ctx, DIR, ct_buffer.ret);		\
@@ -621,9 +605,8 @@ ct_recreate6:
 #endif /* ENABLE_HOST_ROUTING || ENABLE_ROUTING */
 			policy_clear_mark(ctx);
 			/* If the packet is from L7 LB it is coming from the host */
-			return ipv6_local_delivery(ctx, ETH_HLEN, SECLABEL_IPV6,
-						   MARK_MAGIC_IDENTITY, ep,
-						   METRIC_EGRESS, from_l7lb, false);
+			return ipv6_local_delivery(ctx, ETH_HLEN, SECLABEL_IPV6, ep,
+						   METRIC_EGRESS, from_l7lb);
 		}
 	}
 
@@ -693,9 +676,10 @@ pass_to_stack:
 #ifndef TUNNEL_MODE
 # ifdef ENABLE_IPSEC
 	if (encrypt_key && tunnel_endpoint) {
-		ret = set_ipsec_encrypt(ctx, encrypt_key, tunnel_endpoint, SECLABEL_IPV6, false);
+		ret = set_ipsec_encrypt_mark(ctx, encrypt_key, tunnel_endpoint);
 		if (unlikely(ret != CTX_ACT_OK))
 			return ret;
+		set_identity_meta(ctx, SECLABEL_IPV6);
 	} else
 # endif /* ENABLE_IPSEC */
 #endif /* TUNNEL_MODE */
@@ -706,7 +690,7 @@ pass_to_stack:
 		 * source identity can still be derived even if SNAT is
 		 * performed by a component such as portmap.
 		 */
-		set_identity_mark(ctx, SECLABEL_IPV6, MARK_MAGIC_IDENTITY);
+		set_identity_mark(ctx, SECLABEL_IPV6);
 #endif
 	}
 
@@ -1110,8 +1094,7 @@ ct_recreate4:
 #endif /* ENABLE_HOST_ROUTING || ENABLE_ROUTING */
 			policy_clear_mark(ctx);
 			/* If the packet is from L7 LB it is coming from the host */
-			return ipv4_local_delivery(ctx, ETH_HLEN, SECLABEL_IPV4,
-						   MARK_MAGIC_IDENTITY, ip4,
+			return ipv4_local_delivery(ctx, ETH_HLEN, SECLABEL_IPV4, ip4,
 						   ep, METRIC_EGRESS, from_l7lb,
 						   bypass_ingress_policy, false, 0);
 		}
@@ -1252,9 +1235,10 @@ pass_to_stack:
 #ifndef TUNNEL_MODE
 # ifdef ENABLE_IPSEC
 	if (encrypt_key && tunnel_endpoint) {
-		ret = set_ipsec_encrypt(ctx, encrypt_key, tunnel_endpoint, SECLABEL_IPV4, false);
+		ret = set_ipsec_encrypt_mark(ctx, encrypt_key, tunnel_endpoint);
 		if (unlikely(ret != CTX_ACT_OK))
 			return ret;
+		set_identity_meta(ctx, SECLABEL_IPV4);
 	} else
 # endif /* ENABLE_IPSEC */
 #endif /* TUNNEL_MODE */
@@ -1265,7 +1249,7 @@ pass_to_stack:
 		 * source identity can still be derived even if SNAT is
 		 * performed by a component such as portmap.
 		 */
-		set_identity_mark(ctx, SECLABEL_IPV4, MARK_MAGIC_IDENTITY);
+		set_identity_mark(ctx, SECLABEL_IPV4);
 #endif
 	}
 
@@ -1444,19 +1428,24 @@ out:
 
 #ifdef ENABLE_IPV6
 static __always_inline int
-ipv6_policy(struct __ctx_buff *ctx, struct ipv6hdr *ip6, int ifindex, __u32 src_label,
+ipv6_policy(struct __ctx_buff *ctx, int ifindex, __u32 src_label,
 	    struct ipv6_ct_tuple *tuple_out, __s8 *ext_err, __u16 *proxy_port)
 {
 	struct ct_state *ct_state, ct_state_new = {};
 	struct ipv6_ct_tuple *tuple;
 	int ret, verdict, l4_off, zero = 0;
 	struct ct_buffer6 *ct_buffer;
+	void *data, *data_end;
+	struct ipv6hdr *ip6;
 	bool skip_ingress_proxy = false;
 	struct trace_ctx trace;
 	union v6addr orig_sip;
 	__u8 policy_match_type = POLICY_MATCH_NONE;
 	__u8 audited = 0;
 	__u8 auth_type = 0;
+
+	if (!revalidate_data(ctx, &data, &data_end, &ip6))
+		return DROP_INVALID;
 
 	policy_clear_mark(ctx);
 
@@ -1465,7 +1454,7 @@ ipv6_policy(struct __ctx_buff *ctx, struct ipv6hdr *ip6, int ifindex, __u32 src_
 	/* If packet is coming from the ingress proxy we have to skip
 	 * redirection to the ingress proxy as we would loop forever.
 	 */
-	skip_ingress_proxy = tc_index_from_ingress_proxy(ctx);
+	skip_ingress_proxy = tc_index_skip_ingress_proxy(ctx);
 
 	ct_buffer = map_lookup_elem(&CT_TAIL_CALL_BUFFER6, &zero);
 	if (!ct_buffer)
@@ -1488,7 +1477,7 @@ ipv6_policy(struct __ctx_buff *ctx, struct ipv6hdr *ip6, int ifindex, __u32 src_
 		 * Always redirect connections that originated from L7 LB.
 		 */
 		if (ct_state_is_from_l7lb(ct_state) ||
-		    (ct_state->proxy_redirect && !tc_index_from_egress_proxy(ctx))) {
+		    (ct_state->proxy_redirect && !tc_index_skip_egress_proxy(ctx))) {
 			/* This is a reply, the proxy port does not need to be embedded
 			 * into ctx->mark and *proxy_port can be left unset.
 			 */
@@ -1597,54 +1586,34 @@ int tail_ipv6_policy(struct __ctx_buff *ctx)
 	__u32 src_label = ctx_load_meta(ctx, CB_SRC_LABEL);
 	bool from_host = ctx_load_meta(ctx, CB_FROM_HOST);
 	bool proxy_redirect __maybe_unused = false;
-	bool from_tunnel = false;
-	void *data, *data_end;
 	__u16 proxy_port = 0;
-	struct ipv6hdr *ip6;
 	__s8 ext_err = 0;
 
 	ctx_store_meta(ctx, CB_SRC_LABEL, 0);
 	ctx_store_meta(ctx, CB_FROM_HOST, 0);
 
-#ifdef HAVE_ENCAP
-	/* TODO use CB_FROM_TUNNEL on v1.16, when we can trust that all
-	 * callers populate it (even after downgrade).
-	 */
-	/* from_tunnel = ctx_load_meta(ctx, CB_FROM_TUNNEL); */
-	from_tunnel = true;
-	ctx_store_meta(ctx, CB_FROM_TUNNEL, 0);
-#endif
-
-	if (!revalidate_data(ctx, &data, &data_end, &ip6)) {
-		ret = DROP_INVALID;
-		goto drop_err;
-	}
-
-	ret = ipv6_policy(ctx, ip6, ifindex, src_label, &tuple, &ext_err,
-			  &proxy_port);
+	ret = ipv6_policy(ctx, ifindex, src_label, &tuple, &ext_err, &proxy_port);
 	switch (ret) {
 	case POLICY_ACT_PROXY_REDIRECT:
 		ret = ctx_redirect_to_proxy6(ctx, &tuple, proxy_port, from_host);
 		proxy_redirect = true;
 		break;
 	case CTX_ACT_OK:
-#if !defined(ENABLE_ROUTING) && !defined(ENABLE_NODEPORT)
+#if !defined(ENABLE_ROUTING) && defined(TUNNEL_MODE) && !defined(ENABLE_NODEPORT)
 		/* See comment in IPv4 path. */
-		if (from_tunnel) {
-			ctx_change_type(ctx, PACKET_HOST);
-			break;
-		}
-#endif /* !ENABLE_ROUTING && !ENABLE_NODEPORT */
-
+		ctx_change_type(ctx, PACKET_HOST);
+#else
 		if (ifindex)
-			ret = redirect_ep(ctx, ifindex, from_host, from_tunnel);
+			ret = redirect_ep(ctx, ifindex, from_host);
+#endif /* !ENABLE_ROUTING && TUNNEL_MODE && !ENABLE_NODEPORT */
 		break;
 	default:
 		break;
 	}
 
 	if (IS_ERR(ret))
-		goto drop_err;
+		return send_drop_notify_ext(ctx, src_label, SECLABEL_IPV6, LXC_ID,
+					ret, ext_err, CTX_ACT_DROP, METRIC_INGRESS);
 
 	/* Store meta: essential for proxy ingress, see bpf_host.c */
 	ctx_store_meta(ctx, CB_PROXY_MAGIC, ctx->mark);
@@ -1664,10 +1633,6 @@ int tail_ipv6_policy(struct __ctx_buff *ctx)
 #endif
 
 	return ret;
-
-drop_err:
-	return send_drop_notify_ext(ctx, src_label, SECLABEL_IPV6, LXC_ID,
-				    ret, ext_err, CTX_ACT_DROP, METRIC_INGRESS);
 }
 
 __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV6_TO_ENDPOINT)
@@ -1724,14 +1689,17 @@ int tail_ipv6_to_endpoint(struct __ctx_buff *ctx)
 #endif
 	ctx_store_meta(ctx, CB_SRC_LABEL, 0);
 
-	ret = ipv6_policy(ctx, ip6, 0, src_sec_identity, NULL, &ext_err,
-			  &proxy_port);
+	ret = ipv6_policy(ctx, 0, src_sec_identity, NULL, &ext_err, &proxy_port);
 	switch (ret) {
 	case POLICY_ACT_PROXY_REDIRECT:
 		ret = ctx_redirect_to_proxy_hairpin_ipv6(ctx, proxy_port);
 		proxy_redirect = true;
 		break;
 	case CTX_ACT_OK:
+#if !defined(ENABLE_ROUTING) && defined(TUNNEL_MODE) && !defined(ENABLE_NODEPORT)
+		/* See comment in IPv4 path. */
+		ctx_change_type(ctx, PACKET_HOST);
+#endif /* !ENABLE_ROUTING && TUNNEL_MODE && !ENABLE_NODEPORT */
 		break;
 	default:
 		break;
@@ -1770,12 +1738,14 @@ TAIL_CT_LOOKUP6(CILIUM_CALL_IPV6_CT_INGRESS, tail_ipv6_ct_ingress, CT_INGRESS,
 
 #ifdef ENABLE_IPV4
 static __always_inline int
-ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, int ifindex, __u32 src_label,
+ipv4_policy(struct __ctx_buff *ctx, int ifindex, __u32 src_label,
 	    struct ipv4_ct_tuple *tuple_out, __s8 *ext_err, __u16 *proxy_port,
 	    bool from_tunnel)
 {
 	struct ct_state *ct_state, ct_state_new = {};
 	struct ipv4_ct_tuple *tuple;
+	void *data, *data_end;
+	struct iphdr *ip4;
 	bool skip_ingress_proxy = false;
 	bool is_untracked_fragment = false;
 	struct ct_buffer4 *ct_buffer;
@@ -1787,12 +1757,15 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, int ifindex, __u32 src_la
 	__u8 auth_type = 0;
 	__u32 zero = 0;
 
+	if (!revalidate_data(ctx, &data, &data_end, &ip4))
+		return DROP_INVALID;
+
 	policy_clear_mark(ctx);
 
 	/* If packet is coming from the ingress proxy we have to skip
 	 * redirection to the ingress proxy as we would loop forever.
 	 */
-	skip_ingress_proxy = tc_index_from_ingress_proxy(ctx);
+	skip_ingress_proxy = tc_index_skip_ingress_proxy(ctx);
 
 	orig_sip = ip4->saddr;
 
@@ -1825,7 +1798,7 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, int ifindex, __u32 src_la
 	/* Skip policy enforcement for return traffic. */
 	if (ret == CT_REPLY || ret == CT_RELATED) {
 		if (ct_state_is_from_l7lb(ct_state) ||
-		    (ct_state->proxy_redirect && !tc_index_from_egress_proxy(ctx))) {
+		    (ct_state->proxy_redirect && !tc_index_skip_egress_proxy(ctx))) {
 			/* This is a reply, the proxy port does not need to be embedded
 			 * into ctx->mark and *proxy_port can be left unset.
 			 */
@@ -1963,36 +1936,25 @@ int tail_ipv4_policy(struct __ctx_buff *ctx)
 	int ret, ifindex = ctx_load_meta(ctx, CB_IFINDEX);
 	__u32 src_label = ctx_load_meta(ctx, CB_SRC_LABEL);
 	bool from_host = ctx_load_meta(ctx, CB_FROM_HOST);
+	bool from_tunnel = ctx_load_meta(ctx, CB_FROM_TUNNEL);
 	bool proxy_redirect __maybe_unused = false;
-	bool from_tunnel = false;
-	void *data, *data_end;
 	__u16 proxy_port = 0;
-	struct iphdr *ip4;
 	__s8 ext_err = 0;
 
 	ctx_store_meta(ctx, CB_SRC_LABEL, 0);
 	ctx_store_meta(ctx, CB_CLUSTER_ID_INGRESS, 0);
 	ctx_store_meta(ctx, CB_FROM_HOST, 0);
-
-#ifdef HAVE_ENCAP
-	from_tunnel = ctx_load_meta(ctx, CB_FROM_TUNNEL);
 	ctx_store_meta(ctx, CB_FROM_TUNNEL, 0);
-#endif
 
-	if (!revalidate_data(ctx, &data, &data_end, &ip4)) {
-		ret = DROP_INVALID;
-		goto drop_err;
-	}
-
-	ret = ipv4_policy(ctx, ip4, ifindex, src_label, &tuple, &ext_err,
-			  &proxy_port, from_tunnel);
+	ret = ipv4_policy(ctx, ifindex, src_label, &tuple, &ext_err, &proxy_port,
+			  from_tunnel);
 	switch (ret) {
 	case POLICY_ACT_PROXY_REDIRECT:
 		ret = ctx_redirect_to_proxy4(ctx, &tuple, proxy_port, from_host);
 		proxy_redirect = true;
 		break;
 	case CTX_ACT_OK:
-#if !defined(ENABLE_ROUTING) && !defined(ENABLE_NODEPORT)
+#if !defined(ENABLE_ROUTING) && defined(TUNNEL_MODE) && !defined(ENABLE_NODEPORT)
 		/* In tunneling mode, we execute this code to send the packet from
 		 * cilium_vxlan to lxc*. If we're using kube-proxy, we don't want to use
 		 * redirect() because that would bypass conntrack and the reverse DNAT.
@@ -2001,21 +1963,19 @@ int tail_ipv4_policy(struct __ctx_buff *ctx)
 		 * will drop them.
 		 * See #14646 for details.
 		 */
-		if (from_tunnel) {
-			ctx_change_type(ctx, PACKET_HOST);
-			break;
-		}
-#endif /* !ENABLE_ROUTING && !ENABLE_NODEPORT */
-
+		ctx_change_type(ctx, PACKET_HOST);
+#else
 		if (ifindex)
-			ret = redirect_ep(ctx, ifindex, from_host, from_tunnel);
+			ret = redirect_ep(ctx, ifindex, from_host);
+#endif /* !ENABLE_ROUTING && TUNNEL_MODE && !ENABLE_NODEPORT */
 		break;
 	default:
 		break;
 	}
 
 	if (IS_ERR(ret))
-		goto drop_err;
+		return send_drop_notify_ext(ctx, src_label, SECLABEL_IPV4, LXC_ID,
+					ret, ext_err, CTX_ACT_DROP, METRIC_INGRESS);
 
 	/* Store meta: essential for proxy ingress, see bpf_host.c */
 	ctx_store_meta(ctx, CB_PROXY_MAGIC, ctx->mark);
@@ -2035,10 +1995,6 @@ int tail_ipv4_policy(struct __ctx_buff *ctx)
 #endif
 
 	return ret;
-
-drop_err:
-	return send_drop_notify_ext(ctx, src_label, SECLABEL_IPV4, LXC_ID,
-				    ret, ext_err, CTX_ACT_DROP, METRIC_INGRESS);
 }
 
 static __always_inline bool
@@ -2177,19 +2133,25 @@ int tail_ipv4_to_endpoint(struct __ctx_buff *ctx)
 		goto out;
 	}
 
-	ret = ipv4_policy(ctx, ip4, 0, src_sec_identity, NULL, &ext_err,
-			  &proxy_port, false);
+	ret = ipv4_policy(ctx, 0, src_sec_identity, NULL, &ext_err, &proxy_port,
+			  false);
 	switch (ret) {
 	case POLICY_ACT_PROXY_REDIRECT:
-		if (!revalidate_data(ctx, &data, &data_end, &ip4)) {
-			ret = DROP_INVALID;
-			goto out;
-		}
-
-		ret = ctx_redirect_to_proxy_hairpin_ipv4(ctx, ip4, proxy_port);
+		ret = ctx_redirect_to_proxy_hairpin_ipv4(ctx, proxy_port);
 		proxy_redirect = true;
 		break;
 	case CTX_ACT_OK:
+#if !defined(ENABLE_ROUTING) && defined(TUNNEL_MODE) && !defined(ENABLE_NODEPORT)
+		/* In tunneling mode, we execute this code to send the packet from
+		 * cilium_vxlan to lxc*. If we're using kube-proxy, we don't want to use
+		 * redirect() because that would bypass conntrack and the reverse DNAT.
+		 * Thus, we send packets to the stack, but since they have the wrong
+		 * Ethernet addresses, we need to mark them as PACKET_HOST or the kernel
+		 * will drop them.
+		 * See #14646 for details.
+		 */
+		ctx_change_type(ctx, PACKET_HOST);
+#endif /* !ENABLE_ROUTING && TUNNEL_MODE && !ENABLE_NODEPORT */
 		break;
 	default:
 		break;

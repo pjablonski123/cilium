@@ -138,8 +138,3 @@ func EnableMetrics(log logrus.FieldLogger, metricsServer string, m []string, grp
 	}()
 	return nil
 }
-
-// Register registers additional metrics collectors within hubble metrics registry.
-func Register(cs ...prometheus.Collector) {
-	registry.MustRegister(cs...)
-}

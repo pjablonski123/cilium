@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/mattn/go-shellwords"
+
+	"github.com/cilium/cilium/pkg/option"
 )
 
 type customChain struct {
@@ -218,9 +220,9 @@ func (c *customChain) remove(ipv4, ipv6 bool) error {
 	return nil
 }
 
-func (c *customChain) doInstallFeeder(prog iptablesInterface, feedArgs string, prepend bool) error {
+func (c *customChain) doInstallFeeder(prog iptablesInterface, feedArgs string) error {
 	installMode := "-A"
-	if prepend {
+	if option.Config.PrependIptablesChains {
 		installMode = "-I"
 	}
 
@@ -244,15 +246,15 @@ func (c *customChain) doInstallFeeder(prog iptablesInterface, feedArgs string, p
 	return nil
 }
 
-func (c *customChain) installFeeder(ipv4, ipv6, prepend bool) error {
+func (c *customChain) installFeeder(ipv4, ipv6 bool) error {
 	for _, feedArgs := range c.feederArgs {
 		if ipv4 {
-			if err := c.doInstallFeeder(ip4tables, feedArgs, prepend); err != nil {
+			if err := c.doInstallFeeder(ip4tables, feedArgs); err != nil {
 				return err
 			}
 		}
 		if ipv6 && c.ipv6 {
-			if err := c.doInstallFeeder(ip6tables, feedArgs, prepend); err != nil {
+			if err := c.doInstallFeeder(ip6tables, feedArgs); err != nil {
 				return err
 			}
 		}

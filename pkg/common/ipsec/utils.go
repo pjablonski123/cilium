@@ -4,12 +4,7 @@
 package ipsec
 
 import (
-	"errors"
-	"fmt"
-
 	"github.com/vishvananda/netlink"
-
-	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 )
 
 const (
@@ -18,26 +13,16 @@ const (
 	markStateOut = 0xe00
 )
 
-func CountUniqueIPsecKeys(states []netlink.XfrmState) (int, error) {
+func CountUniqueIPsecKeys(states []netlink.XfrmState) int {
 	keys := make(map[string]bool)
-	invalidStateFound := false
 	for _, s := range states {
-		if s.Aead != nil && s.Auth == nil && s.Crypt == nil {
-			keys[string(s.Aead.Key)] = true
+		if s.Aead == nil {
 			continue
 		}
-		if s.Aead == nil && s.Auth != nil && s.Crypt != nil {
-			// we want to count the number of unique (Auth, Crypt) tuples
-			key := fmt.Sprintf("%s:%s", string(s.Auth.Key), string(s.Crypt.Key))
-			keys[key] = true
-			continue
-		}
-		invalidStateFound = true
+		keys[string(s.Aead.Key)] = true
 	}
-	if invalidStateFound {
-		return len(keys), errors.New("an unsupported XfrmStateAlgo combination has been found")
-	}
-	return len(keys), nil
+
+	return len(keys)
 }
 
 func CountXfrmStatesByDir(states []netlink.XfrmState) (int, int) {
@@ -72,24 +57,4 @@ func CountXfrmPoliciesByDir(states []netlink.XfrmPolicy) (int, int, int) {
 		}
 	}
 	return nbXfrmIn, nbXfrmOut, nbXfrmFwd
-}
-
-func GetSPIFromXfrmPolicy(policy *netlink.XfrmPolicy) uint8 {
-	if policy.Mark == nil {
-		return 0
-	}
-
-	return ipSecXfrmMarkGetSPI(policy.Mark.Value)
-}
-
-// ipSecXfrmMarkGetSPI extracts from a XfrmMark value the encoded SPI
-func ipSecXfrmMarkGetSPI(markValue uint32) uint8 {
-	return uint8(markValue >> linux_defaults.IPsecXFRMMarkSPIShift & 0xF)
-}
-
-func GetNodeIDFromXfrmMark(mark *netlink.XfrmMark) uint16 {
-	if mark == nil {
-		return 0
-	}
-	return uint16(mark.Value >> 16)
 }

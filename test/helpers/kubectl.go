@@ -117,8 +117,9 @@ var (
 		// "extraEnv[0].value":             "true",
 
 		// We need CNP node status to know when a policy is being enforced
-		"ipv4NativeRoutingCIDR": IPv4NativeRoutingCIDR,
-		"ipv6NativeRoutingCIDR": IPv6NativeRoutingCIDR,
+		"enableCnpStatusUpdates": "true",
+		"ipv4NativeRoutingCIDR":  IPv4NativeRoutingCIDR,
+		"ipv6NativeRoutingCIDR":  IPv6NativeRoutingCIDR,
 
 		"ipam.operator.clusterPoolIPv6PodCIDRList": "fd02::/112",
 
@@ -170,7 +171,7 @@ var (
 		"install-no-conntrack-iptables-rules": "false",
 		"l7Proxy":                             "false",
 		"hubble.enabled":                      "false",
-		"kubeProxyReplacement":                "true",
+		"kubeProxyReplacement":                "strict",
 		"endpointHealthChecking.enabled":      "false",
 		"cni.install":                         "true",
 		"cni.customConf":                      "true",
@@ -226,6 +227,25 @@ var (
 		"cep",
 	}
 )
+
+// HelmOverride returns the value of a Helm override option for the currently
+// enabled CNI_INTEGRATION
+func HelmOverride(option string) string {
+	integration := strings.ToLower(os.Getenv("CNI_INTEGRATION"))
+	if overrides, exists := helmOverrides[integration]; exists {
+		return overrides[option]
+	}
+	return ""
+}
+
+// NativeRoutingEnabled returns true when native routing is enabled for a
+// particular CNI_INTEGRATION
+func NativeRoutingEnabled() bool {
+	tunnelDisabled := HelmOverride("tunnel") == "disabled" ||
+		HelmOverride("routingMode") == "native"
+	gkeEnabled := HelmOverride("gke.enabled") == "true"
+	return tunnelDisabled || gkeEnabled
+}
 
 func Init() {
 	if config.CiliumTestConfig.CiliumImage != "" {
@@ -721,34 +741,6 @@ func (kub *Kubectl) GetCiliumHostEndpointState(ciliumPod string) (string, error)
 	}
 
 	return strings.TrimSpace(res.Stdout()), nil
-}
-
-// GetCiliumIdentityForIP returns the numeric identity for a given IP address
-// according to a node's BPF ipcache.
-func (kub *Kubectl) GetCiliumIdentityForIP(ciliumPod, ip string) (int, error) {
-	cmd := fmt.Sprintf("cilium-dbg bpf ipcache get %s", ip)
-	res := kub.CiliumExecContext(context.Background(), ciliumPod, cmd)
-	if !res.WasSuccessful() {
-		return 0, fmt.Errorf("unable to run command '%s' to retrieve state of host endpoint from %s: %s",
-			cmd, ciliumPod, res.OutputPrettyPrint())
-	}
-
-	// output looks like
-	// 172.19.0.2 maps to identity identity=16777217 encryptkey=0 tunnelendpoint=0.0.0.0
-	words := strings.Fields(res.Stdout())
-	if len(words) < 5 {
-		return 0, fmt.Errorf("could not parse output %s from command %s on from %s", res.Stdout(), cmd, ciliumPod)
-	}
-	kv := strings.SplitN(words[4], "=", 2)
-	if len(kv) < 2 {
-		return 0, fmt.Errorf("could not parse output %s from command %s on from %s", res.Stdout(), cmd, ciliumPod)
-	}
-
-	i, err := strconv.Atoi(kv[1])
-	if err != nil {
-		return 0, fmt.Errorf("could not parse output %s from command %s on from %s", res.Stdout(), cmd, ciliumPod)
-	}
-	return i, nil
 }
 
 // GetNumCiliumNodes returns the number of Kubernetes nodes running cilium
@@ -2499,7 +2491,7 @@ func (kub *Kubectl) overwriteHelmOptions(options map[string]string) error {
 
 	if RunsWithKubeProxyReplacement() {
 		opts := map[string]string{
-			"kubeProxyReplacement": "true",
+			"kubeProxyReplacement": "strict",
 		}
 
 		if RunsWithKubeProxy() {
@@ -2534,7 +2526,7 @@ func (kub *Kubectl) overwriteHelmOptions(options map[string]string) error {
 	// Disable unsupported features that will just generated unnecessary
 	// warnings otherwise.
 	if DoesNotRunOnNetNextKernel() {
-		addIfNotOverwritten(options, "kubeProxyReplacement", "false")
+		addIfNotOverwritten(options, "kubeProxyReplacement", "disabled")
 		addIfNotOverwritten(options, "bpf.masquerade", "false")
 		addIfNotOverwritten(options, "sessionAffinity", "false")
 		addIfNotOverwritten(options, "bandwidthManager.enabled", "false")
@@ -3176,6 +3168,13 @@ func (kub *Kubectl) waitNextPolicyRevisions(podRevisions map[string]int, timeout
 	return err
 }
 
+func getPolicyEnforcingJqFilter(numNodes int) string {
+	// Test filter: https://jqplay.org/s/EgNzc06Cgn
+	return fmt.Sprintf(
+		`[.items[]|{name:.metadata.name, enforcing: (.status|if has("nodes") then .nodes |to_entries|map_values(.value.enforcing) + [(.|length >= %d)]|all else true end)|tostring, status: has("status")|tostring}]`,
+		numNodes)
+}
+
 // CiliumPolicyAction performs the specified action in Kubernetes for the policy
 // stored in path filepath and waits up  until timeout seconds for the policy
 // to be applied in all Cilium endpoints. Returns an error if the policy is not
@@ -3186,6 +3185,7 @@ func (kub *Kubectl) CiliumPolicyAction(namespace, filepath string, action Resour
 	if err != nil {
 		return "", err
 	}
+	numNodes := len(podRevisions)
 
 	kub.Logger().Infof("Performing %s action on resource '%s'", action, filepath)
 
@@ -3194,6 +3194,51 @@ func (kub *Kubectl) CiliumPolicyAction(namespace, filepath string, action Resour
 		return "", status.GetErr(fmt.Sprintf("Cannot perform '%s' on resource '%s'", action, filepath))
 	}
 	unchanged := action == KubectlApply && strings.HasSuffix(status.Stdout(), " unchanged\n")
+
+	// If policy is uninstalled we can't require a policy being enforced.
+	if action != KubectlDelete {
+		jqFilter := getPolicyEnforcingJqFilter(numNodes)
+		body := func() bool {
+			cmds := map[string]string{
+				"CNP":  fmt.Sprintf("%s get cnp --all-namespaces -o json | jq '%s'", KubectlCmd, jqFilter),
+				"CCNP": fmt.Sprintf("%s get ccnp -o json | jq '%s'", KubectlCmd, jqFilter),
+			}
+
+			for ctx, cmd := range cmds {
+				var data []map[string]string
+
+				res := kub.ExecShort(cmd)
+				if !res.WasSuccessful() {
+					kub.Logger().WithError(res.GetErr("")).Errorf("cannot get %s status", ctx)
+					return false
+				}
+
+				err := res.Unmarshal(&data)
+				if err != nil {
+					kub.Logger().WithError(err).Errorf("Cannot unmarshal json for %s status", ctx)
+					return false
+				}
+
+				for _, item := range data {
+					if item["enforcing"] != "true" || item["status"] != "true" {
+						kub.Logger().Errorf("%s policy '%s' is not enforcing yet", ctx, item["name"])
+						return false
+					}
+				}
+			}
+
+			return true
+		}
+
+		err = WithTimeout(
+			body,
+			"Timed out while waiting for policies to be enforced",
+			&TimeoutConfig{Timeout: timeout})
+
+		if err != nil {
+			return "", err
+		}
+	}
 
 	// If the applied policy was unchanged, we don't need to wait for the next policy revision.
 	if unchanged {
@@ -3210,6 +3255,7 @@ func (kub *Kubectl) CiliumClusterwidePolicyAction(filepath string, action Resour
 	if err != nil {
 		return "", err
 	}
+	numNodes := len(podRevisions)
 
 	kub.Logger().Infof("Performing %s action on resource '%s'", action, filepath)
 
@@ -3218,6 +3264,45 @@ func (kub *Kubectl) CiliumClusterwidePolicyAction(filepath string, action Resour
 		return "", status.GetErr(fmt.Sprintf("Cannot perform '%s' on resource '%s'", action, filepath))
 	}
 	unchanged := action == KubectlApply && strings.HasSuffix(status.Stdout(), " unchanged\n")
+
+	// If policy is uninstalled we can't require a policy being enforced.
+	if action != KubectlDelete {
+		jqFilter := getPolicyEnforcingJqFilter(numNodes)
+		body := func() bool {
+			var data []map[string]string
+			cmd := fmt.Sprintf("%s get ccnp -o json | jq '%s'",
+				KubectlCmd, jqFilter)
+
+			res := kub.ExecShort(cmd)
+			if !res.WasSuccessful() {
+				kub.Logger().WithError(res.GetErr("")).Error("cannot get ccnp status")
+				return false
+			}
+
+			err := res.Unmarshal(&data)
+			if err != nil {
+				kub.Logger().WithError(err).Error("Cannot unmarshal json")
+				return false
+			}
+
+			for _, item := range data {
+				if item["enforcing"] != "true" || item["status"] != "true" {
+					kub.Logger().Errorf("Clusterwide policy '%s' is not enforcing yet", item["name"])
+					return false
+				}
+			}
+			return true
+		}
+
+		err := WithTimeout(
+			body,
+			"Timed out while waiting CCNP to be enforced",
+			&TimeoutConfig{Timeout: timeout})
+
+		if err != nil {
+			return "", err
+		}
+	}
 
 	// If the applied policy was unchanged, we don't need to wait for the next policy revision.
 	if unchanged {

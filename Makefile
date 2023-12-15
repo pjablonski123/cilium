@@ -12,30 +12,26 @@ debug: all
 
 include Makefile.defs
 
-SUBDIRS_CILIUM_CONTAINER := cilium-dbg daemon cilium-health bugtool tools/mount tools/sysctlfix plugins/cilium-cni
+SUBDIRS_CILIUM_CONTAINER := cilium-dbg daemon cilium-health bugtool tools/mount tools/sysctlfix
 SUBDIR_OPERATOR_CONTAINER := operator
-SUBDIR_RELAY_CONTAINER := hubble-relay
-
-ifdef LIBNETWORK_PLUGIN
-SUBDIRS_CILIUM_CONTAINER += plugins/cilium-docker
-endif
 
 # Add the ability to override variables
 -include Makefile.override
 
-# List of subdirectories used for global "make build", "make clean", etc
-SUBDIRS := $(SUBDIRS_CILIUM_CONTAINER) $(SUBDIR_OPERATOR_CONTAINER) plugins tools $(SUBDIR_RELAY_CONTAINER) bpf
+SUBDIRS := $(SUBDIRS_CILIUM_CONTAINER) $(SUBDIR_OPERATOR_CONTAINER) plugins tools hubble-relay bpf
 
-# Filter out any directories where the parent directory is also present, to avoid
-# building or cleaning a subdirectory twice.
-# For example: The directory "tools" is transformed into a match pattern "tools/%",
-# which is then used to filter out items such as "tools/mount" and "tools/sysctlfx"
-SUBDIRS := $(filter-out $(foreach dir,$(SUBDIRS),$(dir)/%),$(SUBDIRS))
+SUBDIRS_CILIUM_CONTAINER += plugins/cilium-cni
+ifdef LIBNETWORK_PLUGIN
+SUBDIRS_CILIUM_CONTAINER += plugins/cilium-docker
+endif
 
 # Space-separated list of Go packages to test, equivalent to 'go test' package patterns.
 # Because is treated as a Go package pattern, the special '...' sequence is supported,
 # meaning 'all subpackages of the given package'.
 TESTPKGS ?= ./...
+
+SWAGGER_VERSION := v0.30.3
+SWAGGER := $(CONTAINER_ENGINE) run -u $(shell id -u):$(shell id -g) --rm -v $(CURDIR):$(CURDIR) -w $(CURDIR) --entrypoint swagger quay.io/goswagger/swagger:$(SWAGGER_VERSION)
 
 GOTEST_BASE := -timeout 600s
 GOTEST_COVER_OPTS += -coverprofile=coverage.out
@@ -74,9 +70,6 @@ build-container-operator-azure: ## Builds components required for a cilium-opera
 
 build-container-operator-alibabacloud: ## Builds components required for a cilium-operator alibabacloud variant container.
 	$(MAKE) $(SUBMAKEOPTS) -C $(SUBDIR_OPERATOR_CONTAINER) cilium-operator-alibabacloud
-
-build-container-hubble-relay:
-	$(MAKE) $(SUBMAKEOPTS) -C $(SUBDIR_RELAY_CONTAINER) all
 
 $(SUBDIRS): force ## Execute default make target(make all) for the provided subdirectory.
 	@ $(MAKE) $(SUBMAKEOPTS) -C $@ all
@@ -214,10 +207,6 @@ install-container-binary-operator-azure: ## Install binaries for all components 
 install-container-binary-operator-alibabacloud: ## Install binaries for all components required for cilium-operator alibabacloud variant container.
 	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
 	$(MAKE) $(SUBMAKEOPTS) -C $(SUBDIR_OPERATOR_CONTAINER) install-alibabacloud
-
-install-container-binary-hubble-relay:
-	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
-	$(MAKE) $(SUBMAKEOPTS) -C $(SUBDIR_RELAY_CONTAINER) install-binary
 
 # Workaround for not having git in the build environment
 # Touch the file only if needed
@@ -537,16 +526,19 @@ $(1): export DOCKER_REGISTRY=localhost:5000
 $(1): export LOCAL_AGENT_IMAGE=$$(DOCKER_REGISTRY)/$$(DOCKER_DEV_ACCOUNT)/cilium-dev:$$(LOCAL_IMAGE_TAG)
 $(1): export LOCAL_OPERATOR_IMAGE=$$(DOCKER_REGISTRY)/$$(DOCKER_DEV_ACCOUNT)/operator-generic:$$(LOCAL_IMAGE_TAG)
 $(1): export LOCAL_CLUSTERMESH_IMAGE=$$(DOCKER_REGISTRY)/$$(DOCKER_DEV_ACCOUNT)/clustermesh-apiserver:$$(LOCAL_IMAGE_TAG)
+$(1): export LOCAL_KVSTOREMESH_IMAGE=$$(DOCKER_REGISTRY)/$$(DOCKER_DEV_ACCOUNT)/kvstoremesh:$$(LOCAL_IMAGE_TAG)
 endef
 
 $(eval $(call KIND_ENV,kind-clustermesh-images))
-kind-clustermesh-images: kind-clustermesh-ready kind-build-clustermesh-apiserver kind-build-image-agent kind-build-image-operator ## Builds images and imports them into clustermesh clusters
+kind-clustermesh-images: kind-clustermesh-ready kind-build-clustermesh-apiserver kind-build-kvstoremesh kind-build-image-agent kind-build-image-operator ## Builds images and imports them into clustermesh clusters
 	$(QUIET)kind load docker-image $(LOCAL_CLUSTERMESH_IMAGE) --name clustermesh1
 	$(QUIET)kind load docker-image $(LOCAL_CLUSTERMESH_IMAGE) --name clustermesh2
 	$(QUIET)kind load docker-image $(LOCAL_AGENT_IMAGE) --name clustermesh1
 	$(QUIET)kind load docker-image $(LOCAL_AGENT_IMAGE) --name clustermesh2
 	$(QUIET)kind load docker-image $(LOCAL_OPERATOR_IMAGE) --name clustermesh1
 	$(QUIET)kind load docker-image $(LOCAL_OPERATOR_IMAGE) --name clustermesh2
+	$(QUIET)kind load docker-image $(LOCAL_KVSTOREMESH_IMAGE) --name clustermesh1
+	$(QUIET)kind load docker-image $(LOCAL_KVSTOREMESH_IMAGE) --name clustermesh2
 
 ENABLE_KVSTOREMESH ?= false
 $(eval $(call KIND_ENV,kind-install-cilium-clustermesh))
@@ -559,6 +551,7 @@ kind-install-cilium-clustermesh: kind-clustermesh-ready ## Install a local Ciliu
 		--set=image.override=$(LOCAL_AGENT_IMAGE) \
 		--set=operator.image.override=$(LOCAL_OPERATOR_IMAGE) \
 		--set=clustermesh.apiserver.image.override=$(LOCAL_CLUSTERMESH_IMAGE) \
+		--set=clustermesh.apiserver.kvstoremesh.image.override=$(LOCAL_KVSTOREMESH_IMAGE) \
 		--set=clustermesh.apiserver.kvstoremesh.enabled=$(ENABLE_KVSTOREMESH)
 
 	@echo "  INSTALL cilium on clustermesh2 cluster"
@@ -571,6 +564,7 @@ kind-install-cilium-clustermesh: kind-clustermesh-ready ## Install a local Ciliu
 		--set=image.override=$(LOCAL_AGENT_IMAGE) \
 		--set=operator.image.override=$(LOCAL_OPERATOR_IMAGE) \
 		--set=clustermesh.apiserver.image.override=$(LOCAL_CLUSTERMESH_IMAGE) \
+		--set=clustermesh.apiserver.kvstoremesh.image.override=$(LOCAL_KVSTOREMESH_IMAGE) \
 		--set=clustermesh.apiserver.kvstoremesh.enabled=$(ENABLE_KVSTOREMESH)
 
 	@echo "  CONNECT the two clusters"
@@ -605,6 +599,10 @@ $(eval $(call KIND_ENV,kind-build-clustermesh-apiserver))
 kind-build-clustermesh-apiserver: ## Build cilium-clustermesh-apiserver docker image
 	$(QUIET)$(MAKE) docker-clustermesh-apiserver-image DOCKER_IMAGE_TAG=$(LOCAL_IMAGE_TAG)
 
+$(eval $(call KIND_ENV,kind-build-kvstoremesh))
+kind-build-kvstoremesh: ## Build cilium-kvstoremesh docker image
+	$(QUIET)$(MAKE) docker-kvstoremesh-image DOCKER_IMAGE_TAG=$(LOCAL_IMAGE_TAG)
+
 .PHONY: kind-image
 kind-image: ## Build cilium and operator images and import them into kind.
 	$(MAKE) kind-image-agent
@@ -622,9 +620,7 @@ endif
 .PHONY: kind-install-cilium-fast
 kind-install-cilium-fast: kind-ready ## Install a local Cilium version into the cluster.
 	@echo "  INSTALL cilium"
-	docker pull quay.io/cilium/cilium-ci:latest
 	for cluster_name in $${KIND_CLUSTERS:-$(shell kind get clusters)}; do \
-		kind load docker-image --name $$cluster_name quay.io/cilium/cilium-ci:latest; \
 		$(CILIUM_CLI) --context=kind-$$cluster_name uninstall >/dev/null 2>&1 || true; \
 		$(CILIUM_CLI) install --context=kind-$$cluster_name \
 			--chart-directory=$(ROOT_DIR)/install/kubernetes/cilium \
@@ -667,8 +663,9 @@ kind-image-fast-agent: kind-ready build-cli build-agent ## Build cilium cli and 
 			docker exec -ti $${node_name} rm -f "${dst}/cilium-agent"; \
 			docker cp "./daemon/cilium-agent" $${node_name}:"${dst}"; \
 			docker exec -ti $${node_name} chmod +x "${dst}/cilium-agent"; \
+			\
+			kubectl --context=kind-$${cluster_name} delete pods -n kube-system -l k8s-app=cilium --force; \
 		done; \
-		kubectl --context=kind-$${cluster_name} delete pods -n kube-system -l k8s-app=cilium --force; \
 	done
 
 .PHONY: kind-image-fast-operator
@@ -681,8 +678,9 @@ kind-image-fast-operator: kind-ready build-operator ## Build cilium operator bin
 			docker exec -ti $${node_name} rm -f "${dst}/cilium-operator-generic"; \
 			docker cp "./operator/cilium-operator-generic" $${node_name}:"${dst}"; \
 			docker exec -ti $${node_name} chmod +x "${dst}/cilium-operator-generic"; \
+			\
+			kubectl --context=kind-$${cluster_name} delete pods -n kube-system -l name=cilium-operator --force; \
 		done; \
-	kubectl --context=kind-$${cluster_name} delete pods -n kube-system -l name=cilium-operator --force; \
 	done
 
 .PHONY: kind-image-fast-clustermesh-apiserver
@@ -695,8 +693,9 @@ kind-image-fast-clustermesh-apiserver: kind-ready build-clustermesh-apiserver ##
 			docker exec -ti $${node_name} rm -f "${dst}/clustermesh-apiserver"; \
 			docker cp "./clustermesh-apiserver/clustermesh-apiserver" $${node_name}:"${dst}"; \
 			docker exec -ti $${node_name} chmod +x "${dst}/clustermesh-apiserver"; \
+			\
+			kubectl --context=kind-$${cluster_name} delete pods -n kube-system -l k8s-app=clustermesh-apiserver --force; \
 		done; \
-	kubectl --context=kind-$${cluster_name} delete pods -n kube-system -l k8s-app=clustermesh-apiserver --force; \
 	done
 
 .PHONY: kind-image-fast

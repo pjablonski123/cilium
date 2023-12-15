@@ -118,10 +118,7 @@ func NewHTTPListener(name string, ciliumSecretNamespace string, tls map[model.TL
 	var filterChains []*envoy_config_listener.FilterChain
 
 	insecureHttpConnectionManagerName := fmt.Sprintf("%s-insecure", name)
-	insecureHttpConnectionManager, err := NewHTTPConnectionManager(
-		insecureHttpConnectionManagerName,
-		insecureHttpConnectionManagerName,
-		WithXffNumTrustedHops())
+	insecureHttpConnectionManager, err := NewHTTPConnectionManager(insecureHttpConnectionManagerName, insecureHttpConnectionManagerName, WithXffNumTrustedHops())
 	if err != nil {
 		return ciliumv2.XDSResource{}, err
 	}
@@ -140,10 +137,7 @@ func NewHTTPListener(name string, ciliumSecretNamespace string, tls map[model.TL
 
 	for secret, hostNames := range tls {
 		secureHttpConnectionManagerName := fmt.Sprintf("%s-secure", name)
-		secureHttpConnectionManager, err := NewHTTPConnectionManager(
-			secureHttpConnectionManagerName,
-			secureHttpConnectionManagerName,
-			WithXffNumTrustedHops())
+		secureHttpConnectionManager, err := NewHTTPConnectionManager(secureHttpConnectionManagerName, secureHttpConnectionManagerName, WithXffNumTrustedHops())
 		if err != nil {
 			return ciliumv2.XDSResource{}, err
 		}
@@ -213,7 +207,7 @@ func NewSNIListenerWithDefaults(name string, backendsForHost map[string][]string
 func NewSNIListener(name string, backendsForHost map[string][]string, mutatorFunc ...ListenerMutator) (ciliumv2.XDSResource, error) {
 	var filterChains []*envoy_config_listener.FilterChain
 
-	for backend, hostNames := range backendsForHost {
+	for backed, hostNames := range backendsForHost {
 		filterChains = append(filterChains, &envoy_config_listener.FilterChain{
 			FilterChainMatch: toFilterChainMatch(hostNames),
 			Filters: []*envoy_config_listener.Filter{
@@ -221,9 +215,9 @@ func NewSNIListener(name string, backendsForHost map[string][]string, mutatorFun
 					Name: tcpProxyType,
 					ConfigType: &envoy_config_listener.Filter_TypedConfig{
 						TypedConfig: toAny(&envoy_extensions_filters_network_tcp_v3.TcpProxy{
-							StatPrefix: backend,
+							StatPrefix: backed,
 							ClusterSpecifier: &envoy_extensions_filters_network_tcp_v3.TcpProxy_Cluster{
-								Cluster: backend,
+								Cluster: backed,
 							},
 						}),
 					},

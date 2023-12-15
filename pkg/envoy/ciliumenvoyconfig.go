@@ -81,65 +81,26 @@ func (old *Resources) ListenersAddedOrDeleted(new *Resources) bool {
 	return false
 }
 
-func qualifyTcpProxyResourceNames(namespace, name string, tcpProxy *envoy_config_tcp.TcpProxy) (updated bool) {
-	switch c := tcpProxy.GetClusterSpecifier().(type) {
-	case *envoy_config_tcp.TcpProxy_Cluster:
-		if c != nil {
-			c.Cluster, updated = api.ResourceQualifiedName(namespace, name, c.Cluster)
-		}
-	case *envoy_config_tcp.TcpProxy_WeightedClusters:
-		if c != nil {
-			for _, wc := range c.WeightedClusters.Clusters {
-				var nameUpdated bool
-				wc.Name, nameUpdated = api.ResourceQualifiedName(namespace, name, wc.Name)
-				if nameUpdated {
-					updated = true
-				}
-			}
-		}
-	}
-	return updated
-}
-
-func qualifyRouteConfigurationResourceNames(namespace, name string, routeConfig *envoy_config_route.RouteConfiguration) (updated bool) {
+func qualifyRouteConfigurationResourceNames(namespace, name string, routeConfig *envoy_config_route.RouteConfiguration) {
 	// Strictly not a reference, and may be an empty string
-	routeConfig.Name, updated = api.ResourceQualifiedName(namespace, name, routeConfig.Name, api.ForceNamespace)
+	routeConfig.Name = api.ResourceQualifiedName(namespace, name, routeConfig.Name, api.ForceNamespace)
 
 	for _, vhost := range routeConfig.VirtualHosts {
-		var nameUpdated bool
-		vhost.Name, nameUpdated = api.ResourceQualifiedName(namespace, name, vhost.Name, api.ForceNamespace)
-		if nameUpdated {
-			updated = true
-		}
+		vhost.Name = api.ResourceQualifiedName(namespace, name, vhost.Name, api.ForceNamespace)
 		for _, rt := range vhost.Routes {
 			if action := rt.GetRoute(); action != nil {
 				if clusterName := action.GetCluster(); clusterName != "" {
-					action.GetClusterSpecifier().(*envoy_config_route.RouteAction_Cluster).Cluster, nameUpdated =
+					action.GetClusterSpecifier().(*envoy_config_route.RouteAction_Cluster).Cluster =
 						api.ResourceQualifiedName(namespace, name, clusterName)
-					if nameUpdated {
-						updated = true
-					}
-				}
-				for _, r := range action.GetRequestMirrorPolicies() {
-					if clusterName := r.GetCluster(); clusterName != "" {
-						r.Cluster, nameUpdated = api.ResourceQualifiedName(namespace, name, clusterName)
-						if nameUpdated {
-							updated = true
-						}
-					}
 				}
 				if weightedClusters := action.GetWeightedClusters(); weightedClusters != nil {
 					for _, cluster := range weightedClusters.GetClusters() {
-						cluster.Name, nameUpdated = api.ResourceQualifiedName(namespace, name, cluster.Name)
-						if nameUpdated {
-							updated = true
-						}
+						cluster.Name = api.ResourceQualifiedName(namespace, name, cluster.Name)
 					}
 				}
 			}
 		}
 	}
-	return updated
 }
 
 // ParseResources parses all supported Envoy resource types from CiliumEnvoyConfig CRD to Resources
@@ -180,14 +141,8 @@ func ParseResources(cecNamespace string, cecName string, anySlice []cilium_v2.XD
 				listener.EnableReusePort = &wrapperspb.BoolValue{Value: false}
 			}
 
-			// Figure out if this is an internal listener
-			isInternalListener := listener.GetInternalListener() != nil
-
-			// Only inject Cilium filters if Cilium allocates listener address
-			injectCiliumFilters := listener.GetAddress() == nil && !isInternalListener
-
 			// Inject Cilium bpf metadata listener filter, if not already present.
-			if !isInternalListener {
+			{
 				found := false
 				for _, lf := range listener.ListenerFilters {
 					if lf.Name == "cilium.bpf_metadata" {
@@ -227,7 +182,8 @@ func ParseResources(cecNamespace string, cecName string, anySlice []cilium_v2.XD
 							// Since we are prepending CEC namespace and name to Routes name,
 							// we must do the same here to point to the correct Route resource.
 							if rds.RouteConfigName != "" {
-								rds.RouteConfigName, updated = api.ResourceQualifiedName(cecNamespace, cecName, rds.RouteConfigName, api.ForceNamespace)
+								rds.RouteConfigName = api.ResourceQualifiedName(cecNamespace, cecName, rds.RouteConfigName, api.ForceNamespace)
+								updated = true
 							}
 							if rds.ConfigSource == nil {
 								rds.ConfigSource = ciliumXDS
@@ -235,11 +191,9 @@ func ParseResources(cecNamespace string, cecName string, anySlice []cilium_v2.XD
 							}
 						}
 						if routeConfig := hcmConfig.GetRouteConfig(); routeConfig != nil {
-							if qualifyRouteConfigurationResourceNames(cecNamespace, cecName, routeConfig) {
-								updated = true
-							}
+							qualifyRouteConfigurationResourceNames(cecNamespace, cecName, routeConfig)
 						}
-						if injectCiliumFilters {
+						if listener.GetAddress() == nil {
 							foundCiliumL7Filter := false
 						loop:
 							for j, httpFilter := range hcmConfig.HttpFilters {
@@ -267,20 +221,17 @@ func ParseResources(cecNamespace string, cecName string, anySlice []cilium_v2.XD
 						if err != nil {
 							continue
 						}
-						tcpProxy, ok := any.(*envoy_config_tcp.TcpProxy)
+						_, ok := any.(*envoy_config_tcp.TcpProxy)
 						if !ok {
 							continue
-						}
-
-						if qualifyTcpProxyResourceNames(cecNamespace, cecName, tcpProxy) {
-							filter.ConfigType = &envoy_config_listener.Filter_TypedConfig{
-								TypedConfig: toAny(tcpProxy),
-							}
 						}
 					default:
 						continue
 					}
-					if injectCiliumFilters {
+					// Only inject Cilium policy enforcement filters for
+					// listeners for which Cilium agent allocates address
+					// for (see below)
+					if listener.GetAddress() == nil {
 						if !foundCiliumNetworkFilter {
 							// Inject Cilium network filter just before the HTTP Connection Manager or TCPProxy filter
 							fc.Filters = append(fc.Filters[:i+1], fc.Filters[i:]...)
@@ -297,7 +248,7 @@ func ParseResources(cecNamespace string, cecName string, anySlice []cilium_v2.XD
 			}
 
 			name := listener.Name
-			listener.Name, _ = api.ResourceQualifiedName(cecNamespace, cecName, listener.Name, api.ForceNamespace)
+			listener.Name = api.ResourceQualifiedName(cecNamespace, cecName, listener.Name, api.ForceNamespace)
 
 			if validate {
 				if err := listener.Validate(); err != nil {
@@ -326,7 +277,7 @@ func ParseResources(cecNamespace string, cecName string, anySlice []cilium_v2.XD
 			qualifyRouteConfigurationResourceNames(cecNamespace, cecName, route)
 
 			name := route.Name
-			route.Name, _ = api.ResourceQualifiedName(cecNamespace, cecName, name, api.ForceNamespace)
+			route.Name = api.ResourceQualifiedName(cecNamespace, cecName, name, api.ForceNamespace)
 
 			if validate {
 				if err := route.Validate(); err != nil {
@@ -365,11 +316,11 @@ func ParseResources(cecNamespace string, cecName string, anySlice []cilium_v2.XD
 			}
 
 			if cluster.LoadAssignment != nil {
-				cluster.LoadAssignment.ClusterName, _ = api.ResourceQualifiedName(cecNamespace, cecName, cluster.LoadAssignment.ClusterName)
+				cluster.LoadAssignment.ClusterName = api.ResourceQualifiedName(cecNamespace, cecName, cluster.LoadAssignment.ClusterName)
 			}
 
 			name := cluster.Name
-			cluster.Name, _ = api.ResourceQualifiedName(cecNamespace, cecName, name)
+			cluster.Name = api.ResourceQualifiedName(cecNamespace, cecName, name)
 
 			if validate {
 				if err := cluster.Validate(); err != nil {
@@ -396,7 +347,7 @@ func ParseResources(cecNamespace string, cecName string, anySlice []cilium_v2.XD
 			}
 
 			name := endpoints.ClusterName
-			endpoints.ClusterName, _ = api.ResourceQualifiedName(cecNamespace, cecName, name)
+			endpoints.ClusterName = api.ResourceQualifiedName(cecNamespace, cecName, name)
 
 			if validate {
 				if err := endpoints.Validate(); err != nil {
@@ -423,7 +374,7 @@ func ParseResources(cecNamespace string, cecName string, anySlice []cilium_v2.XD
 			}
 
 			name := secret.Name
-			secret.Name, _ = api.ResourceQualifiedName(cecNamespace, cecName, name)
+			secret.Name = api.ResourceQualifiedName(cecNamespace, cecName, name)
 
 			if validate {
 				if err := secret.Validate(); err != nil {
@@ -442,10 +393,7 @@ func ParseResources(cecNamespace string, cecName string, anySlice []cilium_v2.XD
 	// Allocate TPROXY ports for listeners without address.
 	// Do this only after all other possible error cases.
 	for _, listener := range resources.Listeners {
-		// Figure out if this is an internal listener
-		isInternalListener := listener.GetInternalListener() != nil
-
-		if listener.GetAddress() == nil && !isInternalListener {
+		if listener.GetAddress() == nil {
 			port, err := portAllocator.AllocateProxyPort(listener.Name, false, true)
 			if err != nil || port == 0 {
 				return Resources{}, fmt.Errorf("Listener port allocation for %q failed: %s", listener.Name, err)
@@ -898,15 +846,17 @@ func getEndpointsForLBBackends(serviceName lb.ServiceName, backendMap map[string
 	return endpoints
 }
 
-func fillInTlsContextXDS(cecNamespace string, cecName string, tls *envoy_config_tls.CommonTlsContext) (updated bool) {
+func fillInTlsContextXDS(cecNamespace string, cecName string, tls *envoy_config_tls.CommonTlsContext) bool {
+	updated := false
+
 	qualify := func(sc *envoy_config_tls.SdsSecretConfig) {
 		if sc.SdsConfig == nil {
 			sc.SdsConfig = ciliumXDS
 			updated = true
 		}
-		var nameUpdated bool
-		sc.Name, nameUpdated = api.ResourceQualifiedName(cecNamespace, cecName, sc.Name)
-		if nameUpdated {
+		name := sc.Name
+		sc.Name = api.ResourceQualifiedName(cecNamespace, cecName, sc.Name)
+		if sc.Name != name {
 			updated = true
 		}
 	}

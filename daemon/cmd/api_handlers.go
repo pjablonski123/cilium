@@ -88,9 +88,8 @@ type handlersOut struct {
 	ServiceGetServiceIDHandler    service.GetServiceIDHandler
 	ServicePutServiceIDHandler    service.PutServiceIDHandler
 
-	BgpGetBgpPeersHandler         bgp.GetBgpPeersHandler
-	BgpGetBgpRoutesHandler        bgp.GetBgpRoutesHandler
-	BgpGetBgpRoutePoliciesHandler bgp.GetBgpRoutePoliciesHandler
+	BgpGetBgpPeersHandler  bgp.GetBgpPeersHandler
+	BgpGetBgpRoutesHandler bgp.GetBgpRoutesHandler
 }
 
 // apiHandler implements Handle() for the given parameter type.
@@ -248,9 +247,6 @@ func ciliumAPIHandlers(dp promise.Promise[*Daemon], cfg *option.DaemonConfig, _ 
 
 	// /bgp/routes
 	out.BgpGetBgpRoutesHandler = wrapAPIHandler(dp, getBGPRoutesHandler)
-
-	// /bgp/route-policies
-	out.BgpGetBgpRoutePoliciesHandler = wrapAPIHandler(dp, getBGPRoutePoliciesHandler)
 
 	return
 }

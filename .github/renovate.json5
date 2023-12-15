@@ -9,7 +9,6 @@
   "gitAuthor": "renovate[bot] <bot@renovateapp.com>",
   "includePaths": [
     ".github/actions/ginkgo/**",
-    ".github/actions/set-env-variables/action.yml",
     ".github/workflows/**",
     ".github/kind-config.yaml",
     ".github/kind-config-ipv6.yaml",
@@ -52,7 +51,6 @@
   "pruneStaleBranches": true,
   "baseBranches": [
     "main",
-    "v1.15",
     "v1.14",
     "v1.13",
     "v1.12"
@@ -138,7 +136,6 @@
       ],
       matchBaseBranches: [
         "main",
-        "v1.15",
         "v1.14",
         "v1.13",
         "v1.12"
@@ -154,7 +151,6 @@
         "go.sum"
       ],
       matchBaseBranches: [
-        "v1.15",
         "v1.14",
         "v1.13",
         "v1.12"
@@ -262,7 +258,6 @@
       "allowedVersions": "22.04",
       "matchBaseBranches": [
         "main",
-        "v1.15",
         "v1.14",
         "v1.13"
       ],
@@ -290,9 +285,9 @@
         "docker.io/library/golang",
         "go"
       ],
-      "allowedVersions": "<1.22",
+      "allowedVersions": "<1.21",
       "matchBaseBranches": [
-        "v1.15"
+        "v1.14"
       ]
     },
     {
@@ -302,18 +297,17 @@
       ],
       "allowedVersions": "<1.21",
       "matchBaseBranches": [
-        "v1.14",
-        "v1.13",
-        "v1.12"
+        "v1.13"
       ]
     },
     {
       "matchPackageNames": [
-        "docker.io/library/alpine"
+        "docker.io/library/golang",
+        "go"
       ],
-      "allowedVersions": "<3.20",
+      "allowedVersions": "<1.21",
       "matchBaseBranches": [
-        "v1.15"
+        "v1.12"
       ]
     },
     {
@@ -358,26 +352,20 @@
       ],
       "matchBaseBranches": [
         "main",
-        "v1.15",
         "v1.14"
       ]
     },
     {
-      // Do not bump the minor version for Cilium <v1.14. Certain workflows
-      // are already using Cilium CLI v0.15.*, so let's enable patch versions.
-      "enabled": false,
       "groupName": "Cilium CLI",
       "groupSlug": "cilium-cli",
       "matchDepNames": [
         "cilium/cilium-cli"
       ],
-      "matchUpdateTypes": [
-        "major",
-        "minor"
-      ],
+      "allowedVersions": "/^v0\\.14\\.[0-9]+$/",
       "matchBaseBranches": [
         "v1.13",
         "v1.12",
+        "v1.11"
       ]
     },
     {
@@ -410,7 +398,6 @@
         "golangci/golangci-lint"
       ],
       "matchBaseBranches": [
-        "v1.15",
         "v1.14",
         "v1.13",
         "v1.12"
@@ -531,8 +518,7 @@
     {
       "fileMatch": [
         "^test/kubernetes-test\\.sh$",
-        "^test/packet/scripts/install\\.sh$",
-        "^.github/actions/set-env-variables/action\\.yml$"
+        "^test/packet/scripts/install\\.sh$"
       ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s+.+_VERSION=\"(?<currentValue>.*)\""

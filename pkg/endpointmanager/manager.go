@@ -21,6 +21,7 @@ import (
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/ipcache"
+	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -40,6 +41,10 @@ var (
 
 	endpointGCControllerGroup = controller.NewGroup("endpoint-gc")
 )
+
+// compile time check - endpointManager must implement
+// subscriber.Node
+var _ subscriber.Node = (*endpointManager)(nil)
 
 // endpointManager is a structure designed for containing state about the
 // collection of locally running endpoints.
@@ -84,10 +89,6 @@ type endpointManager struct {
 	controllers *controller.Manager
 
 	policyMapPressure *policyMapPressure
-
-	// locaNodeStore allows to retrieve information and observe changes about
-	// the local node.
-	localNodeStore *node.LocalNodeStore
 }
 
 // endpointDeleteFunc is used to abstract away concrete Endpoint Delete
@@ -95,7 +96,7 @@ type endpointManager struct {
 type endpointDeleteFunc func(*endpoint.Endpoint, endpoint.DeleteConfig) []error
 
 // New creates a new endpointManager.
-func New(epSynchronizer EndpointResourceSynchronizer, lns *node.LocalNodeStore, reporterScope cell.Scope) *endpointManager {
+func New(epSynchronizer EndpointResourceSynchronizer, reporterScope cell.Scope) *endpointManager {
 	mgr := endpointManager{
 		reporterScope:                reporterScope,
 		endpoints:                    make(map[uint16]*endpoint.Endpoint),
@@ -104,7 +105,6 @@ func New(epSynchronizer EndpointResourceSynchronizer, lns *node.LocalNodeStore, 
 		EndpointResourceSynchronizer: epSynchronizer,
 		subscribers:                  make(map[Subscriber]struct{}),
 		controllers:                  controller.NewManager(),
-		localNodeStore:               lns,
 	}
 	mgr.deleteEndpoint = mgr.removeEndpoint
 	mgr.policyMapPressure = newPolicyMapPressure()
@@ -325,7 +325,7 @@ func (mgr *endpointManager) LookupIPv6(ipv6 string) *endpoint.Endpoint {
 
 // LookupIP looks up endpoint by IP address
 func (mgr *endpointManager) LookupIP(ip netip.Addr) (ep *endpoint.Endpoint) {
-	ipStr := ip.Unmap().String()
+	ipStr := ip.String()
 	mgr.mutex.RLock()
 	if ip.Is4() {
 		ep = mgr.lookupIPv4(ipStr)
@@ -711,7 +711,7 @@ func (mgr *endpointManager) AddHostEndpoint(
 
 	node.SetEndpointID(ep.GetID())
 
-	mgr.initHostEndpointLabels(ctx, ep)
+	ep.InitWithNodeLabels(ctx, launchTime)
 
 	return nil
 }
@@ -728,26 +728,7 @@ func (mgr *endpointManager) InitHostEndpointLabels(ctx context.Context) {
 		log.Error("Attempted to init host endpoint labels but host endpoint not set.")
 		return
 	}
-
-	mgr.initHostEndpointLabels(ctx, ep)
-}
-
-func (mgr *endpointManager) initHostEndpointLabels(ctx context.Context, ep *endpoint.Endpoint) {
-	// initHostEndpointLabels is executed by the daemon start hook, and
-	// at that point we are guaranteed that the local node has already
-	// been initialized, and this Get() operation returns immediately.
-	ln, err := mgr.localNodeStore.Get(ctx)
-	if err != nil {
-		// An error may be returned here only if the context has been canceled,
-		// which means that we are already shutting down. In that case, let's
-		// just return immediately, as we cannot do anything else.
-		return
-	}
-
-	ep.InitWithNodeLabels(ctx, ln.Labels, launchTime)
-
-	// Start the observer to keep the labels synchronized in case they change
-	mgr.startNodeLabelsObserver(ln.Labels)
+	ep.InitWithNodeLabels(ctx, launchTime)
 }
 
 // WaitForEndpointsAtPolicyRev waits for all endpoints which existed at the time

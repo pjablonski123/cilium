@@ -64,7 +64,7 @@ type EndpointPolicy struct {
 // PolicyOwner is anything which consumes a EndpointPolicy.
 type PolicyOwner interface {
 	GetID() uint64
-	LookupRedirectPortBuildLocked(ingress bool, protocol string, port uint16) uint16
+	LookupRedirectPortLocked(ingress bool, protocol string, port uint16) uint16
 	HasBPFPolicyMap() bool
 	GetNamedPort(ingress bool, name string, proto uint8) uint16
 	PolicyDebug(fields logrus.Fields, msg string)
@@ -102,9 +102,8 @@ func (p *selectorPolicy) Detach() {
 // upon selectors) into a set of concrete map entries based on the
 // SelectorCache. These can subsequently be plumbed into the datapath.
 //
-// Called without holding the Selector cache or Repository locks.
-// PolicyOwner (aka Endpoint) is also unlocked during this call,
-// but the Endpoint's build mutex is held.
+// Must be performed while holding the Repository lock.
+// PolicyOwner (aka Endpoint) is also locked during this call.
 func (p *selectorPolicy) DistillPolicy(policyOwner PolicyOwner, isHost bool) *EndpointPolicy {
 	calculatedPolicy := &EndpointPolicy{
 		selectorPolicy: p,
@@ -166,23 +165,15 @@ func (p *EndpointPolicy) Detach() {
 	p.selectorPolicy.removeUser(p)
 }
 
-// toMapState transforms the EndpointPolicy.L4Policy into
+// computeDesiredL4PolicyMapEntries transforms the EndpointPolicy.L4Policy into
 // the datapath-friendly format inside EndpointPolicy.PolicyMapState.
-// Called with selectorcache locked for reading.
-// Called without holding the Repository lock.
-// PolicyOwner (aka Endpoint) is also unlocked during this call,
-// but the Endpoint's build mutex is held.
+// Called with selectorcache locked for reading
 func (p *EndpointPolicy) toMapState() {
 	p.L4Policy.Ingress.toMapState(p)
 	p.L4Policy.Egress.toMapState(p)
 }
 
-// toMapState transforms the L4DirectionPolicy into
-// the datapath-friendly format inside EndpointPolicy.PolicyMapState.
-// Called with selectorcache locked for reading.
-// Called without holding the Repository lock.
-// PolicyOwner (aka Endpoint) is also unlocked during this call,
-// but the Endpoint's build mutex is held.
+// Called with selectorcache locked for reading
 func (l4policy L4DirectionPolicy) toMapState(p *EndpointPolicy) {
 	for _, l4 := range l4policy.PortRules {
 		lookupDone := false
@@ -194,7 +185,7 @@ func (l4policy L4DirectionPolicy) toMapState(p *EndpointPolicy) {
 					// only lookup once for each filter
 					// Use 'destPort' from the key as it is already resolved
 					// from a named port if needed.
-					proxyport = p.PolicyOwner.LookupRedirectPortBuildLocked(l4.Ingress, string(l4.Protocol), keyFromFilter.DestPort)
+					proxyport = p.PolicyOwner.LookupRedirectPortLocked(l4.Ingress, string(l4.Protocol), keyFromFilter.DestPort)
 					lookupDone = true
 				}
 				entry.ProxyPort = proxyport
@@ -207,7 +198,9 @@ func (l4policy L4DirectionPolicy) toMapState(p *EndpointPolicy) {
 				}
 			}
 			return true
-		}, ChangeState{})
+		}, ChangeState{
+			Old: newMapState(nil),
+		})
 	}
 }
 

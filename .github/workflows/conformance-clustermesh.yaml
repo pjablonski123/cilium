@@ -17,13 +17,9 @@ on:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
         default: '{}'
-
-  push:
-    branches:
-      - main
-      - ft/main/**
-    paths-ignore:
-      - 'Documentation/**'
+  # Run every 6 hours
+  schedule:
+    - cron:  '0 3/6 * * *'
 
 # By specifying the access of one of the scopes, all of those that are not
 # specified are set to 'none'.
@@ -40,7 +36,7 @@ concurrency:
   # - Workflow name
   # - Event type
   # - A unique identifier depending on event type:
-  #   - push: SHA
+  #   - schedule: SHA
   #   - workflow_dispatch: PR number
   #
   # This structure ensures a unique concurrency group name is generated for each
@@ -49,7 +45,7 @@ concurrency:
     ${{ github.workflow }}
     ${{ github.event_name }}
     ${{
-      (github.event_name == 'push' && github.sha) ||
+      (github.event_name == 'schedule' && github.sha) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number)
     }}
   cancel-in-progress: true
@@ -58,7 +54,9 @@ env:
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind
   kind_version: v0.20.0
   # renovate: datasource=docker depName=quay.io/cilium/kindest-node
-  k8s_version: v1.29.0-rc.1
+  k8s_version: v1.28.2
+  # renovate: datasource=github-releases depName=cilium/cilium-cli
+  cilium_cli_version: v0.15.11
   cilium_cli_ci_version:
   CILIUM_CLI_MODE: helm
   clusterName1: cluster1-${{ github.run_id }}
@@ -69,12 +67,11 @@ env:
 
 jobs:
   commit-status-start:
-    if: ${{ github.event_name != 'push' }}
-    name: Commit Status Start
+    name: Commmit Status Start
     runs-on: ubuntu-latest
     steps:
       - name: Set initial commit status
-        uses: myrotvorets/set-commit-status-action@38f3f27c7d52fb381273e95542f07f0fba301307 # v2.0.0
+        uses: myrotvorets/set-commit-status-action@38f3f27c7d52fb381273e95542f07f0fba301307 # v2.0.0  
         with:
           sha: ${{ inputs.SHA || github.sha }}
 
@@ -97,7 +94,6 @@ jobs:
             kvstoremesh: true
             cm-auth-mode-1: 'legacy'
             cm-auth-mode-2: 'legacy'
-            maxConnectedClusters: '255'
 
           - name: '2'
             tunnel: 'disabled'
@@ -107,7 +103,6 @@ jobs:
             kvstoremesh: false
             cm-auth-mode-1: 'migration'
             cm-auth-mode-2: 'migration'
-            maxConnectedClusters: '511'
 
           # IPsec encryption cannot be used with BPF NodePort.
           - name: '3'
@@ -118,7 +113,6 @@ jobs:
             kvstoremesh: true
             cm-auth-mode-1: 'cluster'
             cm-auth-mode-2: 'cluster'
-            maxConnectedClusters: '255'
 
           # IPsec encryption is currently not supported in case of ipv6-only clusters (#23553)
           # Wireguard encryption is currently affected by a bug in case of ipv6-only clusters (#23917)
@@ -130,7 +124,6 @@ jobs:
             kvstoremesh: false
             cm-auth-mode-1: 'legacy'
             cm-auth-mode-2: 'migration'
-            maxConnectedClusters: '255'
 
           # IPsec encryption cannot be used with BPF NodePort.
           - name: '5'
@@ -141,7 +134,6 @@ jobs:
             kvstoremesh: true
             cm-auth-mode-1: 'migration'
             cm-auth-mode-2: 'cluster'
-            maxConnectedClusters: '255'
 
           - name: '6'
             tunnel: 'vxlan'
@@ -151,7 +143,6 @@ jobs:
             kvstoremesh: false
             cm-auth-mode-1: 'cluster'
             cm-auth-mode-2: 'cluster'
-            maxConnectedClusters: '511'
 
           - name: '7'
             tunnel: 'geneve'
@@ -161,7 +152,6 @@ jobs:
             kvstoremesh: true
             cm-auth-mode-1: 'cluster'
             cm-auth-mode-2: 'cluster'
-            maxConnectedClusters: '255'
 
           # IPsec encryption cannot be used with BPF NodePort.
           - name: '8'
@@ -172,7 +162,6 @@ jobs:
             kvstoremesh: false
             cm-auth-mode-1: 'cluster'
             cm-auth-mode-2: 'cluster'
-            maxConnectedClusters: '255'
 
         # Tunneling is currently not supported in case of ipv6-only clusters (#17240)
         #  - name: '9'
@@ -192,7 +181,6 @@ jobs:
             kvstoremesh: false
             cm-auth-mode-1: 'cluster'
             cm-auth-mode-2: 'cluster'
-            maxConnectedClusters: '255'
 
     steps:
       - name: Checkout context ref (trusted)
@@ -222,7 +210,6 @@ jobs:
             --helm-set=hubble.relay.enabled=true \
             --helm-set=clustermesh.useAPIServer=true \
             --helm-set=clustermesh.apiserver.kvstoremesh.enabled=${{ matrix.kvstoremesh }} \
-            --helm-set=clustermesh.maxConnectedClusters=${{ matrix.maxConnectedClusters }} \
             "
 
           CILIUM_INSTALL_TUNNEL="--helm-set=tunnelProtocol=${{ matrix.tunnel }}"
@@ -291,10 +278,9 @@ jobs:
           echo kind_svc_cidr_2=${KIND_SVC_CIDR_2} >> $GITHUB_OUTPUT
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@c1fa8afda634f0457e9905d4f638e5164c4e0fc8 # v0.15.17
+        uses: cilium/cilium-cli@951eb9108277f4ffeb86d047bd492b6b96a52542 # v0.15.11
         with:
-          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
-          release-version: ${{ env.CILIUM_CLI_VERSION }}
+          release-version: ${{ env.cilium_cli_version }}
           ci-version: ${{ env.cilium_cli_ci_version }}
 
       - name: Generate Kind configuration files
@@ -476,13 +462,13 @@ jobs:
 
 
   commit-status-final:
-    if: ${{ always() && github.event_name != 'push' }}
+    if: ${{ always() }}
     name: Commit Status Final
     needs: installation-and-connectivity
     runs-on: ubuntu-latest
     steps:
       - name: Set final commit status
-        uses: myrotvorets/set-commit-status-action@38f3f27c7d52fb381273e95542f07f0fba301307 # v2.0.0
+        uses: myrotvorets/set-commit-status-action@38f3f27c7d52fb381273e95542f07f0fba301307 # v2.0.0  
         with:
           sha: ${{ inputs.SHA || github.sha }}
           status: ${{ needs.installation-and-connectivity.result }}

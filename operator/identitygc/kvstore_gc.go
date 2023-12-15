@@ -27,8 +27,9 @@ func (igc *GC) startKVStoreModeGC(ctx context.Context) error {
 		return fmt.Errorf("unable to initialize kvstore backend for identity allocation")
 	}
 
-	minID := idpool.ID(ciliumIdentity.GetMinimalAllocationIdentity())
-	maxID := idpool.ID(ciliumIdentity.GetMaximumAllocationIdentity())
+	ciliumIdentity.InitMinMaxIdentityAllocation(igc.allocationCfg, igc.clusterInfo)
+	minID := idpool.ID(ciliumIdentity.MinimalAllocationIdentity)
+	maxID := idpool.ID(ciliumIdentity.MaximumAllocationIdentity)
 	log.WithFields(map[string]interface{}{
 		"min":        minID,
 		"max":        maxID,

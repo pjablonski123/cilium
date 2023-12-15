@@ -133,9 +133,7 @@ enum {
 #define CILIUM_CALL_IPV4_CONT_FROM_NETDEV	44
 #define CILIUM_CALL_IPV6_CONT_FROM_HOST		45
 #define CILIUM_CALL_IPV6_CONT_FROM_NETDEV	46
-#define CILIUM_CALL_IPV4_NO_SERVICE		47
-#define CILIUM_CALL_IPV6_NO_SERVICE		48
-#define CILIUM_CALL_SIZE			49
+#define CILIUM_CALL_SIZE			47
 
 typedef __u64 mac_t;
 
@@ -292,7 +290,8 @@ struct endpoint_key {
 	};
 	__u8 family;
 	__u8 key;
-	__u16 cluster_id;
+	__u8 cluster_id;
+	__u8 pad;
 } __packed;
 
 struct tunnel_key {
@@ -306,8 +305,8 @@ struct tunnel_key {
 		union v6addr	ip6;
 	};
 	__u8 family;
-	__u8 pad;
-	__u16 cluster_id;
+	__u8 cluster_id;
+	__u16 pad;
 } __packed;
 
 struct tunnel_value {
@@ -599,7 +598,7 @@ enum {
 #define DROP_INVALID_EXTHDR	-156
 #define DROP_FRAG_NOSUPPORT	-157
 #define DROP_NO_SERVICE		-158
-#define DROP_UNSUPP_SERVICE_PROTO	-159
+#define DROP_UNUSED8		-159 /* unused */
 #define DROP_NO_TUNNEL_ENDPOINT -160
 #define DROP_NAT_46X64_DISABLED	-161
 #define DROP_EDT_HORIZON	-162
@@ -638,7 +637,6 @@ enum {
 #define DROP_UNENCRYPTED_TRAFFIC	-195
 #define DROP_TTL_EXCEEDED	-196
 #define DROP_NO_NODE_ID		-197
-#define DROP_RATE_LIMITED	-198
 
 #define NAT_PUNT_TO_STACK	DROP_NAT_NOT_NEEDED
 #define NAT_NEEDED		CTX_ACT_OK
@@ -723,12 +721,9 @@ enum metric_dir {
  */
 #define MARK_MAGIC_HEALTH		MARK_MAGIC_DECRYPT
 
-/* MARK_MAGIC_CLUSTER_ID shouldn't interfere with MARK_MAGIC_TO_PROXY. Lower
- * 8bits carries cluster_id, and when extended via the 'max-connected-clusters'
- * option, the upper 16bits may also be used for cluster_id, starting at the
- * most significant bit.
- */
+/* Shouldn't interfere with MARK_MAGIC_TO_PROXY. Lower 8bits carries cluster_id */
 #define MARK_MAGIC_CLUSTER_ID		MARK_MAGIC_TO_PROXY
+#define MARK_MAGIC_CLUSTER_ID_MASK	0x00FF
 
 /* IPv4 option used to carry service addr and port for DSR.
  *
@@ -776,8 +771,8 @@ static __always_inline __u32 or_encrypt_key(__u8 key)
  * cilium_host @egress
  *   bpf_host -> bpf_lxc
  */
-#define TC_INDEX_F_FROM_INGRESS_PROXY	1
-#define TC_INDEX_F_FROM_EGRESS_PROXY	2
+#define TC_INDEX_F_SKIP_INGRESS_PROXY	1
+#define TC_INDEX_F_SKIP_EGRESS_PROXY	2
 #define TC_INDEX_F_SKIP_NODEPORT	4
 #define TC_INDEX_F_SKIP_RECIRCULATION	8
 #define TC_INDEX_F_SKIP_HOST_FIREWALL	16
@@ -797,7 +792,6 @@ enum {
 #define	CB_PORT			CB_SRC_LABEL	/* Alias, non-overlapping */
 #define	CB_HINT			CB_SRC_LABEL	/* Alias, non-overlapping */
 #define	CB_PROXY_MAGIC		CB_SRC_LABEL	/* Alias, non-overlapping */
-#define	CB_ENCRYPT_MAGIC	CB_SRC_LABEL	/* Alias, non-overlapping */
 #define	CB_DST_ENDPOINT_ID	CB_SRC_LABEL    /* Alias, non-overlapping */
 #define CB_SRV6_SID_1		CB_SRC_LABEL	/* Alias, non-overlapping */
 	CB_IFINDEX,
@@ -1000,11 +994,11 @@ struct lb6_backend {
 	__be16 port;
 	__u8 proto;
 	__u8 flags;
-	__u16 cluster_id;	/* With this field, we can distinguish two
+	__u8 cluster_id;	/* With this field, we can distinguish two
 				 * backends that have the same IP address,
 				 * but belong to the different cluster.
 				 */
-	__u8 pad[2];
+	__u8 pad[3];
 };
 
 struct lb6_health {
@@ -1059,11 +1053,11 @@ struct lb4_backend {
 	__be16 port;		/* L4 port filter */
 	__u8 proto;		/* L4 protocol, currently not used (set to 0) */
 	__u8 flags;
-	__u16 cluster_id;	/* With this field, we can distinguish two
+	__u8 cluster_id;	/* With this field, we can distinguish two
 				 * backends that have the same IP address,
 				 * but belong to the different cluster.
 				 */
-	__u8 pad[2];
+	__u8 pad[3];
 };
 
 struct lb4_health {
@@ -1178,8 +1172,7 @@ struct lb6_src_range_key {
 
 static __always_inline int redirect_ep(struct __ctx_buff *ctx __maybe_unused,
 				       int ifindex __maybe_unused,
-				       bool needs_backlog __maybe_unused,
-				       bool from_tunnel)
+				       bool needs_backlog __maybe_unused)
 {
 	/* Going via CPU backlog queue (aka needs_backlog) is required
 	 * whenever we cannot do a fast ingress -> ingress switch but
@@ -1188,15 +1181,15 @@ static __always_inline int redirect_ep(struct __ctx_buff *ctx __maybe_unused,
 	 */
 	if (needs_backlog || !is_defined(ENABLE_HOST_ROUTING)) {
 		return ctx_redirect(ctx, ifindex, 0);
-	}
-
-	/* When coming from overlay, we need to set packet type
-	 * to HOST as otherwise we might get dropped in IP layer.
-	 */
-	if (from_tunnel)
+	} else {
+# ifdef HAVE_ENCAP
+		/* When coming from overlay, we need to set packet type
+		 * to HOST as otherwise we might get dropped in IP layer.
+		 */
 		ctx_change_type(ctx, PACKET_HOST);
-
-	return ctx_redirect_peer(ctx, ifindex, 0);
+# endif /* HAVE_ENCAP */
+		return ctx_redirect_peer(ctx, ifindex, 0);
+	}
 }
 
 static __always_inline __u64 ctx_adjust_hroom_flags(void)

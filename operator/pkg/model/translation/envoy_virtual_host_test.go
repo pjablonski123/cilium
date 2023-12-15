@@ -20,113 +20,7 @@ import (
 func TestSortableRoute(t *testing.T) {
 	arr := SortableRoute{
 		{
-			Name: "regex match short",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_SafeRegex{
-					SafeRegex: &envoy_type_matcher_v3.RegexMatcher{
-						Regex: "/.*",
-					},
-				},
-			},
-		},
-		{
-			Name: "regex match long",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_SafeRegex{
-					SafeRegex: &envoy_type_matcher_v3.RegexMatcher{
-						Regex: "/regex/.*/long",
-					},
-				},
-			},
-		},
-		{
-			Name: "regex match with one header",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_SafeRegex{
-					SafeRegex: &envoy_type_matcher_v3.RegexMatcher{
-						Regex: "/regex",
-					},
-				},
-				Headers: []*envoy_config_route_v3.HeaderMatcher{
-					{
-						Name: "header1",
-						HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
-							StringMatch: &envoy_type_matcher_v3.StringMatcher{
-								MatchPattern: &envoy_type_matcher_v3.StringMatcher_Exact{
-									Exact: "value1",
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		{
-			Name: "regex match with one header and one query",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_SafeRegex{
-					SafeRegex: &envoy_type_matcher_v3.RegexMatcher{
-						Regex: "/regex",
-					},
-				},
-				Headers: []*envoy_config_route_v3.HeaderMatcher{
-					{
-						Name: "header1",
-						HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
-							StringMatch: &envoy_type_matcher_v3.StringMatcher{
-								MatchPattern: &envoy_type_matcher_v3.StringMatcher_Exact{
-									Exact: "value1",
-								},
-							},
-						},
-					},
-				},
-				QueryParameters: []*envoy_config_route_v3.QueryParameterMatcher{
-					{
-						Name: "query1",
-						QueryParameterMatchSpecifier: &envoy_config_route_v3.QueryParameterMatcher_PresentMatch{
-							PresentMatch: true,
-						},
-					},
-				},
-			},
-		},
-
-		{
-			Name: "regex match with two headers",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_SafeRegex{
-					SafeRegex: &envoy_type_matcher_v3.RegexMatcher{
-						Regex: "/regex",
-					},
-				},
-				Headers: []*envoy_config_route_v3.HeaderMatcher{
-					{
-						Name: "header1",
-						HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
-							StringMatch: &envoy_type_matcher_v3.StringMatcher{
-								MatchPattern: &envoy_type_matcher_v3.StringMatcher_Exact{
-									Exact: "value1",
-								},
-							},
-						},
-					},
-					{
-						Name: "header2",
-						HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
-							StringMatch: &envoy_type_matcher_v3.StringMatcher{
-								MatchPattern: &envoy_type_matcher_v3.StringMatcher_Exact{
-									Exact: "value2",
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-
-		{
-			Name: "exact match short",
+			Name: "exact match 1",
 			Match: &envoy_config_route_v3.RouteMatch{
 				PathSpecifier: &envoy_config_route_v3.RouteMatch_Path{
 					Path: "/exact/match",
@@ -134,18 +28,40 @@ func TestSortableRoute(t *testing.T) {
 			},
 		},
 		{
-			Name: "exact match long",
+			Name: "another exact match",
 			Match: &envoy_config_route_v3.RouteMatch{
 				PathSpecifier: &envoy_config_route_v3.RouteMatch_Path{
-					Path: "/exact/match/longest",
+					Path: "/exact/match/another",
 				},
 			},
 		},
 		{
-			Name: "exact match with one header",
+			Name: "prefix match",
 			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_Path{
-					Path: "/exact/match/header",
+				PathSpecifier: &envoy_config_route_v3.RouteMatch_SafeRegex{
+					SafeRegex: &envoy_type_matcher_v3.RegexMatcher{
+						Regex: "/prefix/match",
+					},
+				},
+			},
+		},
+		{
+			Name: "another prefix match",
+			Match: &envoy_config_route_v3.RouteMatch{
+				PathSpecifier: &envoy_config_route_v3.RouteMatch_SafeRegex{
+					SafeRegex: &envoy_type_matcher_v3.RegexMatcher{
+						Regex: "/prefix/match/another",
+					},
+				},
+			},
+		},
+		{
+			Name: "prefix match with one header match",
+			Match: &envoy_config_route_v3.RouteMatch{
+				PathSpecifier: &envoy_config_route_v3.RouteMatch_SafeRegex{
+					SafeRegex: &envoy_type_matcher_v3.RegexMatcher{
+						Regex: "/header",
+					},
 				},
 				Headers: []*envoy_config_route_v3.HeaderMatcher{
 					{
@@ -162,132 +78,12 @@ func TestSortableRoute(t *testing.T) {
 			},
 		},
 		{
-			Name: "exact match with one header and one query",
+			Name: "prefix match with two header matches",
 			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_Path{
-					Path: "/exact/match/header",
-				},
-				Headers: []*envoy_config_route_v3.HeaderMatcher{
-					{
-						Name: "header1",
-						HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
-							StringMatch: &envoy_type_matcher_v3.StringMatcher{
-								MatchPattern: &envoy_type_matcher_v3.StringMatcher_Exact{
-									Exact: "value1",
-								},
-							},
-						},
+				PathSpecifier: &envoy_config_route_v3.RouteMatch_SafeRegex{
+					SafeRegex: &envoy_type_matcher_v3.RegexMatcher{
+						Regex: "/header",
 					},
-				},
-				QueryParameters: []*envoy_config_route_v3.QueryParameterMatcher{
-					{
-						Name: "query1",
-						QueryParameterMatchSpecifier: &envoy_config_route_v3.QueryParameterMatcher_PresentMatch{
-							PresentMatch: true,
-						},
-					},
-				},
-			},
-		},
-		{
-			Name: "exact match with two headers",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_Path{
-					Path: "/exact/match/header",
-				},
-				Headers: []*envoy_config_route_v3.HeaderMatcher{
-					{
-						Name: "header1",
-						HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
-							StringMatch: &envoy_type_matcher_v3.StringMatcher{
-								MatchPattern: &envoy_type_matcher_v3.StringMatcher_Exact{
-									Exact: "value1",
-								},
-							},
-						},
-					},
-					{
-						Name: "header2",
-						HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
-							StringMatch: &envoy_type_matcher_v3.StringMatcher{
-								MatchPattern: &envoy_type_matcher_v3.StringMatcher_Exact{
-									Exact: "value2",
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		{
-			Name: "prefix match short",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_PathSeparatedPrefix{
-					PathSeparatedPrefix: "/prefix/match",
-				},
-			},
-		},
-		{
-			Name: "prefix match long",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_PathSeparatedPrefix{
-					PathSeparatedPrefix: "/prefix/match/long",
-				},
-			},
-		},
-		{
-			Name: "prefix match with one header",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_PathSeparatedPrefix{
-					PathSeparatedPrefix: "/header",
-				},
-				Headers: []*envoy_config_route_v3.HeaderMatcher{
-					{
-						Name: "header1",
-						HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
-							StringMatch: &envoy_type_matcher_v3.StringMatcher{
-								MatchPattern: &envoy_type_matcher_v3.StringMatcher_Exact{
-									Exact: "value1",
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		{
-			Name: "prefix match with one header and one query",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_PathSeparatedPrefix{
-					PathSeparatedPrefix: "/header",
-				},
-				Headers: []*envoy_config_route_v3.HeaderMatcher{
-					{
-						Name: "header1",
-						HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
-							StringMatch: &envoy_type_matcher_v3.StringMatcher{
-								MatchPattern: &envoy_type_matcher_v3.StringMatcher_Exact{
-									Exact: "value1",
-								},
-							},
-						},
-					},
-				},
-				QueryParameters: []*envoy_config_route_v3.QueryParameterMatcher{
-					{
-						Name: "query1",
-						QueryParameterMatchSpecifier: &envoy_config_route_v3.QueryParameterMatcher_PresentMatch{
-							PresentMatch: true,
-						},
-					},
-				},
-			},
-		},
-		{
-			Name: "prefix match with two headers",
-			Match: &envoy_config_route_v3.RouteMatch{
-				PathSpecifier: &envoy_config_route_v3.RouteMatch_PathSeparatedPrefix{
-					PathSeparatedPrefix: "/header",
 				},
 				Headers: []*envoy_config_route_v3.HeaderMatcher{
 					{
@@ -314,62 +110,20 @@ func TestSortableRoute(t *testing.T) {
 			},
 		},
 	}
-
-	// This assertion is to it easier to tell how
-	// the array is rearranged by the sorting.
-	// It also effectively ensures that buildNameSlice is
-	// working correctly.
-	namesBeforeSort := buildNameSlice(arr)
-	assert.Equal(t, []string{
-		"regex match short",
-		"regex match long",
-		"regex match with one header",
-		"regex match with one header and one query",
-		"regex match with two headers",
-		"exact match short",
-		"exact match long",
-		"exact match with one header",
-		"exact match with one header and one query",
-		"exact match with two headers",
-		"prefix match short",
-		"prefix match long",
-		"prefix match with one header",
-		"prefix match with one header and one query",
-		"prefix match with two headers",
-	}, namesBeforeSort)
 
 	sort.Sort(arr)
 
-	namesAfterSort := buildNameSlice(arr)
-	assert.Equal(t, []string{
-		"exact match long",
-		"exact match with two headers",
-		"exact match with one header and one query",
-		"exact match with one header",
-		"exact match short",
-		"regex match long",
-		"regex match with two headers",
-		"regex match with one header and one query",
-		"regex match with one header",
-		"regex match short",
-		"prefix match long",
-		"prefix match short",
-		"prefix match with two headers",
-		"prefix match with one header and one query",
-		"prefix match with one header",
-	}, namesAfterSort)
+	// Exact match comes first in any order
+	assert.True(t, len(arr[0].Match.GetPath()) != 0)
+	assert.True(t, len(arr[1].Match.GetPath()) != 0)
 
-}
+	// Prefix match with longer path comes first
+	assert.Equal(t, "/prefix/match/another", arr[2].Match.GetSafeRegex().GetRegex())
+	assert.Equal(t, "/prefix/match", arr[3].Match.GetSafeRegex().GetRegex())
 
-func buildNameSlice(arr []*envoy_config_route_v3.Route) []string {
-
-	var names []string
-
-	for _, entry := range arr {
-		names = append(names, entry.Name)
-	}
-
-	return names
+	// More Header match comes first
+	assert.True(t, len(arr[4].Match.GetHeaders()) == 2)
+	assert.True(t, len(arr[5].Match.GetHeaders()) == 1)
 }
 
 func Test_hostRewriteMutation(t *testing.T) {
@@ -500,9 +254,9 @@ func Test_requestMirrorMutation(t *testing.T) {
 
 		res := requestMirrorMutation(mirror)(route)
 		require.Len(t, res.Route.RequestMirrorPolicies, 2)
-		require.Equal(t, res.Route.RequestMirrorPolicies[0].Cluster, "default:dummy-service:8080")
+		require.Equal(t, res.Route.RequestMirrorPolicies[0].Cluster, "default/dummy-service:8080")
 		require.Equal(t, res.Route.RequestMirrorPolicies[0].RuntimeFraction.DefaultValue.Numerator, uint32(100))
-		require.Equal(t, res.Route.RequestMirrorPolicies[1].Cluster, "default:another-dummy-service:8080")
+		require.Equal(t, res.Route.RequestMirrorPolicies[1].Cluster, "default/another-dummy-service:8080")
 		require.Equal(t, res.Route.RequestMirrorPolicies[1].RuntimeFraction.DefaultValue.Numerator, uint32(100))
 	})
 }

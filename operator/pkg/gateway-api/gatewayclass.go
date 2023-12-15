@@ -16,20 +16,17 @@ import (
 type gatewayClassReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-}
 
-func newGatewayClassReconciler(mgr ctrl.Manager) *gatewayClassReconciler {
-	return &gatewayClassReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}
+	Model *internalModel
+
+	controllerName string
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *gatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.GatewayClass{},
-			builder.WithPredicates(predicate.NewPredicateFuncs(matchesControllerName(controllerName)))).
+			builder.WithPredicates(predicate.NewPredicateFuncs(matchesControllerName(r.controllerName)))).
 		Complete(r)
 }
 

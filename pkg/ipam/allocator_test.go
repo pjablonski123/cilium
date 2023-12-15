@@ -128,9 +128,7 @@ func (s *IPAMSuite) TestAllocateNextWithExpiration(c *C) {
 	fakeAddressing := fake.NewNodeAddressing()
 	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &resourceMock{}, &mtuMock, nil)
 
-	// Allocate IPs and test expiration timer. 'pool' is empty in order to test
-	// that the allocated pool is passed to StartExpirationTimer
-	ipv4, ipv6, err := ipam.AllocateNextWithExpiration("", "foo", "", timeout)
+	ipv4, ipv6, err := ipam.AllocateNextWithExpiration("", "foo", PoolDefault(), timeout)
 	c.Assert(err, IsNil)
 
 	// IPv4 address must be in use

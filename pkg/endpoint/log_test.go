@@ -11,7 +11,6 @@ import (
 	. "github.com/cilium/checkmate"
 	"github.com/sirupsen/logrus"
 
-	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
@@ -27,10 +26,7 @@ func (s *EndpointSuite) TestEndpointLogFormat(c *C) {
 	c.Assert(ok, Equals, true)
 
 	// Log format is JSON when configured
-	logging.SetLogFormat(logging.LogFormatJSON)
-	defer func() {
-		logging.SetLogFormat(logging.LogFormatText)
-	}()
+	option.Config.LogOpt["format"] = "json"
 	do = &DummyOwner{repo: policy.NewPolicyRepository(nil, nil, nil, nil)}
 	ep = NewEndpointWithState(do, do, testipcache.NewMockIPCache(), nil, testidentity.NewMockIdentityAllocator(nil), 12345, StateReady)
 

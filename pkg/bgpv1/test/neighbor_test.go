@@ -13,6 +13,7 @@ import (
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/bgpv1/types"
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
+	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/testutils"
 
 	"github.com/stretchr/testify/require"
@@ -41,6 +42,9 @@ type peeringState struct {
 // Topology - (BGP CP) === (2 x gobgp instances)
 func Test_NeighborAddDel(t *testing.T) {
 	testutils.PrivilegedTest(t)
+
+	node.SetTestLocalNodeStore()
+	defer node.UnsetTestLocalNodeStore()
 
 	var steps = []struct {
 		description        string
@@ -187,6 +191,9 @@ func Test_NeighborAddDel(t *testing.T) {
 // Test_NeighborGracefulRestart tests graceful restart configuration knobs with single peer.
 func Test_NeighborGracefulRestart(t *testing.T) {
 	testutils.PrivilegedTest(t)
+
+	node.SetTestLocalNodeStore()
+	defer node.UnsetTestLocalNodeStore()
 
 	var steps = []struct {
 		description       string

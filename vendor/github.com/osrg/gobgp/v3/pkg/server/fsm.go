@@ -1074,15 +1074,7 @@ func (h *fsmHandler) recvMessageWithError() (*fsmMsg, error) {
 				h.fsm.lock.RLock()
 				rfMap := h.fsm.rfMap
 				h.fsm.lock.RUnlock()
-
-				// Allow updates from host loopback addresses if the BGP connection
-				// with the neighbour is both dialed and received on loopback
-				// addresses.
-				var allowLoopback bool
-				if localAddr, peerAddr := h.fsm.peerInfo.LocalAddress, h.fsm.peerInfo.Address; localAddr.To4() != nil && peerAddr.To4() != nil {
-					allowLoopback = localAddr.IsLoopback() && peerAddr.IsLoopback()
-				}
-				ok, err := bgp.ValidateUpdateMsg(body, rfMap, isEBGP, isConfed, allowLoopback)
+				ok, err := bgp.ValidateUpdateMsg(body, rfMap, isEBGP, isConfed)
 				if !ok {
 					handling = h.handlingError(m, err, useRevisedError)
 				}

@@ -72,11 +72,12 @@ clustermesh enable`` after ``cilium install``:
 
 .. parsed-literal::
 
-    cilium install |CHART_VERSION| --set routingMode=tunnel
+    cilium install |CHART_VERSION| --set tunnel=vxlan
     cilium clustermesh enable --service-type LoadBalancer --enable-external-workloads
 
-The ``routingMode=tunnel`` Helm value configures Cilium in tunneling mode.
-This is currently a requirement for external workload support.
+The ``tunnel=vxlan`` Helm value sets ``tunnel-protocol`` Cilium configuration
+option to ``vxlan``. This is currently a requirement for external workload
+support.
 
 This will add a deployment for ``clustermesh-apiserver`` into your
 cluster, as well as the related cluster resources, such as TLS

@@ -5,6 +5,8 @@ package testidentity
 
 import (
 	"context"
+	"net"
+	"net/netip"
 
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
@@ -26,10 +28,9 @@ type MockIdentityAllocator struct {
 	// map from scope -> next ID
 	nextIDs map[identity.NumericIdentity]int
 
+	ipToIdentity     map[string]int
 	idToIdentity     map[int]*identity.Identity
 	labelsToIdentity map[string]int // labels are sorted as a key
-
-	withheldIdentities map[identity.NumericIdentity]struct{}
 }
 
 // NewMockIdentityAllocator returns a new mock identity allocator to be used
@@ -48,9 +49,9 @@ func NewMockIdentityAllocator(c cache.IdentityCache) *MockIdentityAllocator {
 			identity.IdentityScopeRemoteNode: 0,
 		},
 
-		idToIdentity:       make(map[int]*identity.Identity),
-		labelsToIdentity:   make(map[string]int),
-		withheldIdentities: map[identity.NumericIdentity]struct{}{},
+		ipToIdentity:     make(map[string]int),
+		idToIdentity:     make(map[int]*identity.Identity),
+		labelsToIdentity: make(map[string]int),
 	}
 }
 
@@ -80,7 +81,6 @@ func (f *MockIdentityAllocator) AllocateIdentity(_ context.Context, lbls labels.
 
 	scope := identity.ScopeForLabels(lbls)
 	id := identity.IdentityUnknown
-
 	// if suggested id is available, use it
 	if scope != identity.IdentityScopeGlobal {
 		if _, ok := f.idToIdentity[int(oldNID)]; !ok && oldNID.Scope() == identity.ScopeForLabels(lbls) {
@@ -88,11 +88,9 @@ func (f *MockIdentityAllocator) AllocateIdentity(_ context.Context, lbls labels.
 		}
 	}
 	for id == identity.IdentityUnknown {
-		candidate := identity.NumericIdentity(f.nextIDs[scope]) | scope
-		_, allocated := f.idToIdentity[int(candidate)]
-		_, withheld := f.withheldIdentities[candidate]
-		if !allocated && !withheld {
-			id = candidate
+		_, ok := f.idToIdentity[f.nextIDs[scope]]
+		if !ok {
+			id = identity.NumericIdentity(f.nextIDs[scope]) | scope
 		}
 		f.nextIDs[scope]++
 	}
@@ -143,18 +141,6 @@ func (f *MockIdentityAllocator) ReleaseSlice(ctx context.Context, identities []*
 	return nil
 }
 
-func (f *MockIdentityAllocator) WithholdLocalIdentities(nids []identity.NumericIdentity) {
-	for _, nid := range nids {
-		f.withheldIdentities[nid] = struct{}{}
-	}
-}
-
-func (f *MockIdentityAllocator) UnwithholdLocalIdentities(nids []identity.NumericIdentity) {
-	for _, nid := range nids {
-		delete(f.withheldIdentities, nid)
-	}
-}
-
 // LookupIdentity looks up the labels in the mock identity store.
 func (f *MockIdentityAllocator) LookupIdentity(ctx context.Context, lbls labels.Labels) *identity.Identity {
 	if reservedIdentity := identity.LookupReservedIdentityByLabels(lbls); reservedIdentity != nil {
@@ -170,6 +156,29 @@ func (f *MockIdentityAllocator) LookupIdentityByID(ctx context.Context, id ident
 		return identity
 	}
 	return f.idToIdentity[int(id)]
+}
+
+// AllocateCIDRsForIPs allocates CIDR identities for the given IPs. It is meant
+// to generally mock the CIDR identity allocator logic.
+func (f *MockIdentityAllocator) AllocateCIDRsForIPs(IPs []net.IP, _ map[netip.Prefix]*identity.Identity) ([]*identity.Identity, error) {
+	result := make([]*identity.Identity, 0, len(IPs))
+	for _, ip := range IPs {
+		id, ok := f.ipToIdentity[ip.String()]
+		if !ok {
+			id = f.nextIDs[identity.IdentityScopeLocal]
+			f.ipToIdentity[ip.String()] = id
+			f.nextIDs[identity.IdentityScopeLocal]++
+		}
+		cidrLabels := append([]string{}, ip.String())
+		result = append(result, &identity.Identity{
+			ID:        identity.NumericIdentity(id),
+			CIDRLabel: labels.NewLabelsFromModel(cidrLabels),
+		})
+	}
+	return result, nil
+}
+
+func (f *MockIdentityAllocator) ReleaseCIDRIdentitiesByID(ctx context.Context, identities []identity.NumericIdentity) {
 }
 
 // GetIdentityCache returns the identity cache.

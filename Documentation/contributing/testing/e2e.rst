@@ -74,8 +74,7 @@ You can install Cilium with the following command:
         --set image.pullPolicy=Never \
         --set operator.image.override=localhost:5000/cilium/operator-generic:local \
         --set operator.image.pullPolicy=Never \
-        --set routingMode=tunnel \
-        --set tunnelProtocol=vxlan \
+        --set tunnel=vxlan \
         --nodes-without-cilium=kind-worker3
     ...
     ⌛ Waiting for Cilium to be installed and ready...
@@ -157,8 +156,7 @@ Finally, you can SSH into the VM to start a K8s cluster, install Cilium, and fin
     # ./cilium install --wait \
         --chart-directory=../cilium/install/kubernetes/cilium \
         --version=v1.13.2 \
-        --set routingMode=tunnel \
-        --set tunnelProtocol=vxlan \
+        --set tunnel=vxlan \
         --nodes-without-cilium=kind-worker3
     # ./cilium connectivity test
     ...

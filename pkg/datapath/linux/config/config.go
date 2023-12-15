@@ -30,9 +30,12 @@ import (
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/maglev"
 	"github.com/cilium/cilium/pkg/maps/authmap"
+	"github.com/cilium/cilium/pkg/maps/bwmap"
 	"github.com/cilium/cilium/pkg/maps/callsmap"
 	"github.com/cilium/cilium/pkg/maps/configmap"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
@@ -62,27 +65,32 @@ import (
 	wgtypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
+var (
+	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "datapath-linux-config")
+
+	tunnelProtocols = map[string]int{
+		option.TunnelVXLAN:  1,
+		option.TunnelGeneve: 2,
+	}
+)
+
 // HeaderfileWriter is a wrapper type which implements datapath.ConfigWriter.
 // It manages writing of configuration of datapath program headerfiles.
 type HeaderfileWriter struct {
-	log                logrus.FieldLogger
-	nodeAddressing     datapath.NodeAddressing
 	nodeExtraDefines   dpdef.Map
 	nodeExtraDefineFns []dpdef.Fn
 }
 
-func NewHeaderfileWriter(p WriterParams) (datapath.ConfigWriter, error) {
+func NewHeaderfileWriter(nodeExtraDefines []dpdef.Map, nodeExtraDefineFns []dpdef.Fn) (*HeaderfileWriter, error) {
 	merged := make(dpdef.Map)
-	for _, defines := range p.NodeExtraDefines {
+	for _, defines := range nodeExtraDefines {
 		if err := merged.Merge(defines); err != nil {
 			return nil, err
 		}
 	}
 	return &HeaderfileWriter{
-		nodeAddressing:     p.NodeAddressing,
 		nodeExtraDefines:   merged,
-		nodeExtraDefineFns: p.NodeExtraDefineFns,
-		log:                p.Log,
+		nodeExtraDefineFns: nodeExtraDefineFns,
 	}, nil
 }
 
@@ -106,12 +114,12 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	if option.Config.EnableIPv6 {
 		fmt.Fprintf(fw, " cilium.v6.external.str %s\n", node.GetIPv6().String())
 		fmt.Fprintf(fw, " cilium.v6.internal.str %s\n", node.GetIPv6Router().String())
-		fmt.Fprintf(fw, " cilium.v6.nodeport.str %v\n", h.nodeAddressing.IPv6().LoadBalancerNodeAddresses())
+		fmt.Fprintf(fw, " cilium.v6.nodeport.str %s\n", node.GetNodePortIPv6Addrs())
 		fmt.Fprintf(fw, "\n")
 	}
 	fmt.Fprintf(fw, " cilium.v4.external.str %s\n", node.GetIPv4().String())
 	fmt.Fprintf(fw, " cilium.v4.internal.str %s\n", node.GetInternalIPv4Router().String())
-	fmt.Fprintf(fw, " cilium.v4.nodeport.str %v\n", h.nodeAddressing.IPv4().LoadBalancerNodeAddresses())
+	fmt.Fprintf(fw, " cilium.v4.nodeport.str %s\n", node.GetNodePortIPv4Addrs())
 	fmt.Fprintf(fw, "\n")
 	if option.Config.EnableIPv6 {
 		fw.WriteString(dumpRaw(defaults.RestoreV6Addr, node.GetIPv6Router()))
@@ -144,6 +152,26 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	if option.Config.EnableIPv6 {
 		extraMacrosMap["HOST_IP"] = hostIP.String()
 		fw.WriteString(defineIPv6("HOST_IP", hostIP))
+	}
+
+	for t, id := range tunnelProtocols {
+		macroName := fmt.Sprintf("TUNNEL_PROTOCOL_%s", strings.ToUpper(t))
+		cDefinesMap[macroName] = fmt.Sprintf("%d", id)
+	}
+
+	encapProto := option.Config.TunnelProtocol
+	if !option.Config.TunnelingEnabled() &&
+		option.Config.EnableNodePort &&
+		option.Config.NodePortMode != option.NodePortModeSNAT &&
+		option.Config.LoadBalancerDSRDispatch == option.DSRDispatchGeneve {
+		encapProto = option.TunnelGeneve
+	}
+
+	cDefinesMap["TUNNEL_PROTOCOL"] = fmt.Sprintf("%d", tunnelProtocols[encapProto])
+	cDefinesMap["TUNNEL_PORT"] = fmt.Sprintf("%d", option.Config.TunnelPort)
+
+	if tunnelDev, err := netlink.LinkByName(fmt.Sprintf("cilium_%s", encapProto)); err == nil {
+		cDefinesMap["ENCAP_IFINDEX"] = fmt.Sprintf("%d", tunnelDev.Attrs().Index)
 	}
 
 	cDefinesMap["HOST_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameHost))
@@ -210,7 +238,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	cDefinesMap["CT_CLOSE_TIMEOUT"] = fmt.Sprintf("%d", int64(option.Config.CTMapEntriesTimeoutFIN.Seconds()))
 	cDefinesMap["CT_REPORT_INTERVAL"] = fmt.Sprintf("%d", int64(option.Config.MonitorAggregationInterval.Seconds()))
 	cDefinesMap["CT_REPORT_FLAGS"] = fmt.Sprintf("%#04x", int64(option.Config.MonitorAggregationFlags))
-	cDefinesMap["RATELIMIT_MAP"] = "cilium_ratelimit"
 	cDefinesMap["CT_TAIL_CALL_BUFFER4"] = "cilium_tail_call_buffer4"
 	cDefinesMap["CT_TAIL_CALL_BUFFER6"] = "cilium_tail_call_buffer6"
 	cDefinesMap["PER_CLUSTER_CT_TCP4"] = "cilium_per_cluster_ct_tcp4"
@@ -289,10 +316,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		if option.Config.EncryptNode {
 			cDefinesMap["ENABLE_NODE_ENCRYPTION"] = "1"
 		}
-	}
-
-	if option.Config.ServiceNoBackendResponse == option.ServiceNoBackendResponseReject {
-		cDefinesMap["SERVICE_NO_BACKEND_RESPONSE"] = "1"
 	}
 
 	if option.Config.EnableL2Announcements {
@@ -434,7 +457,8 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		cDefinesMap["DSR_ENCAP_NONE"] = fmt.Sprintf("%d", dsrEncapNone)
 		cDefinesMap["DSR_XLATE_FRONTEND"] = fmt.Sprintf("%d", dsrL4XlateFrontend)
 		cDefinesMap["DSR_XLATE_BACKEND"] = fmt.Sprintf("%d", dsrL4XlateBackend)
-		if option.Config.LoadBalancerUsesDSR() {
+		if option.Config.NodePortMode == option.NodePortModeDSR ||
+			option.Config.NodePortMode == option.NodePortModeHybrid {
 			cDefinesMap["ENABLE_DSR"] = "1"
 			if option.Config.EnablePMTUDiscovery {
 				cDefinesMap["ENABLE_DSR_ICMP_ERRORS"] = "1"
@@ -540,23 +564,34 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	cDefinesMap["HASH_INIT6_SEED"] = fmt.Sprintf("%d", maglev.SeedJhash1)
 
 	if option.Config.DirectRoutingDeviceRequired() {
+		directRoutingIface := option.Config.DirectRoutingDevice
+		directRoutingIfIndex, err := link.GetIfIndex(directRoutingIface)
+		if err != nil {
+			return err
+		}
+		cDefinesMap["DIRECT_ROUTING_DEV_IFINDEX"] = fmt.Sprintf("%d", directRoutingIfIndex)
 		if option.Config.EnableIPv4 {
-			ifindex, ip, ok := h.nodeAddressing.IPv4().DirectRouting()
+			ip, ok := node.GetNodePortIPv4AddrsWithDevices()[directRoutingIface]
 			if !ok {
-				return fmt.Errorf("IPv4 direct routing device not found")
+				log.WithFields(logrus.Fields{
+					"directRoutingIface": directRoutingIface,
+				}).Fatal("Direct routing device's IPv4 address not found")
 			}
+
 			ipv4 := byteorder.NetIPv4ToHost32(ip)
 			cDefinesMap["IPV4_DIRECT_ROUTING"] = fmt.Sprintf("%d", ipv4)
-			cDefinesMap["DIRECT_ROUTING_DEV_IFINDEX"] = fmt.Sprintf("%d", ifindex)
 		}
+
 		if option.Config.EnableIPv6 {
-			ifindex, ip, ok := h.nodeAddressing.IPv6().DirectRouting()
+			directRoutingIPv6, ok := node.GetNodePortIPv6AddrsWithDevices()[directRoutingIface]
 			if !ok {
-				return fmt.Errorf("IPv6 direct routing device not found")
+				log.WithFields(logrus.Fields{
+					"directRoutingIface": directRoutingIface,
+				}).Fatal("Direct routing device's IPv6 address not found")
 			}
-			extraMacrosMap["IPV6_DIRECT_ROUTING"] = ip.String()
-			fw.WriteString(FmtDefineAddress("IPV6_DIRECT_ROUTING", ip))
-			cDefinesMap["DIRECT_ROUTING_DEV_IFINDEX"] = fmt.Sprintf("%d", ifindex)
+
+			extraMacrosMap["IPV6_DIRECT_ROUTING"] = directRoutingIPv6.String()
+			fw.WriteString(FmtDefineAddress("IPV6_DIRECT_ROUTING", directRoutingIPv6))
 		}
 	} else {
 		var directRoutingIPv6 net.IP
@@ -568,6 +603,16 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			extraMacrosMap["IPV6_DIRECT_ROUTING"] = directRoutingIPv6.String()
 			fw.WriteString(FmtDefineAddress("IPV6_DIRECT_ROUTING", directRoutingIPv6))
 		}
+	}
+
+	if option.Config.ResetQueueMapping {
+		cDefinesMap["RESET_QUEUES"] = "1"
+	}
+
+	if option.Config.EnableBandwidthManager {
+		cDefinesMap["ENABLE_BANDWIDTH_MANAGER"] = "1"
+		cDefinesMap["THROTTLE_MAP"] = bwmap.MapName
+		cDefinesMap["THROTTLE_MAP_SIZE"] = fmt.Sprintf("%d", bwmap.MapSize)
 	}
 
 	if option.Config.EnableHostFirewall {
@@ -696,14 +741,14 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 
 	ciliumNetLink, err := netlink.LinkByName(defaults.SecondHostDevice)
 	if err != nil {
-		return fmt.Errorf("failed to look up link '%s': %w", defaults.SecondHostDevice, err)
+		return err
 	}
 	cDefinesMap["CILIUM_NET_MAC"] = fmt.Sprintf("{.addr=%s}", mac.CArrayString(ciliumNetLink.Attrs().HardwareAddr))
 	cDefinesMap["HOST_IFINDEX"] = fmt.Sprintf("%d", ciliumNetLink.Attrs().Index)
 
 	ciliumHostLink, err := netlink.LinkByName(defaults.HostDevice)
 	if err != nil {
-		return fmt.Errorf("failed to look up link '%s': %w", defaults.HostDevice, err)
+		return err
 	}
 	cDefinesMap["HOST_IFINDEX_MAC"] = fmt.Sprintf("{.addr=%s}", mac.CArrayString(ciliumHostLink.Attrs().HardwareAddr))
 	cDefinesMap["CILIUM_IFINDEX"] = fmt.Sprintf("%d", ciliumHostLink.Attrs().Index)
@@ -745,12 +790,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			cDefinesMap["ENCAP6_IFINDEX"] = fmt.Sprintf("%d", ipip6.Attrs().Index)
 		}
 	}
-
-	// Write Identity and ClusterID related macros.
-	cDefinesMap["CLUSTER_ID_MAX"] = fmt.Sprintf("%d", option.Config.MaxConnectedClusters)
-
-	fmt.Fprint(fw, declareConfig("identity_length", identity.GetClusterIDShift(), "Identity length in bits"))
-	fmt.Fprint(fw, assignConfig("identity_length", identity.GetClusterIDShift()))
 
 	// Since golang maps are unordered, we sort the keys in the map
 	// to get a consistent written format to the writer. This maintains
@@ -1051,9 +1090,7 @@ func (h *HeaderfileWriter) writeTemplateConfig(fw *bufio.Writer, e datapath.Endp
 		}
 		fmt.Fprintf(fw, "#define DIRECT_ROUTING_DEV_IFINDEX %d\n", directRoutingIfIndex)
 		if len(option.Config.GetDevices()) == 1 {
-			if e.IsHost() || !option.Config.EnforceLXCFibLookup() {
-				fmt.Fprintf(fw, "#define ENABLE_SKIP_FIB 1\n")
-			}
+			fmt.Fprintf(fw, "#define ENABLE_SKIP_FIB 1\n")
 		}
 	}
 

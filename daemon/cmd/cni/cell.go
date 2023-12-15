@@ -33,7 +33,6 @@ type Config struct {
 	CNILogFile            string
 	CNIExclusive          bool
 	CNIChainingTarget     string
-	CNIExternalRouting    bool
 }
 
 type CNIConfigManager interface {
@@ -45,10 +44,6 @@ type CNIConfigManager interface {
 	GetChainingMode() string
 
 	GetCustomNetConf() *cnitypes.NetConf
-
-	// ExternalRoutingEnabled returns true if the chained plugin implements
-	// routing for Endpoints (Pods).
-	ExternalRoutingEnabled() bool
 }
 
 var defaultConfig = Config{
@@ -63,7 +58,6 @@ func (cfg Config) Flags(flags *pflag.FlagSet) {
 	flags.String(option.CNILogFile, defaultConfig.CNILogFile, "Path where the CNI plugin should write logs")
 	flags.String(option.CNIChainingTarget, defaultConfig.CNIChainingTarget, "CNI network name into which to insert the Cilium chained configuration. Use '*' to select any network.")
 	flags.Bool(option.CNIExclusive, defaultConfig.CNIExclusive, "Whether to remove other CNI configurations")
-	flags.Bool(option.CNIExternalRouting, defaultConfig.CNIExternalRouting, "Whether the chained CNI plugin handles routing on the node")
 }
 
 func enableConfigManager(lc hive.Lifecycle, log logrus.FieldLogger, cfg Config, dcfg *option.DaemonConfig /*only for .Debug*/) CNIConfigManager {
@@ -75,7 +69,6 @@ func enableConfigManager(lc hive.Lifecycle, log logrus.FieldLogger, cfg Config, 
 func newConfigManager(log logrus.FieldLogger, cfg Config, debug bool) *cniConfigManager {
 	if cfg.CNIChainingMode == "aws-cni" && cfg.CNIChainingTarget == "" {
 		cfg.CNIChainingTarget = "aws-cni"
-		cfg.CNIExternalRouting = true
 	}
 
 	if cfg.CNIChainingTarget != "" && cfg.CNIChainingMode == "" {

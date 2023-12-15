@@ -10,6 +10,8 @@ import (
 
 	"github.com/blang/semver/v4"
 	check "github.com/cilium/checkmate"
+
+	"github.com/cilium/cilium/pkg/option"
 )
 
 func Test(t *testing.T) {
@@ -84,15 +86,16 @@ func (ipt *mockIptables) checkExpectations() error {
 	return nil
 }
 
-var mockManager = &Manager{
+var mockManager = &IptablesManager{
 	haveIp6tables:        false,
 	haveSocketMatch:      true,
 	haveBPFSocketAssign:  false,
 	ipEarlyDemuxDisabled: false,
-	sharedCfg: SharedConfig{
-		EnableIPv4: true,
-		EnableIPv6: true,
-	},
+}
+
+func init() {
+	option.Config.EnableIPv4 = true
+	option.Config.EnableIPv6 = true
 }
 
 func (s *iptablesTestSuite) TestRenameCustomChain(c *check.C) {

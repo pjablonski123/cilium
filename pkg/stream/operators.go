@@ -216,13 +216,7 @@ func Debounce[T any](src Observable[T], duration time.Duration) Observable[T] {
 						complete(err)
 						return
 
-					case item, ok := <-items:
-						if !ok {
-							items = nil
-							latest = nil
-							continue
-						}
-
+					case item := <-items:
 						if timerElapsed {
 							next(item)
 							timerElapsed = false

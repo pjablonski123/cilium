@@ -118,10 +118,21 @@ func WithProtocol(protocolVersion HTTPVersionType) ClusterMutator {
 	}
 }
 
+// NewHTTPClusterWithDefaults same as NewHTTPCluster but has default mutation functions applied.
+func NewHTTPClusterWithDefaults(name string, mutationFunc ...ClusterMutator) (ciliumv2.XDSResource, error) {
+	fns := append(mutationFunc,
+		WithConnectionTimeout(5),
+		WithIdleTimeout(60),
+		WithClusterLbPolicy(int32(envoy_config_cluster_v3.Cluster_ROUND_ROBIN)),
+		WithOutlierDetection(true),
+	)
+	return NewHTTPCluster(name, fns...)
+}
+
 // NewHTTPCluster creates a new Envoy cluster.
-func NewHTTPCluster(clusterName string, clusterServiceName string, mutationFunc ...ClusterMutator) (ciliumv2.XDSResource, error) {
+func NewHTTPCluster(name string, mutationFunc ...ClusterMutator) (ciliumv2.XDSResource, error) {
 	cluster := &envoy_config_cluster_v3.Cluster{
-		Name: clusterName,
+		Name: name,
 		TypedExtensionProtocolOptions: map[string]*anypb.Any{
 			httpProtocolOptionsType: toAny(&envoy_upstreams_http_v3.HttpProtocolOptions{
 				UpstreamProtocolOptions: &envoy_upstreams_http_v3.HttpProtocolOptions_UseDownstreamProtocolConfig{
@@ -133,9 +144,6 @@ func NewHTTPCluster(clusterName string, clusterServiceName string, mutationFunc 
 		},
 		ClusterDiscoveryType: &envoy_config_cluster_v3.Cluster_Type{
 			Type: envoy_config_cluster_v3.Cluster_EDS,
-		},
-		EdsClusterConfig: &envoy_config_cluster_v3.Cluster_EdsClusterConfig{
-			ServiceName: clusterServiceName,
 		},
 	}
 
@@ -159,24 +167,21 @@ func NewHTTPCluster(clusterName string, clusterServiceName string, mutationFunc 
 
 // NewTCPClusterWithDefaults same as NewTCPCluster but has default mutation functions applied.
 // currently this is only used for TLSRoutes to create a passthrough proxy
-func NewTCPClusterWithDefaults(clusterName string, clusterServiceName string, mutationFunc ...ClusterMutator) (ciliumv2.XDSResource, error) {
+func NewTCPClusterWithDefaults(name string, mutationFunc ...ClusterMutator) (ciliumv2.XDSResource, error) {
 	fns := append(mutationFunc,
 		WithConnectionTimeout(5),
 		WithClusterLbPolicy(int32(envoy_config_cluster_v3.Cluster_ROUND_ROBIN)),
 		WithOutlierDetection(true),
 	)
-	return NewTCPCluster(clusterName, clusterServiceName, fns...)
+	return NewTCPCluster(name, fns...)
 }
 
 // NewTCPCluster creates a new Envoy cluster.
-func NewTCPCluster(clusterName string, clusterServiceName string, mutationFunc ...ClusterMutator) (ciliumv2.XDSResource, error) {
+func NewTCPCluster(name string, mutationFunc ...ClusterMutator) (ciliumv2.XDSResource, error) {
 	cluster := &envoy_config_cluster_v3.Cluster{
-		Name: clusterName,
+		Name: name,
 		ClusterDiscoveryType: &envoy_config_cluster_v3.Cluster_Type{
 			Type: envoy_config_cluster_v3.Cluster_EDS,
-		},
-		EdsClusterConfig: &envoy_config_cluster_v3.Cluster_EdsClusterConfig{
-			ServiceName: clusterServiceName,
 		},
 	}
 

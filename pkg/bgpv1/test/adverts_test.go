@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/cilium/pkg/cidr"
 	ipam_option "github.com/cilium/cilium/pkg/ipam/option"
 	ipam_types "github.com/cilium/cilium/pkg/ipam/types"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
+	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/testutils"
 
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
@@ -35,6 +37,9 @@ var (
 // Test_PodCIDRAdvert validates pod IPv4/v6 subnet is advertised, withdrawn and modified on node addresses change.
 func Test_PodCIDRAdvert(t *testing.T) {
 	testutils.PrivilegedTest(t)
+
+	node.SetTestLocalNodeStore()
+	defer node.UnsetTestLocalNodeStore()
 
 	// steps define order in which test is run. Note, this is different from table tests, in which each unit is
 	// independent. In this case, tests are run sequentially and there is dependency on previous test step.
@@ -155,20 +160,17 @@ func Test_PodCIDRAdvert(t *testing.T) {
 	err = gobgpPeers[0].waitForSessionState(testCtx, []string{"ESTABLISHED"})
 	require.NoError(t, err)
 
-	tracker := fixture.fakeClientSet.CiliumFakeClientset.Tracker()
-	obj, err := tracker.Get(v2.SchemeGroupVersion.WithResource("ciliumnodes"), "", baseNode.name)
-	require.NoError(t, err)
-	node, ok := obj.(*v2.CiliumNode)
-	require.True(t, ok)
-
 	for _, step := range steps {
 		t.Run(step.description, func(t *testing.T) {
-			// update CiliumNode with new PodCIDR
+			// update node in LocalNodeStore with new PodCIDR
 			// this will trigger a reconciliation as the controller is observing
-			// the local CiliumNode
-			node.Spec.IPAM.PodCIDRs = step.podCIDRs
-			err = tracker.Update(v2.SchemeGroupVersion.WithResource("ciliumnodes"), node, "")
-			require.NoError(t, err)
+			// the LocalNodeStore
+			fixture.nodeStore.Update(func(n *node.LocalNode) {
+				n.IPv4SecondaryAllocCIDRs = n.IPv4SecondaryAllocCIDRs[0:0]
+				for _, podCIDR := range step.podCIDRs {
+					n.IPv4SecondaryAllocCIDRs = append(n.IPv4SecondaryAllocCIDRs, cidr.MustParseCIDR(podCIDR))
+				}
+			})
 
 			// validate expected result
 			receivedEvents, err := gobgpPeers[0].getRouteEvents(testCtx, len(step.expectedRouteEvents))
@@ -184,6 +186,9 @@ func Test_PodCIDRAdvert(t *testing.T) {
 func Test_PodIPPoolAdvert(t *testing.T) {
 	testutils.PrivilegedTest(t)
 
+	node.SetTestLocalNodeStore()
+	defer node.UnsetTestLocalNodeStore()
+
 	// Steps define the order that tests are run. Note, this is different from table tests,
 	// in which each unit is independent. In this case, tests are run sequentially and there
 	// is dependency on previous test step.
@@ -191,7 +196,7 @@ func Test_PodIPPoolAdvert(t *testing.T) {
 		name         string
 		ipPools      []ipam_types.IPAMPoolAllocation
 		poolLabels   map[string]string
-		nodePools    []ipam_types.IPAMPoolAllocation
+		nodePools    map[string][]string
 		poolSelector *slim_metav1.LabelSelector
 		expected     []routeEvent
 	}{
@@ -204,11 +209,8 @@ func Test_PodIPPoolAdvert(t *testing.T) {
 				},
 			},
 			poolLabels: nil,
-			nodePools: []ipam_types.IPAMPoolAllocation{
-				{
-					Pool:  "pool1",
-					CIDRs: []ipam_types.IPAMPodCIDR{"10.1.1.0/24", "10.1.2.0/24"},
-				},
+			nodePools: map[string][]string{
+				"pool1": {"10.1.1.0/24", "10.1.2.0/24"},
 			},
 			poolSelector: &slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{"no": "pool-labels"},
@@ -239,11 +241,8 @@ func Test_PodIPPoolAdvert(t *testing.T) {
 				},
 			},
 			poolLabels: map[string]string{"label": "matched"},
-			nodePools: []ipam_types.IPAMPoolAllocation{
-				{
-					Pool:  "pool1",
-					CIDRs: []ipam_types.IPAMPodCIDR{"11.1.1.0/24"},
-				},
+			nodePools: map[string][]string{
+				"pool1": {"11.1.1.0/24"},
 			},
 			poolSelector: &slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{"label": "matched"},
@@ -266,11 +265,8 @@ func Test_PodIPPoolAdvert(t *testing.T) {
 				},
 			},
 			poolLabels: map[string]string{"label": "matched"},
-			nodePools: []ipam_types.IPAMPoolAllocation{
-				{
-					Pool:  "pool1",
-					CIDRs: []ipam_types.IPAMPodCIDR{"11.2.1.0/24"},
-				},
+			nodePools: map[string][]string{
+				"pool1": {"11.2.1.0/24"},
 			},
 			poolSelector: &slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{"label": "matched"},
@@ -299,11 +295,8 @@ func Test_PodIPPoolAdvert(t *testing.T) {
 				},
 			},
 			poolLabels: map[string]string{"label": "matched"},
-			nodePools: []ipam_types.IPAMPoolAllocation{
-				{
-					Pool:  "pool1",
-					CIDRs: []ipam_types.IPAMPodCIDR{"2001:0:0:1234:5678::/96"},
-				},
+			nodePools: map[string][]string{
+				"pool1": {"2001:0:0:1234:5678::/96"},
 			},
 			poolSelector: &slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{"label": "matched"},
@@ -332,11 +325,8 @@ func Test_PodIPPoolAdvert(t *testing.T) {
 				},
 			},
 			poolLabels: map[string]string{"label": "matched"},
-			nodePools: []ipam_types.IPAMPoolAllocation{
-				{
-					Pool:  "pool1",
-					CIDRs: []ipam_types.IPAMPodCIDR{"2002:0:0:1234:5678::/96"},
-				},
+			nodePools: map[string][]string{
+				"pool1": {"2002:0:0:1234:5678::/96"},
 			},
 			poolSelector: &slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{"label": "matched"},
@@ -406,15 +396,22 @@ func Test_PodIPPoolAdvert(t *testing.T) {
 			}
 			require.NoError(t, err)
 
-			// get the local CiliumNode
-			obj, err := tracker.Get(v2.SchemeGroupVersion.WithResource("ciliumnodes"), "", baseNode.name)
-			require.NoError(t, err)
-			node, ok := obj.(*v2.CiliumNode)
-			require.True(t, ok)
+			// Setup the cilium node object with test case node cidrs.
+			allocs := make(map[string][]string)
+			for pool, cidrs := range step.nodePools {
+				allocs[pool] = cidrs
+			}
+			nodeObj := newCiliumNode(&ciliumNodeConfig{
+				name:   "test",
+				allocs: allocs,
+			})
 
-			// update the local CiliumNode with the test case node ipam pools
-			node.Spec.IPAM.Pools.Allocated = step.nodePools
-			err = tracker.Update(v2.SchemeGroupVersion.WithResource("ciliumnodes"), node, "")
+			// Add or update the cilium node object in the object tracker.
+			if i == 0 {
+				err = tracker.Add(nodeObj)
+			} else {
+				err = tracker.Update(v2.SchemeGroupVersion.WithResource("ciliumnodes"), nodeObj, "")
+			}
 			require.NoError(t, err)
 
 			// Setup the bgp policy object with the test case pool selector.
@@ -437,6 +434,9 @@ func Test_PodIPPoolAdvert(t *testing.T) {
 // Test_LBEgressAdvertisement validates Service v4 and v6 IPs is advertised, withdrawn and modified on changing policy.
 func Test_LBEgressAdvertisement(t *testing.T) {
 	testutils.PrivilegedTest(t)
+
+	node.SetTestLocalNodeStore()
+	defer node.UnsetTestLocalNodeStore()
 
 	var steps = []struct {
 		description         string
@@ -632,6 +632,9 @@ func Test_LBEgressAdvertisement(t *testing.T) {
 func Test_AdvertisedPathAttributes(t *testing.T) {
 	testutils.PrivilegedTest(t)
 
+	node.SetTestLocalNodeStore()
+	defer node.UnsetTestLocalNodeStore()
+
 	var steps = []struct {
 		description         string
 		op                  string // add or update
@@ -736,11 +739,6 @@ func Test_AdvertisedPathAttributes(t *testing.T) {
 
 	slimTracker := fixture.fakeClientSet.SlimFakeClientset.Tracker()
 	ciliumTracker := fixture.fakeClientSet.CiliumFakeClientset.Tracker()
-	obj, err := ciliumTracker.Get(v2.SchemeGroupVersion.WithResource("ciliumnodes"), "", baseNode.name)
-	require.NoError(t, err)
-
-	node, ok := obj.(*v2.CiliumNode)
-	require.True(t, ok)
 
 	for _, step := range steps {
 		t.Run(step.description, func(t *testing.T) {
@@ -751,10 +749,13 @@ func Test_AdvertisedPathAttributes(t *testing.T) {
 			require.NoError(t, err)
 
 			if step.podCIDRs != nil {
-				// update CiliumNode with new PodCIDR
-				node.Spec.IPAM.PodCIDRs = step.podCIDRs
-				err = ciliumTracker.Update(v2.SchemeGroupVersion.WithResource("ciliumnodes"), node, "")
-				require.NoError(t, err)
+				// update node in LocalNodeStore with new PodCIDR
+				fixture.nodeStore.Update(func(n *node.LocalNode) {
+					n.IPv4SecondaryAllocCIDRs = n.IPv4SecondaryAllocCIDRs[0:0]
+					for _, podCIDR := range step.podCIDRs {
+						n.IPv4SecondaryAllocCIDRs = append(n.IPv4SecondaryAllocCIDRs, cidr.MustParseCIDR(podCIDR))
+					}
+				})
 			}
 
 			if step.lbPool != nil {

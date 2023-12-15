@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/go-openapi/loads"
-	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/swag"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
@@ -41,44 +40,7 @@ var Cell = cell.Module(
 	"cilium health API server",
 
 	cell.Provide(newForCell),
-	APICell,
 )
-
-// APICell provides the restapi.CiliumHealthAPIAPI type, populated
-// with the request handlers. This cell is an alternative to 'Cell' when only
-// the API type is required and not the full server implementation.
-var APICell = cell.Provide(newAPI)
-
-type apiParams struct {
-	cell.In
-
-	Spec *Spec
-
-	Middleware middleware.Builder `name:"cilium-health-api-middleware" optional:"true"`
-
-	GetHealthzHandler                 restapi.GetHealthzHandler
-	ConnectivityGetStatusHandler      connectivity.GetStatusHandler
-	ConnectivityPutStatusProbeHandler connectivity.PutStatusProbeHandler
-}
-
-func newAPI(p apiParams) *restapi.CiliumHealthAPIAPI {
-	api := restapi.NewCiliumHealthAPIAPI(p.Spec.Document)
-
-	// Construct the API from the provided handlers
-
-	api.GetHealthzHandler = p.GetHealthzHandler
-	api.ConnectivityGetStatusHandler = p.ConnectivityGetStatusHandler
-	api.ConnectivityPutStatusProbeHandler = p.ConnectivityPutStatusProbeHandler
-
-	// Inject custom middleware if provided by Hive
-	if p.Middleware != nil {
-		api.Middleware = func(builder middleware.Builder) http.Handler {
-			return p.Middleware(api.Context().APIHandler(builder))
-		}
-	}
-
-	return api
-}
 
 type serverParams struct {
 	cell.In
@@ -87,14 +49,26 @@ type serverParams struct {
 	Shutdowner hive.Shutdowner
 	Logger     logrus.FieldLogger
 	Spec       *Spec
-	API        *restapi.CiliumHealthAPIAPI
+
+	GetHealthzHandler                 restapi.GetHealthzHandler
+	ConnectivityGetStatusHandler      connectivity.GetStatusHandler
+	ConnectivityPutStatusProbeHandler connectivity.PutStatusProbeHandler
 }
 
 func newForCell(p serverParams) (*Server, error) {
-	s := NewServer(p.API)
+	api := restapi.NewCiliumHealthAPIAPI(p.Spec.Document)
+
+	// Construct the API from the provided handlers
+
+	api.GetHealthzHandler = p.GetHealthzHandler
+	api.ConnectivityGetStatusHandler = p.ConnectivityGetStatusHandler
+	api.ConnectivityPutStatusProbeHandler = p.ConnectivityPutStatusProbeHandler
+
+	s := NewServer(api)
 	s.shutdowner = p.Shutdowner
 	s.logger = p.Logger
 	p.Lifecycle.Append(s)
+
 	return s, nil
 }
 

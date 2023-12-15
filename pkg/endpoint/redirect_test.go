@@ -7,6 +7,7 @@ import (
 	"context"
 
 	check "github.com/cilium/checkmate"
+	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/completion"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
@@ -25,7 +26,6 @@ import (
 	"github.com/cilium/cilium/pkg/proxy/endpoint"
 	"github.com/cilium/cilium/pkg/revert"
 	"github.com/cilium/cilium/pkg/testutils"
-	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 	testipcache "github.com/cilium/cilium/pkg/testutils/ipcache"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
@@ -136,16 +136,14 @@ func (s *RedirectSuite) TestAddVisibilityRedirects(c *check.C) {
 
 	idAllocatorOwner := &DummyIdentityAllocatorOwner{}
 
-	mgr := cache.NewCachingIdentityAllocator(idAllocatorOwner)
+	mgr := NewCachingIdentityAllocator(idAllocatorOwner)
 	<-mgr.InitIdentityAllocator(nil)
 	defer mgr.Close()
 
 	do := &DummyOwner{
 		repo: policy.NewPolicyRepository(nil, nil, nil, nil),
 	}
-	do.repo.GetSelectorCache().SetLocalIdentityNotifier(testidentity.NewDummyIdentityNotifier())
 	identitymanager.Subscribe(do.repo)
-	defer identitymanager.RemoveAll()
 
 	lblQA := labels.ParseLabel("QA")
 	lblBar := labels.ParseLabel("bar")
@@ -363,7 +361,7 @@ func (s *RedirectSuite) TestRedirectWithDeny(c *check.C) {
 
 	idAllocatorOwner := &DummyIdentityAllocatorOwner{}
 
-	mgr := cache.NewCachingIdentityAllocator(idAllocatorOwner)
+	mgr := NewCachingIdentityAllocator(idAllocatorOwner)
 	<-mgr.InitIdentityAllocator(nil)
 	defer mgr.Close()
 
@@ -375,9 +373,7 @@ func (s *RedirectSuite) TestRedirectWithDeny(c *check.C) {
 	do := &DummyOwner{
 		repo: policy.NewPolicyRepository(mgr, identityCache, nil, nil),
 	}
-	do.repo.GetSelectorCache().SetLocalIdentityNotifier(testidentity.NewDummyIdentityNotifier())
 	identitymanager.Subscribe(do.repo)
-	defer identitymanager.RemoveAll()
 
 	httpPort := uint16(19001)
 	dnsPort := uint16(19002)
@@ -421,13 +417,17 @@ func (s *RedirectSuite) TestRedirectWithDeny(c *check.C) {
 		},
 	})
 	if !ep.desiredPolicy.GetPolicyMap().Equals(expected) {
-		c.Fatal("desired policy map does not equal expected map:\n",
-			ep.desiredPolicy.GetPolicyMap().Diff(c.T, expected))
+		c.Fatal("desired policy map does not equal expected map")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmp := completion.NewWaitGroup(ctx)
+
+	logger := ep.getLogger().Logger
+	oldLogLevel := logger.GetLevel()
+	logger.SetLevel(logrus.DebugLevel)
+	defer logger.SetLevel(oldLogLevel)
 
 	desiredRedirects, err, finalizeFunc, revertFunc := ep.addNewRedirects(cmp)
 	c.Assert(err, check.IsNil)
@@ -461,8 +461,7 @@ func (s *RedirectSuite) TestRedirectWithDeny(c *check.C) {
 	// Redirect for the HTTP port should have been added, but there should be a deny for Foo on
 	// that port, as it is shadowed by the deny rule
 	if !ep.desiredPolicy.GetPolicyMap().Equals(expected2) {
-		c.Fatal("desired policy map does not equal expected map:\n",
-			ep.desiredPolicy.GetPolicyMap().Diff(c.T, expected2))
+		c.Fatal("desired policy map does not equal expected map")
 	}
 
 	// Keep only desired redirects
@@ -477,8 +476,7 @@ func (s *RedirectSuite) TestRedirectWithDeny(c *check.C) {
 
 	// Check that the state before addRedirects is restored
 	if !ep.desiredPolicy.GetPolicyMap().Equals(expected) {
-		c.Fatal("desired policy map does not equal expected map:\n",
-			ep.desiredPolicy.GetPolicyMap().Diff(c.T, expected))
+		c.Fatal("desired policy map does not equal expected map")
 	}
 	c.Assert(len(ep.realizedRedirects), check.Equals, 0)
 	c.Assert(ep.desiredPolicy.GetPolicyMap().Len(), check.Equals, 2)

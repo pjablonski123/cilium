@@ -3,8 +3,6 @@
 
 package types
 
-import "github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
-
 // Datapath is the interface to abstract all datapath interactions. The
 // abstraction allows to implement the datapath requirements with multiple
 // implementations
@@ -34,6 +32,4 @@ type Datapath interface {
 	LBMap() LBMap
 
 	Procfs() string
-
-	BandwidthManager() bandwidth.Manager
 }

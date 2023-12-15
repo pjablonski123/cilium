@@ -221,15 +221,13 @@ static __always_inline int nodeport_snat_fwd_ipv6(struct __ctx_buff *ctx,
 
 apply_snat:
 	ret = snat_v6_nat(ctx, &tuple, l4_off, &target, trace, ext_err);
-	if (IS_ERR(ret))
-		goto out;
-
-	/* See the equivalent v4 path for comment */
-	ctx_snat_done_set(ctx);
 
 out:
 	if (ret == NAT_PUNT_TO_STACK)
 		ret = CTX_ACT_OK;
+
+	/* See the equivalent v4 path for comment */
+	ctx_snat_done_set(ctx);
 
 	return ret;
 }
@@ -941,7 +939,7 @@ nodeport_rev_dnat_ingress_ipv6(struct __ctx_buff *ctx, struct trace_ctx *trace,
 #endif
 	ret = lb6_extract_tuple(ctx, ip6, ETH_HLEN, &l4_off, &tuple);
 	if (ret < 0) {
-		if (ret == DROP_UNSUPP_SERVICE_PROTO || ret == DROP_UNKNOWN_L4)
+		if (ret == DROP_NO_SERVICE || ret == DROP_UNKNOWN_L4)
 			goto out;
 		return ret;
 	}
@@ -1037,7 +1035,21 @@ int tail_nodeport_rev_dnat_ingress_ipv6(struct __ctx_buff *ctx)
 	};
 	__s8 ext_err = 0;
 	int ret = 0;
+#if defined(ENABLE_HOST_FIREWALL) && defined(IS_BPF_HOST)
+	/* We only enforce the host policies if nodeport.h is included from
+	 * bpf_host.
+	 */
+	__u32 src_id = 0;
 
+	ret = ipv6_host_policy_ingress(ctx, &src_id, &trace, &ext_err);
+	if (IS_ERR(ret))
+		return send_drop_notify_error_ext(ctx, src_id, ret, ext_err,
+						  CTX_ACT_DROP, METRIC_INGRESS);
+	/* We don't want to enforce host policies a second time if we jump back to
+	 * bpf_host's handle_ipv6.
+	 */
+	ctx_skip_host_fw_set(ctx);
+#endif
 	ret = nodeport_rev_dnat_ingress_ipv6(ctx, &trace, &ext_err);
 	if (IS_ERR(ret))
 		goto drop;
@@ -1074,7 +1086,6 @@ int tail_nodeport_nat_ingress_ipv6(struct __ctx_buff *ctx)
 		.reason = TRACE_REASON_CT_REPLY,
 		.monitor = TRACE_PAYLOAD_LEN,
 	};
-	__u32 src_id = 0;
 	__s8 ext_err = 0;
 	int ret;
 
@@ -1102,15 +1113,6 @@ int tail_nodeport_nat_ingress_ipv6(struct __ctx_buff *ctx)
 	ctx_snat_done_set(ctx);
 
 #if !defined(ENABLE_DSR) || (defined(ENABLE_DSR) && defined(ENABLE_DSR_HYBRID))
-
-# if defined(ENABLE_HOST_FIREWALL) && defined(IS_BPF_HOST)
-	ret = ipv6_host_policy_ingress(ctx, &src_id, &trace, &ext_err);
-	if (IS_ERR(ret))
-		goto drop_err;
-
-	ctx_skip_host_fw_set(ctx);
-# endif
-
 	ret = invoke_traced_tailcall_if(__not(is_defined(HAVE_LARGE_INSN_LIMIT)),
 					CILIUM_CALL_IPV6_NODEPORT_REVNAT,
 					nodeport_rev_dnat_ingress_ipv6,
@@ -1131,8 +1133,8 @@ recircle:
 	ep_tail_call(ctx, CILIUM_CALL_IPV6_FROM_NETDEV);
 	ret = DROP_MISSED_TAIL_CALL;
 
-drop_err:
-	return send_drop_notify_error_ext(ctx, src_id, ret, ext_err, CTX_ACT_DROP,
+ drop_err:
+	return send_drop_notify_error_ext(ctx, 0, ret, ext_err, CTX_ACT_DROP,
 					  METRIC_INGRESS);
 }
 
@@ -1270,8 +1272,7 @@ drop_err:
 static __always_inline int nodeport_lb6(struct __ctx_buff *ctx,
 					struct ipv6hdr *ip6,
 					__u32 src_sec_identity,
-					__s8 *ext_err,
-					bool __maybe_unused *dsr)
+					__s8 *ext_err)
 {
 	bool is_svc_proto __maybe_unused = true;
 	int ret, l3_off = ETH_HLEN, l4_off;
@@ -1286,7 +1287,7 @@ static __always_inline int nodeport_lb6(struct __ctx_buff *ctx,
 
 	ret = lb6_extract_tuple(ctx, ip6, ETH_HLEN, &l4_off, &tuple);
 	if (IS_ERR(ret)) {
-		if (ret == DROP_UNSUPP_SERVICE_PROTO) {
+		if (ret == DROP_NO_SERVICE) {
 			is_svc_proto = false;
 			goto skip_service_lookup;
 		}
@@ -1321,14 +1322,6 @@ static __always_inline int nodeport_lb6(struct __ctx_buff *ctx,
 		ret = lb6_local(get_ct_map6(&tuple), ctx, l3_off, l4_off,
 				&key, &tuple, svc, &ct_state_new,
 				skip_l3_xlate, ext_err);
-
-#ifdef SERVICE_NO_BACKEND_RESPONSE
-		if (ret == DROP_NO_SERVICE) {
-			ep_tail_call(ctx, CILIUM_CALL_IPV6_NO_SERVICE);
-			return DROP_MISSED_TAIL_CALL;
-		}
-#endif
-
 		if (IS_ERR(ret))
 			return ret;
 
@@ -1356,13 +1349,15 @@ skip_service_lookup:
 #if (defined(IS_BPF_OVERLAY) && DSR_ENCAP_MODE == DSR_ENCAP_GENEVE) || \
 	(!defined(IS_BPF_OVERLAY) && DSR_ENCAP_MODE != DSR_ENCAP_GENEVE)
 		if (is_svc_proto && nodeport_uses_dsr6(&tuple)) {
+			bool dsr = false;
+
 			ret = nodeport_extract_dsr_v6(ctx, ip6, &tuple, l4_off,
 						      &key.address,
-						      &key.dport, dsr);
+						      &key.dport, &dsr);
 			if (IS_ERR(ret))
 				return ret;
 
-			if (*dsr)
+			if (dsr)
 				return nodeport_dsr_ingress_ipv6(ctx, &tuple, l4_off,
 								 &key.address, key.dport,
 								 ext_err);
@@ -1477,7 +1472,7 @@ nodeport_rev_dnat_fwd_ipv6(struct __ctx_buff *ctx, struct trace_ctx *trace,
 
 	ret = lb6_extract_tuple(ctx, ip6, ETH_HLEN, &l4_off, &tuple);
 	if (ret < 0) {
-		if (ret == DROP_UNSUPP_SERVICE_PROTO || ret == DROP_UNKNOWN_L4)
+		if (ret == DROP_NO_SERVICE || ret == DROP_UNKNOWN_L4)
 			return CTX_ACT_OK;
 		return ret;
 	}
@@ -1682,15 +1677,17 @@ static __always_inline int nodeport_snat_fwd_ipv4(struct __ctx_buff *ctx,
 	    nodeport_has_nat_conflict_ipv4(ip4, &target))
 		goto apply_snat;
 
-	ret = snat_v4_needs_masquerade(ctx, &tuple, ip4, l4_off, &target);
+	ret = snat_v4_needs_masquerade(ctx, &tuple, l4_off, &target);
 	if (IS_ERR(ret))
 		goto out;
 
 apply_snat:
-	ret = snat_v4_nat(ctx, &tuple, ip4, l4_off, ipv4_has_l4_header(ip4),
+	ret = snat_v4_nat(ctx, &tuple, l4_off, ipv4_has_l4_header(ip4),
 			  &target, trace, ext_err);
-	if (IS_ERR(ret))
-		goto out;
+
+out:
+	if (ret == NAT_PUNT_TO_STACK)
+		ret = CTX_ACT_OK;
 
 	/* If multiple netdevs process an outgoing packet, then this packets will
 	 * be handled multiple times by the "to-netdev" section. This can lead
@@ -1698,14 +1695,10 @@ apply_snat:
 	 */
 	ctx_snat_done_set(ctx);
 
-#if defined(ENABLE_EGRESS_GATEWAY_COMMON) && defined(IS_BPF_HOST)
+#if defined(ENABLE_EGRESS_GATEWAY_COMMON)
 	if (target.egress_gateway)
 		return egress_gw_fib_lookup_and_redirect(ctx, target.addr, tuple.daddr, ext_err);
 #endif
-
-out:
-	if (ret == NAT_PUNT_TO_STACK)
-		ret = CTX_ACT_OK;
 
 	return ret;
 }
@@ -2284,8 +2277,8 @@ drop_err:
 
 static __always_inline int
 nodeport_dsr_ingress_ipv4(struct __ctx_buff *ctx, struct ipv4_ct_tuple *tuple,
-			  struct iphdr *ip4, bool has_l4_header, int l4_off,
-			  __be32 addr, __be16 port, __s8 *ext_err)
+			  bool has_l4_header, int l4_off, __be32 addr, __be16 port,
+			  __s8 *ext_err)
 {
 	struct ct_state ct_state_new = {};
 	struct ct_state ct_state = {};
@@ -2295,8 +2288,8 @@ nodeport_dsr_ingress_ipv4(struct __ctx_buff *ctx, struct ipv4_ct_tuple *tuple,
 	/* lookup with SCOPE_FORWARD: */
 	__ipv4_ct_tuple_reverse(tuple);
 
-	ret = ct_lazy_lookup4(get_ct_map4(tuple), tuple, ctx, ipv4_is_fragment(ip4),
-			      l4_off, has_l4_header, CT_EGRESS, SCOPE_FORWARD,
+	ret = ct_lazy_lookup4(get_ct_map4(tuple), tuple, ctx, l4_off,
+			      has_l4_header, CT_EGRESS, SCOPE_FORWARD,
 			      CT_ENTRY_DSR, &ct_state, &monitor);
 	switch (ret) {
 	case CT_NEW:
@@ -2408,16 +2401,16 @@ nodeport_rev_dnat_ingress_ipv4(struct __ctx_buff *ctx, struct trace_ctx *trace,
 	ret = lb4_extract_tuple(ctx, ip4, ETH_HLEN, &l4_off, &tuple);
 	if (ret < 0) {
 		/* If it's not a SVC protocol, we don't need to check for RevDNAT: */
-		if (ret == DROP_UNSUPP_SERVICE_PROTO || ret == DROP_UNKNOWN_L4)
+		if (ret == DROP_NO_SERVICE || ret == DROP_UNKNOWN_L4)
 			check_revdnat = false;
 		else
 			return ret;
 	}
 
-#if defined(ENABLE_EGRESS_GATEWAY_COMMON) && !defined(IS_BPF_OVERLAY)
-	/* The gateway node needs to manually steer any reply traffic
-	 * for a remote pod into the tunnel (to avoid iptables potentially
-	 * dropping or accidentally SNATing the packets).
+#if defined(ENABLE_EGRESS_GATEWAY_COMMON) && !defined(IS_BPF_OVERLAY) && !defined(TUNNEL_MODE)
+	/* If we are not using TUNNEL_MODE, the gateway node needs to manually steer
+	 * any reply traffic for a remote pod into the tunnel (to avoid iptables
+	 * potentially dropping the packets).
 	 */
 	if (egress_gw_reply_needs_redirect_hook(ip4, &tunnel_endpoint, &dst_sec_identity)) {
 		trace->reason = TRACE_REASON_CT_REPLY;
@@ -2428,9 +2421,9 @@ nodeport_rev_dnat_ingress_ipv4(struct __ctx_buff *ctx, struct trace_ctx *trace,
 	if (!check_revdnat)
 		goto out;
 
-	ret = ct_lazy_lookup4(get_ct_map4(&tuple), &tuple, ctx, ipv4_is_fragment(ip4),
-			      l4_off, has_l4_header, CT_INGRESS, SCOPE_REVERSE,
-			      CT_ENTRY_NODEPORT, &ct_state, &trace->monitor);
+	ret = ct_lazy_lookup4(get_ct_map4(&tuple), &tuple, ctx, l4_off, has_l4_header,
+			      CT_INGRESS, SCOPE_REVERSE, CT_ENTRY_NODEPORT,
+			      &ct_state, &trace->monitor);
 	if (ret == CT_REPLY) {
 		trace->reason = TRACE_REASON_CT_REPLY;
 		ret = lb4_rev_nat(ctx, l3_off, l4_off, ct_state.rev_nat_index, false,
@@ -2500,7 +2493,21 @@ int tail_nodeport_rev_dnat_ingress_ipv4(struct __ctx_buff *ctx)
 	};
 	__s8 ext_err = 0;
 	int ret = 0;
+#if defined(ENABLE_HOST_FIREWALL) && defined(IS_BPF_HOST)
+	/* We only enforce the host policies if nodeport.h is included from
+	 * bpf_host.
+	 */
+	__u32 src_id = 0;
 
+	ret = ipv4_host_policy_ingress(ctx, &src_id, &trace, &ext_err);
+	if (IS_ERR(ret))
+		return send_drop_notify_error_ext(ctx, src_id, ret, ext_err,
+						  CTX_ACT_DROP, METRIC_INGRESS);
+	/* We don't want to enforce host policies a second time if we jump back to
+	 * bpf_host's handle_ipv6.
+	 */
+	ctx_skip_host_fw_set(ctx);
+#endif
 	ret = nodeport_rev_dnat_ingress_ipv4(ctx, &trace, &ext_err);
 	if (IS_ERR(ret))
 		goto drop_err;
@@ -2539,7 +2546,6 @@ int tail_nodeport_nat_ingress_ipv4(struct __ctx_buff *ctx)
 		.reason = TRACE_REASON_UNKNOWN,
 		.monitor = TRACE_PAYLOAD_LEN,
 	};
-	__u32 src_id = 0;
 	__s8 ext_err = 0;
 	int ret;
 
@@ -2571,19 +2577,7 @@ int tail_nodeport_nat_ingress_ipv4(struct __ctx_buff *ctx)
 	 * CALL_IPV4_FROM_NETDEV in the code above.
 	 */
 #if !defined(ENABLE_DSR) || (defined(ENABLE_DSR) && defined(ENABLE_DSR_HYBRID)) ||	\
-    (defined(ENABLE_EGRESS_GATEWAY_COMMON) && !defined(IS_BPF_OVERLAY))
-
-# if defined(ENABLE_HOST_FIREWALL) && defined(IS_BPF_HOST)
-	ret = ipv4_host_policy_ingress(ctx, &src_id, &trace, &ext_err);
-	if (IS_ERR(ret))
-		goto drop_err;
-
-	/* We don't want to enforce host policies a second time,
-	 * on recircle / after RevDNAT.
-	 */
-	ctx_skip_host_fw_set(ctx);
-# endif
-
+    (defined(ENABLE_EGRESS_GATEWAY_COMMON) && !defined(IS_BPF_OVERLAY) && !defined(TUNNEL_MODE))
 	/* If we're not in full DSR mode, reply traffic from remote backends
 	 * might pass back through the LB node and requires revDNAT.
 	 *
@@ -2594,17 +2588,17 @@ int tail_nodeport_nat_ingress_ipv4(struct __ctx_buff *ctx)
 					CILIUM_CALL_IPV4_NODEPORT_REVNAT,
 					nodeport_rev_dnat_ingress_ipv4,
 					&trace, &ext_err);
-	if (IS_ERR(ret))
-		goto drop_err;
+		if (IS_ERR(ret))
+			goto drop_err;
 
-	/* No redirect needed: */
-	if (ret == CTX_ACT_OK)
-		goto recircle;
+		/* No redirect needed: */
+		if (ret == CTX_ACT_OK)
+			goto recircle;
 
-	/* Redirected to egress interface: */
-	edt_set_aggregate(ctx, 0);
-	cilium_capture_out(ctx);
-	return ret;
+		/* Redirected to egress interface: */
+		edt_set_aggregate(ctx, 0);
+		cilium_capture_out(ctx);
+		return ret;
 #endif
 
 recircle:
@@ -2612,8 +2606,8 @@ recircle:
 	ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_NETDEV);
 	ret = DROP_MISSED_TAIL_CALL;
 
-drop_err:
-	return send_drop_notify_error_ext(ctx, src_id, ret, ext_err, CTX_ACT_DROP,
+ drop_err:
+	return send_drop_notify_error_ext(ctx, 0, ret, ext_err, CTX_ACT_DROP,
 					  METRIC_INGRESS);
 }
 
@@ -2683,7 +2677,7 @@ int tail_nodeport_nat_egress_ipv4(struct __ctx_buff *ctx)
 	if (unlikely(ret != CTX_ACT_OK))
 		goto drop_err;
 
-	ret = __snat_v4_nat(ctx, &tuple, ip4, has_l4_header, l4_off,
+	ret = __snat_v4_nat(ctx, &tuple, has_l4_header, l4_off,
 			    true, &target, TCP_SPORT_OFF, &trace, &ext_err);
 	if (IS_ERR(ret))
 		goto drop_err;
@@ -2746,10 +2740,8 @@ static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 					struct iphdr *ip4,
 					int l3_off,
 					__u32 src_sec_identity,
-					__s8 *ext_err,
-					bool __maybe_unused *dsr)
+					__s8 *ext_err)
 {
-	bool is_fragment = ipv4_is_fragment(ip4);
 	bool backend_local, has_l4_header;
 	struct ipv4_ct_tuple tuple = {};
 	bool is_svc_proto = true;
@@ -2766,7 +2758,7 @@ static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 
 	ret = lb4_extract_tuple(ctx, ip4, l3_off, &l4_off, &tuple);
 	if (IS_ERR(ret)) {
-		if (ret == DROP_UNSUPP_SERVICE_PROTO) {
+		if (ret == DROP_NO_SERVICE) {
 			is_svc_proto = false;
 			goto skip_service_lookup;
 		}
@@ -2797,7 +2789,7 @@ static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 			send_trace_notify(ctx, TRACE_TO_PROXY, src_sec_identity, 0,
 					  bpf_ntohs((__u16)svc->l7_lb_proxy_port), 0,
 					  TRACE_REASON_POLICY, monitor);
-			return ctx_redirect_to_proxy_hairpin_ipv4(ctx, ip4,
+			return ctx_redirect_to_proxy_hairpin_ipv4(ctx,
 								  (__be16)svc->l7_lb_proxy_port);
 		}
 #endif
@@ -2806,16 +2798,10 @@ static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 			if (!ret)
 				return NAT_46X64_RECIRC;
 		} else {
-			ret = lb4_local(get_ct_map4(&tuple), ctx, is_fragment, l3_off, l4_off,
+			ret = lb4_local(get_ct_map4(&tuple), ctx, l3_off, l4_off,
 					&key, &tuple, svc, &ct_state_new,
 					has_l4_header, skip_l3_xlate, &cluster_id,
 					ext_err);
-#ifdef SERVICE_NO_BACKEND_RESPONSE
-			if (ret == DROP_NO_SERVICE) {
-				ep_tail_call(ctx, CILIUM_CALL_IPV4_NO_SERVICE);
-				return DROP_MISSED_TAIL_CALL;
-			}
-#endif
 		}
 		if (IS_ERR(ret))
 			return ret;
@@ -2840,18 +2826,20 @@ skip_service_lookup:
 #if (defined(IS_BPF_OVERLAY) && DSR_ENCAP_MODE == DSR_ENCAP_GENEVE) || \
 	(!defined(IS_BPF_OVERLAY) && DSR_ENCAP_MODE != DSR_ENCAP_GENEVE)
 		if (is_svc_proto && nodeport_uses_dsr4(&tuple)) {
+			bool dsr = false;
+
 			/* Check if packet has embedded DSR info, or belongs to
 			 * an established DSR connection:
 			 */
 			ret = nodeport_extract_dsr_v4(ctx, ip4, &tuple,
 						      l4_off, &key.address,
-						      &key.dport, dsr);
+						      &key.dport, &dsr);
 			if (IS_ERR(ret))
 				return ret;
 
-			if (*dsr)
+			if (dsr)
 				/* Packet continues on its way to local backend: */
-				return nodeport_dsr_ingress_ipv4(ctx, &tuple, ip4,
+				return nodeport_dsr_ingress_ipv4(ctx, &tuple,
 								 has_l4_header, l4_off,
 								 key.address, key.dport,
 								 ext_err);
@@ -2907,10 +2895,9 @@ skip_service_lookup:
 		/* lookup with SCOPE_FORWARD: */
 		__ipv4_ct_tuple_reverse(&tuple);
 
-		/* Cache is_fragment in advance, lb4_local may invalidate ip4. */
-		ret = ct_lazy_lookup4(get_ct_map4(&tuple), &tuple, ctx, is_fragment,
-				      l4_off, has_l4_header, CT_EGRESS, SCOPE_FORWARD,
-				      CT_ENTRY_NODEPORT, &ct_state, &monitor);
+		ret = ct_lazy_lookup4(get_ct_map4(&tuple), &tuple, ctx, l4_off, has_l4_header,
+				      CT_EGRESS, SCOPE_FORWARD, CT_ENTRY_NODEPORT,
+				      &ct_state, &monitor);
 		switch (ret) {
 		case CT_NEW:
 redo:
@@ -2977,19 +2964,18 @@ nodeport_rev_dnat_fwd_ipv4(struct __ctx_buff *ctx, struct trace_ctx *trace,
 	struct ipv4_ct_tuple tuple = {};
 	struct ct_state ct_state = {};
 	void *data, *data_end;
-	bool has_l4_header, is_fragment;
+	bool has_l4_header;
 	struct iphdr *ip4;
 
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 
 	has_l4_header = ipv4_has_l4_header(ip4);
-	is_fragment = ipv4_is_fragment(ip4);
 
 	ret = lb4_extract_tuple(ctx, ip4, ETH_HLEN, &l4_off, &tuple);
 	if (ret < 0) {
 		/* If it's not a SVC protocol, we don't need to check for RevDNAT: */
-		if (ret == DROP_UNSUPP_SERVICE_PROTO || ret == DROP_UNKNOWN_L4)
+		if (ret == DROP_NO_SERVICE || ret == DROP_UNKNOWN_L4)
 			return CTX_ACT_OK;
 		return ret;
 	}
@@ -3012,9 +2998,8 @@ nodeport_rev_dnat_fwd_ipv4(struct __ctx_buff *ctx, struct trace_ctx *trace,
 		return ret;
 #endif
 
-	/* Cache is_fragment in advance, nodeport_fib_lookup_and_redirect may invalidate ip4. */
-	ret = ct_lazy_lookup4(get_ct_map4(&tuple), &tuple, ctx, is_fragment,
-			      l4_off, has_l4_header, CT_INGRESS, SCOPE_REVERSE,
+	ret = ct_lazy_lookup4(get_ct_map4(&tuple), &tuple, ctx, l4_off, has_l4_header,
+			      CT_INGRESS, SCOPE_REVERSE,
 			      CT_ENTRY_NODEPORT | CT_ENTRY_DSR,
 			      &ct_state, &trace->monitor);
 
@@ -3165,7 +3150,6 @@ int tail_handle_nat_fwd_ipv4(struct __ctx_buff *ctx)
 
 	return ret;
 }
-
 #endif /* ENABLE_IPV4 */
 
 #ifdef ENABLE_HEALTH_CHECK
