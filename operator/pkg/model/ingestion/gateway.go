@@ -5,6 +5,7 @@ package ingestion
 
 import (
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -36,6 +37,20 @@ func GatewayAPI(input Input) ([]model.HTTPListener, []model.TLSListener) {
 	var resHTTP []model.HTTPListener
 	var resTLS []model.TLSListener
 
+	var labels, annotations map[string]string
+	if input.Gateway.Spec.Infrastructure != nil {
+		labels = toMapString(input.Gateway.Spec.Infrastructure.Labels)
+		annotations = toMapString(input.Gateway.Spec.Infrastructure.Annotations)
+	}
+
+	var infra *model.Infrastructure
+	if labels != nil || annotations != nil {
+		infra = &model.Infrastructure{
+			Labels:      labels,
+			Annotations: annotations,
+		}
+	}
+
 	for _, l := range input.Gateway.Spec.Listeners {
 		if l.Protocol != gatewayv1.HTTPProtocolType &&
 			l.Protocol != gatewayv1.HTTPSProtocolType &&
@@ -58,10 +73,11 @@ func GatewayAPI(input Input) ([]model.HTTPListener, []model.TLSListener) {
 					UID:       string(input.Gateway.GetUID()),
 				},
 			},
-			Port:     uint32(l.Port),
-			Hostname: toHostname(l.Hostname),
-			TLS:      toTLS(l.TLS, input.ReferenceGrants, input.Gateway.GetNamespace()),
-			Routes:   httpRoutes,
+			Port:           uint32(l.Port),
+			Hostname:       toHostname(l.Hostname),
+			TLS:            toTLS(l.TLS, input.ReferenceGrants, input.Gateway.GetNamespace()),
+			Routes:         httpRoutes,
+			Infrastructure: infra,
 		})
 
 		resTLS = append(resTLS, model.TLSListener{
@@ -76,9 +92,10 @@ func GatewayAPI(input Input) ([]model.HTTPListener, []model.TLSListener) {
 					UID:       string(input.Gateway.GetUID()),
 				},
 			},
-			Port:     uint32(l.Port),
-			Hostname: toHostname(l.Hostname),
-			Routes:   toTLSRoutes(l, input.TLSRoutes, input.Services, input.ReferenceGrants),
+			Port:           uint32(l.Port),
+			Hostname:       toHostname(l.Hostname),
+			Routes:         toTLSRoutes(l, input.TLSRoutes, input.Services, input.ReferenceGrants),
+			Infrastructure: infra,
 		})
 	}
 
@@ -173,6 +190,7 @@ func toHTTPRoutes(listener gatewayv1.Listener, input []gatewayv1.HTTPRoute, serv
 					RequestRedirect:        requestRedirectFilter,
 					Rewrite:                rewriteFilter,
 					RequestMirrors:         requestMirrors,
+					Timeout:                toTimeout(rule.Timeouts),
 				})
 			}
 
@@ -190,11 +208,30 @@ func toHTTPRoutes(listener gatewayv1.Listener, input []gatewayv1.HTTPRoute, serv
 					RequestRedirect:        requestRedirectFilter,
 					Rewrite:                rewriteFilter,
 					RequestMirrors:         requestMirrors,
+					Timeout:                toTimeout(rule.Timeouts),
 				})
 			}
 		}
 	}
 	return httpRoutes
+}
+
+func toTimeout(timeouts *gatewayv1.HTTPRouteTimeouts) model.Timeout {
+	res := model.Timeout{}
+	if timeouts == nil {
+		return res
+	}
+	if timeouts.BackendRequest != nil {
+		if duration, err := time.ParseDuration(string(*timeouts.BackendRequest)); err == nil {
+			res.Backend = model.AddressOf(duration)
+		}
+	}
+	if timeouts.Request != nil {
+		if duration, err := time.ParseDuration(string(*timeouts.Request)); err == nil {
+			res.Request = model.AddressOf(duration)
+		}
+	}
+	return res
 }
 
 func toGRPCRoutes(listener gatewayv1beta1.Listener, input []gatewayv1alpha2.GRPCRoute, services []corev1.Service, grants []gatewayv1beta1.ReferenceGrant) []model.HTTPRoute {
@@ -618,6 +655,14 @@ func toHTTPHeaders(headers []gatewayv1.HTTPHeader) []model.Header {
 		})
 	}
 	return res
+}
+
+func toMapString(in map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[string(k)] = string(v)
+	}
+	return out
 }
 
 func toStringSlice(s []gatewayv1.Hostname) []string {

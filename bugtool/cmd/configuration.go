@@ -193,6 +193,7 @@ func defaultCommands(confDir string, cmdDir string, k8sPods []string) []string {
 			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_snat_v6_external", bpffsMountpoint),
 			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_vtep_map", bpffsMountpoint),
 			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_l2_responder_v4", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ratelimit", bpffsMountpoint),
 		}...)
 	}
 
@@ -435,6 +436,7 @@ func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
 		"cilium-dbg bgp peers",
 		"cilium-dbg bgp routes available ipv4 unicast",
 		"cilium-dbg bgp routes available ipv6 unicast",
+		"cilium-dbg bgp route-policies",
 	}
 	var commands []string
 

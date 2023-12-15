@@ -16,10 +16,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
+	controllerruntime "github.com/cilium/cilium/operator/pkg/controller-runtime"
 	"github.com/cilium/cilium/operator/pkg/gateway-api/helpers"
 	"github.com/cilium/cilium/operator/pkg/model"
 	"github.com/cilium/cilium/operator/pkg/model/ingestion"
@@ -44,17 +46,17 @@ func (r *gatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	original := &gatewayv1.Gateway{}
 	if err := r.Client.Get(ctx, req.NamespacedName, original); err != nil {
 		if k8serrors.IsNotFound(err) {
-			return success()
+			return controllerruntime.Success()
 		}
 		scopedLog.WithError(err).Error("Unable to get Gateway")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	// Ignore deleting Gateway, this can happen when foregroundDeletion is enabled
 	// The reconciliation loop will automatically kick off for related Gateway resources.
 	if original.GetDeletionTimestamp() != nil {
 		scopedLog.Info("Gateway is being deleted, doing nothing")
-		return success()
+		return controllerruntime.Success()
 	}
 
 	gw := original.DeepCopy()
@@ -72,41 +74,41 @@ func (r *gatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			Error("Unable to get GatewayClass")
 		if k8serrors.IsNotFound(err) {
 			setGatewayAccepted(gw, false, "GatewayClass does not exist")
-			return fail(err)
+			return controllerruntime.Fail(err)
 		}
 		setGatewayAccepted(gw, false, "Unable to get GatewayClass")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	httpRouteList := &gatewayv1.HTTPRouteList{}
 	if err := r.Client.List(ctx, httpRouteList); err != nil {
 		scopedLog.WithError(err).Error("Unable to list HTTPRoutes")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	grpcRouteList := &gatewayv1alpha2.GRPCRouteList{}
 	if err := r.Client.List(ctx, grpcRouteList); err != nil {
 		scopedLog.WithError(err).Error("Unable to list GRPCRoutes")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	tlsRouteList := &gatewayv1alpha2.TLSRouteList{}
 	if err := r.Client.List(ctx, tlsRouteList); err != nil {
 		scopedLog.WithError(err).Error("Unable to list TLSRoutes")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	// TODO(tam): Only list the services used by accepted Routes
 	servicesList := &corev1.ServiceList{}
 	if err := r.Client.List(ctx, servicesList); err != nil {
 		scopedLog.WithError(err).Error("Unable to list Services")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	grants := &gatewayv1beta1.ReferenceGrantList{}
 	if err := r.Client.List(ctx, grants); err != nil {
 		scopedLog.WithError(err).Error("Unable to list ReferenceGrants")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	httpListeners, tlsListeners := ingestion.GatewayAPI(ingestion.Input{
@@ -122,7 +124,7 @@ func (r *gatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.setListenerStatus(ctx, gw, httpRouteList, tlsRouteList); err != nil {
 		scopedLog.WithError(err).Error("Unable to set listener status")
 		setGatewayAccepted(gw, false, "Unable to set listener status")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 	setGatewayAccepted(gw, true, "Gateway successfully scheduled")
 
@@ -131,87 +133,76 @@ func (r *gatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		scopedLog.WithError(err).Error("Unable to translate resources")
 		setGatewayAccepted(gw, false, "Unable to translate resources")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	if err = r.ensureService(ctx, svc); err != nil {
 		scopedLog.WithError(err).Error("Unable to create Service")
 		setGatewayAccepted(gw, false, "Unable to create Service resource")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	if err = r.ensureEndpoints(ctx, ep); err != nil {
 		scopedLog.WithError(err).Error("Unable to ensure Endpoints")
 		setGatewayAccepted(gw, false, "Unable to ensure Endpoints resource")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	if err = r.ensureEnvoyConfig(ctx, cec); err != nil {
 		scopedLog.WithError(err).Error("Unable to ensure CiliumEnvoyConfig")
 		setGatewayAccepted(gw, false, "Unable to ensure CEC resource")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	// Step 4: Update the status of the Gateway
 	if err = r.setAddressStatus(ctx, gw); err != nil {
 		scopedLog.WithError(err).Error("Address is not ready")
 		setGatewayProgrammed(gw, false, "Address is not ready")
-		return fail(err)
+		return controllerruntime.Fail(err)
 	}
 
 	setGatewayProgrammed(gw, true, "Gateway successfully reconciled")
 	scopedLog.Info("Successfully reconciled Gateway")
-	return success()
+	return controllerruntime.Success()
 }
 
 func (r *gatewayReconciler) ensureService(ctx context.Context, desired *corev1.Service) error {
-	existing := &corev1.Service{}
-	err := r.Client.Get(ctx, client.ObjectKeyFromObject(desired), existing)
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return r.Client.Create(ctx, desired)
-		}
-		return err
-	}
+	svc := desired.DeepCopy()
+	_, err := controllerutil.CreateOrPatch(ctx, r.Client, svc, func() error {
+		// Save and restore loadBalancerClass
+		// e.g. if a mutating webhook writes this field
+		lbClass := svc.Spec.LoadBalancerClass
 
-	temp := existing.DeepCopy()
-	temp.Spec = desired.Spec
-	setMergedLabelsAndAnnotations(temp, desired)
+		svc.Spec = desired.Spec
+		svc.OwnerReferences = desired.OwnerReferences
+		setMergedLabelsAndAnnotations(svc, desired)
 
-	return r.Client.Patch(ctx, temp, client.MergeFrom(existing))
+		// Ignore the loadBalancerClass if it was set by a mutating webhook
+		svc.Spec.LoadBalancerClass = lbClass
+		return nil
+	})
+	return err
 }
 
 func (r *gatewayReconciler) ensureEndpoints(ctx context.Context, desired *corev1.Endpoints) error {
-	existing := &corev1.Endpoints{}
-	err := r.Client.Get(ctx, client.ObjectKeyFromObject(desired), existing)
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return r.Client.Create(ctx, desired)
-		}
-		return err
-	}
-
-	temp := existing.DeepCopy()
-	temp.Subsets = desired.Subsets
-	setMergedLabelsAndAnnotations(temp, desired)
-
-	return r.Client.Patch(ctx, temp, client.MergeFrom(existing))
+	ep := desired.DeepCopy()
+	_, err := controllerutil.CreateOrPatch(ctx, r.Client, ep, func() error {
+		ep.Subsets = desired.Subsets
+		ep.OwnerReferences = desired.OwnerReferences
+		setMergedLabelsAndAnnotations(ep, desired)
+		return nil
+	})
+	return err
 }
 
 func (r *gatewayReconciler) ensureEnvoyConfig(ctx context.Context, desired *ciliumv2.CiliumEnvoyConfig) error {
-	existing := &ciliumv2.CiliumEnvoyConfig{}
-	err := r.Client.Get(ctx, client.ObjectKeyFromObject(desired), existing)
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return r.Client.Create(ctx, desired)
-		}
-		return err
-	}
-	temp := existing.DeepCopy()
-	temp.Spec = desired.Spec
-	setMergedLabelsAndAnnotations(temp, desired)
-
-	return r.Client.Patch(ctx, temp, client.MergeFrom(existing))
+	cec := desired.DeepCopy()
+	_, err := controllerutil.CreateOrPatch(ctx, r.Client, cec, func() error {
+		cec.Spec = desired.Spec
+		setMergedLabelsAndAnnotations(cec, desired)
+		return nil
+	})
+	return err
 }
 
 func (r *gatewayReconciler) updateStatus(ctx context.Context, original *gatewayv1.Gateway, new *gatewayv1.Gateway) error {
@@ -227,7 +218,7 @@ func (r *gatewayReconciler) updateStatus(ctx context.Context, original *gatewayv
 func (r *gatewayReconciler) filterHTTPRoutesByGateway(ctx context.Context, gw *gatewayv1.Gateway, routes []gatewayv1.HTTPRoute) []gatewayv1.HTTPRoute {
 	var filtered []gatewayv1.HTTPRoute
 	for _, route := range routes {
-		if isAccepted(ctx, gw, &route, route.Status.Parents) && isAllowed(ctx, r.Client, gw, &route) && len(computeHosts(gw, route.Spec.Hostnames)) > 0 {
+		if isAttachable(ctx, gw, &route, route.Status.Parents) && isAllowed(ctx, r.Client, gw, &route) && len(computeHosts(gw, route.Spec.Hostnames)) > 0 {
 			filtered = append(filtered, route)
 		}
 	}
@@ -237,7 +228,7 @@ func (r *gatewayReconciler) filterHTTPRoutesByGateway(ctx context.Context, gw *g
 func (r *gatewayReconciler) filterGRPCRoutesByGateway(ctx context.Context, gw *gatewayv1.Gateway, routes []gatewayv1alpha2.GRPCRoute) []gatewayv1alpha2.GRPCRoute {
 	var filtered []gatewayv1alpha2.GRPCRoute
 	for _, route := range routes {
-		if isAccepted(ctx, gw, &route, route.Status.Parents) && isAllowed(ctx, r.Client, gw, &route) && len(computeHosts(gw, route.Spec.Hostnames)) > 0 {
+		if isAttachable(ctx, gw, &route, route.Status.Parents) && isAllowed(ctx, r.Client, gw, &route) && len(computeHosts(gw, route.Spec.Hostnames)) > 0 {
 			filtered = append(filtered, route)
 		}
 	}
@@ -247,7 +238,7 @@ func (r *gatewayReconciler) filterGRPCRoutesByGateway(ctx context.Context, gw *g
 func (r *gatewayReconciler) filterHTTPRoutesByListener(ctx context.Context, gw *gatewayv1.Gateway, listener *gatewayv1.Listener, routes []gatewayv1.HTTPRoute) []gatewayv1.HTTPRoute {
 	var filtered []gatewayv1.HTTPRoute
 	for _, route := range routes {
-		if isAccepted(ctx, gw, &route, route.Status.Parents) &&
+		if isAttachable(ctx, gw, &route, route.Status.Parents) &&
 			isAllowed(ctx, r.Client, gw, &route) &&
 			len(computeHostsForListener(listener, route.Spec.Hostnames)) > 0 &&
 			parentRefMatched(gw, listener, route.GetNamespace(), route.Spec.ParentRefs) {
@@ -263,8 +254,8 @@ func parentRefMatched(gw *gatewayv1.Gateway, listener *gatewayv1.Listener, route
 			if ref.SectionName == nil && ref.Port == nil {
 				return true
 			}
-			var sectionNameCheck = ref.SectionName == nil || *ref.SectionName == listener.Name
-			var portCheck = ref.Port == nil || *ref.Port == listener.Port
+			sectionNameCheck := ref.SectionName == nil || *ref.SectionName == listener.Name
+			portCheck := ref.Port == nil || *ref.Port == listener.Port
 			if sectionNameCheck && portCheck {
 				return true
 			}
@@ -276,7 +267,7 @@ func parentRefMatched(gw *gatewayv1.Gateway, listener *gatewayv1.Listener, route
 func (r *gatewayReconciler) filterTLSRoutesByGateway(ctx context.Context, gw *gatewayv1.Gateway, routes []gatewayv1alpha2.TLSRoute) []gatewayv1alpha2.TLSRoute {
 	var filtered []gatewayv1alpha2.TLSRoute
 	for _, route := range routes {
-		if isAccepted(ctx, gw, &route, route.Status.Parents) && isAllowed(ctx, r.Client, gw, &route) && len(computeHosts(gw, route.Spec.Hostnames)) > 0 {
+		if isAttachable(ctx, gw, &route, route.Status.Parents) && isAllowed(ctx, r.Client, gw, &route) && len(computeHosts(gw, route.Spec.Hostnames)) > 0 {
 			filtered = append(filtered, route)
 		}
 	}
@@ -286,7 +277,7 @@ func (r *gatewayReconciler) filterTLSRoutesByGateway(ctx context.Context, gw *ga
 func (r *gatewayReconciler) filterTLSRoutesByListener(ctx context.Context, gw *gatewayv1.Gateway, listener *gatewayv1.Listener, routes []gatewayv1alpha2.TLSRoute) []gatewayv1alpha2.TLSRoute {
 	var filtered []gatewayv1alpha2.TLSRoute
 	for _, route := range routes {
-		if isAccepted(ctx, gw, &route, route.Status.Parents) &&
+		if isAttachable(ctx, gw, &route, route.Status.Parents) &&
 			isAllowed(ctx, r.Client, gw, &route) &&
 			len(computeHostsForListener(listener, route.Spec.Hostnames)) > 0 &&
 			parentRefMatched(gw, listener, route.GetNamespace(), route.Spec.ParentRefs) {
@@ -296,7 +287,7 @@ func (r *gatewayReconciler) filterTLSRoutesByListener(ctx context.Context, gw *g
 	return filtered
 }
 
-func isAccepted(_ context.Context, gw *gatewayv1.Gateway, route metav1.Object, parents []gatewayv1.RouteParentStatus) bool {
+func isAttachable(_ context.Context, gw *gatewayv1.Gateway, route metav1.Object, parents []gatewayv1.RouteParentStatus) bool {
 	for _, rps := range parents {
 		if helpers.NamespaceDerefOr(rps.ParentRef.Namespace, route.GetNamespace()) != gw.GetNamespace() ||
 			string(rps.ParentRef.Name) != gw.GetName() {
@@ -304,7 +295,11 @@ func isAccepted(_ context.Context, gw *gatewayv1.Gateway, route metav1.Object, p
 		}
 
 		for _, cond := range rps.Conditions {
-			if cond.Type == conditionStatusAccepted && cond.Status == metav1.ConditionTrue {
+			if cond.Type == string(gatewayv1.RouteConditionAccepted) && cond.Status == metav1.ConditionTrue {
+				return true
+			}
+
+			if cond.Type == string(gatewayv1.RouteConditionResolvedRefs) && cond.Status == metav1.ConditionFalse {
 				return true
 			}
 		}
@@ -437,11 +432,19 @@ func (r *gatewayReconciler) setListenerStatus(ctx context.Context, gw *gatewayv1
 			}
 		}
 
-		var attachedRoutes int32
-		if isValid {
-			attachedRoutes += int32(len(r.filterHTTPRoutesByListener(ctx, gw, &l, httpRoutes.Items)))
-			attachedRoutes += int32(len(r.filterTLSRoutesByListener(ctx, gw, &l, tlsRoutes.Items)))
+		if !isValid {
+			conds = merge(conds, metav1.Condition{
+				Type:               string(gatewayv1.ListenerConditionProgrammed),
+				Status:             metav1.ConditionFalse,
+				Reason:             string(gatewayv1.ListenerReasonInvalid),
+				Message:            "Invalid CertificateRef",
+				LastTransitionTime: metav1.Now(),
+			})
 		}
+
+		var attachedRoutes int32
+		attachedRoutes += int32(len(r.filterHTTPRoutesByListener(ctx, gw, &l, httpRoutes.Items)))
+		attachedRoutes += int32(len(r.filterTLSRoutesByListener(ctx, gw, &l, tlsRoutes.Items)))
 
 		found := false
 		for i := range gw.Status.Listeners {

@@ -69,7 +69,7 @@ type remoteCluster struct {
 }
 
 func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperations, config *cmtypes.CiliumClusterConfig, ready chan<- error) {
-	if err := config.Validate(rc.mesh.conf.ConfigValidationMode); err != nil {
+	if err := rc.mesh.conf.ClusterInfo.ValidateRemoteConfig(rc.ClusterConfigRequired(), config); err != nil {
 		ready <- err
 		close(ready)
 		return
@@ -260,9 +260,11 @@ func (s *synced) Services(ctx context.Context) error {
 // IPIdentities returns after that the initial list of ipcache entries and
 // identities has been received from the remote cluster, and synchronized
 // with the BPF datapath, the remote cluster is disconnected, or the given
-// context is canceled.
+// context is canceled. We additionally need to explicitly wait for nodes
+// synchronization because they also trigger the insertion of ipcache entries
+// (i.e., node addresses, health, ingress, ...).
 func (s *synced) IPIdentities(ctx context.Context) error {
-	return s.wait(ctx, s.ipcache, s.identities.WaitChannel())
+	return s.wait(ctx, s.ipcache, s.identities.WaitChannel(), s.nodes)
 }
 
 func (s *synced) wait(ctx context.Context, chs ...<-chan struct{}) error {

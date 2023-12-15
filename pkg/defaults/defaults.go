@@ -92,6 +92,9 @@ const (
 	// HubbleRedactHttpURLQuery controls if the URL query will be redacted from flows
 	HubbleRedactHttpURLQuery = false
 
+	// HubbleRedactHttpUserInfo controls if the user info will be redacted from flows
+	HubbleRedactHttpUserInfo = true
+
 	// HubbleRedactKafkaApiKey controls if the Kafka API key will be redacted from flows
 	HubbleRedactKafkaApiKey = false
 
@@ -335,11 +338,7 @@ const (
 	// connection tracking garbage collection
 	ConntrackGCStartingInterval = 5 * time.Minute
 
-	// K8sEventHandover enables use of the kvstore to optimize Kubernetes
-	// event handling by listening for k8s events in the operator and
-	// mirroring it into the kvstore for reduced overhead in large
-	// clusters.
-	K8sEventHandover = false
+	LegacyTurnOffK8sEventHandover = false
 
 	// LoopbackIPv4 is the default address for service loopback
 	LoopbackIPv4 = "169.254.42.1"
@@ -524,13 +523,16 @@ const (
 	// TunnelProtocol is the default tunneling protocol
 	TunnelProtocol = "vxlan"
 
+	// ServiceNoBackendResponse is the default response for services without backends
+	ServiceNoBackendResponse = "reject"
+
 	// Use the CiliumInternalIPs (vs. NodeInternalIPs) for IPsec encapsulation.
 	UseCiliumInternalIPForIPsec = false
 
 	// TunnelPortVXLAN is the default VXLAN port
-	TunnelPortVXLAN = 8472
+	TunnelPortVXLAN uint16 = 8472
 	// TunnelPortGeneve is the default Geneve port
-	TunnelPortGeneve = 6081
+	TunnelPortGeneve uint16 = 6081
 
 	// ARPBaseReachableTime resembles the kernel's NEIGH_VAR_BASE_REACHABLE_TIME which defaults to 30 seconds.
 	ARPBaseReachableTime = 30 * time.Second
@@ -544,6 +546,13 @@ const (
 
 	// EnableK8sNetworkPolicy enables support for K8s NetworkPolicy.
 	EnableK8sNetworkPolicy = true
+
+	// MaxConnectedClusters sets the maximum number of clusters that can be
+	// connected in a clustermesh.
+	// The value is used to determine the bit allocation for cluster ID and
+	// identity in a numeric identity. Values > 255 will decrease the number of
+	// allocatable identities.
+	MaxConnectedClusters = 255
 )
 
 var (

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	. "github.com/cilium/checkmate"
+	"k8s.io/apimachinery/pkg/util/rand"
 
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/clustermesh/common"
@@ -31,7 +32,6 @@ import (
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/metrics"
-	"github.com/cilium/cilium/pkg/rand"
 	serviceStore "github.com/cilium/cilium/pkg/service/store"
 	"github.com/cilium/cilium/pkg/testutils"
 	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
@@ -68,7 +68,7 @@ func (s *ClusterMeshServicesTestSuite) SetUpTest(c *C) {
 
 	kvstore.SetupDummy(c, "etcd")
 
-	s.randomName = rand.RandomString()
+	s.randomName = rand.String(12)
 	clusterName1 := s.randomName + "1"
 	clusterName2 := s.randomName + "2"
 
@@ -85,6 +85,9 @@ func (s *ClusterMeshServicesTestSuite) SetUpTest(c *C) {
 	for i, cluster := range []string{clusterName1, clusterName2} {
 		config := cmtypes.CiliumClusterConfig{
 			ID: uint32(i + 1),
+			Capabilities: types.CiliumClusterConfigCapabilities{
+				MaxConnectedClusters: 255,
+			},
 		}
 		err := cmutils.SetClusterConfig(ctx, cluster, &config, kvstore.Client())
 		c.Assert(err, IsNil)
@@ -105,7 +108,7 @@ func (s *ClusterMeshServicesTestSuite) SetUpTest(c *C) {
 	store := store.NewFactory(store.MetricsProvider())
 	s.mesh = NewClusterMesh(hivetest.Lifecycle(c), Configuration{
 		Config:                common.Config{ClusterMeshConfig: dir},
-		ClusterInfo:           types.ClusterInfo{ID: 255, Name: "test2"},
+		ClusterInfo:           types.ClusterInfo{ID: 255, Name: "test2", MaxConnectedClusters: 255},
 		NodeKeyCreator:        testNodeCreator,
 		NodeObserver:          &testObserver{},
 		ServiceMerger:         s.svcCache,

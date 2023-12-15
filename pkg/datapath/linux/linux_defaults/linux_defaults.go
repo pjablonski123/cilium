@@ -19,6 +19,12 @@ const (
 	// RouteTableVtep is the default table ID to use for VTEP routing rules
 	RouteTableVtep = 202
 
+	// RouteTableToProxy is the default table ID to use routing rules to the proxy.
+	RouteTableToProxy = 2004
+
+	// RouteTableFromProxy is the default table ID to use routing rules from the proxy.
+	RouteTableFromProxy = 2005
+
 	// RouteTableInterfacesOffset is the offset for the per-ENI routing tables.
 	// Each ENI interface will have its own table starting with this offset. It
 	// is 10 because it is highly unlikely to collide with the main routing
@@ -67,11 +73,13 @@ const (
 	// RulePriorityWireguard is the priority of the rule used for routing packets to WireGuard device for encryption
 	RulePriorityWireguard = 1
 
-	// RulePriorityProxyIngress is the priority of the routing rule installed by
-	// the proxy package for redirecting inbound packets to the proxy. Priority 10
-	// used to be for outgoing packets from the proxy (see PROXY_RT_TABLE in older
-	// versions), but is no longer used.
-	RulePriorityProxyIngress = 9
+	// RulePriorityToProxyIngress is the priority of the routing rule installed by
+	// the proxy package for redirecting inbound packets to the proxy.
+	RulePriorityToProxyIngress = 9
+
+	// RulePriorityFromProxyIngress is the priority of the routing rule installed by
+	// the proxy package for redirecting inbound packets from the proxy.
+	RulePriorityFromProxyIngress = 10
 
 	// RulePriorityIngress is the priority of the rule used for ingress routing
 	// of endpoints. This priority is after encryption and proxy rules, and
@@ -122,4 +130,8 @@ const (
 
 	// IPsecFwdPriority is the priority of the fwd rules placed by IPsec
 	IPsecFwdPriority = 0x0B9F
+
+	// IPsecXFRMMarkSPIShift defines how many bits the SPI is shifted when
+	// encoded in a XfrmMark
+	IPsecXFRMMarkSPIShift = 12
 )

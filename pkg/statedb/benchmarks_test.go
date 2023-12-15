@@ -216,7 +216,7 @@ func BenchmarkDB_SequentialLookup(b *testing.B) {
 	}
 }
 
-func BenchmarkDB_FullIteration(b *testing.B) {
+func BenchmarkDB_FullIteration_All(b *testing.B) {
 	db, table, _ := newTestDB(b)
 	wtxn := db.WriteTxn(table)
 	for i := 0; i < b.N; i++ {
@@ -235,6 +235,25 @@ func BenchmarkDB_FullIteration(b *testing.B) {
 	}
 }
 
+func BenchmarkDB_FullIteration_Get(b *testing.B) {
+	db, table, _ := newTestDB(b, tagsIndex)
+	wtxn := db.WriteTxn(table)
+	for i := 0; i < b.N; i++ {
+		_, _, err := table.Insert(wtxn, testObject{ID: uint64(i), Tags: []string{"foo"}})
+		require.NoError(b, err)
+	}
+	wtxn.Commit()
+	b.ResetTimer()
+
+	txn := db.ReadTxn()
+	iter, _ := table.Get(txn, tagsIndex.Query("foo"))
+	i := uint64(0)
+	for obj, _, ok := iter.Next(); ok; obj, _, ok = iter.Next() {
+		require.Equal(b, obj.ID, i)
+		i++
+	}
+}
+
 type testObject2 testObject
 
 var (
@@ -243,10 +262,8 @@ var (
 		FromObject: func(t testObject2) index.KeySet {
 			return index.NewKeySet(index.Uint64(t.ID))
 		},
-		FromKey: func(n uint64) []byte {
-			return index.Uint64(n)
-		},
-		Unique: true,
+		FromKey: index.Uint64,
+		Unique:  true,
 	}
 )
 
@@ -263,26 +280,17 @@ func BenchmarkDB_PropagationDelay(b *testing.B) {
 
 	var (
 		db     *DB
-		table1 RWTable[testObject]
-		table2 RWTable[testObject2]
+		table1 = MustNewTable[testObject]("test", idIndex)
+		table2 = MustNewTable[testObject2]("test2", id2Index)
 	)
 
 	logging.SetLogLevel(logrus.ErrorLevel)
 
 	h := hive.New(
 		Cell, // DB
-		NewTableCell[testObject](
-			"test",
-			idIndex,
-		),
-		NewTableCell[testObject2](
-			"test2",
-			id2Index,
-		),
-		cell.Invoke(func(db_ *DB, table1_ RWTable[testObject], table2_ RWTable[testObject2]) {
+		cell.Invoke(func(db_ *DB) error {
 			db = db_
-			table1 = table1_
-			table2 = table2_
+			return db.RegisterTable(table1, table2)
 		}),
 	)
 

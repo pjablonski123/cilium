@@ -519,31 +519,16 @@ var _ = Describe("K8sDatapathConfig", func() {
 			checkNoLeakP2RemoteService(srcPod, dstPod, srcPodIP.String(), dsSvcIP.String(), true)
 		}
 
-		It("Pod-to-pod traffic is encrypted in tunneling mode with per-endpoint routes", func() {
-			deploymentManager.DeployCilium(map[string]string{
-				"tunnel":                 "vxlan",
-				"ipv6.enabled":           "false",
-				"endpointRoutes.enabled": "true",
-				"encryption.enabled":     "true",
-				"encryption.type":        "wireguard",
-				"l7Proxy":                "false",
-				"ipam.operator.clusterPoolIPv4PodCIDRList": "10.244.0.0/16",
-				"encryption.strictMode.enabled":            "true",
-				"encryption.strictMode.cidr":               "10.244.0.0/16",
-			}, DeployCiliumOptionsAndDNS)
-
-			testStrictWireguard("cilium_vxlan")
-		})
 		It("Pod-to-pod traffic is encrypted in native routing mode with per-endpoint routes", func() {
 			deploymentManager.DeployCilium(map[string]string{
-				"tunnel":                 "disabled",
-				"autoDirectNodeRoutes":   "true",
-				"ipv4NativeRoutingCIDR":  "10.244.0.0/16",
-				"ipv6.enabled":           "false",
-				"endpointRoutes.enabled": "true",
-				"encryption.enabled":     "true",
-				"encryption.type":        "wireguard",
-				"l7Proxy":                "false",
+				"routingMode":                              "native",
+				"autoDirectNodeRoutes":                     "true",
+				"ipv4NativeRoutingCIDR":                    "10.244.0.0/16",
+				"ipv6.enabled":                             "false",
+				"endpointRoutes.enabled":                   "true",
+				"encryption.enabled":                       "true",
+				"encryption.type":                          "wireguard",
+				"l7Proxy":                                  "false",
 				"ipam.operator.clusterPoolIPv4PodCIDRList": "10.244.0.0/16",
 				"encryption.strictMode.enabled":            "true",
 				"encryption.strictMode.cidr":               "10.244.0.0/16",
@@ -555,14 +540,14 @@ var _ = Describe("K8sDatapathConfig", func() {
 		})
 		It("Pod-to-pod traffic is encrypted in native routing mode with per-endpoint routes and overlapping node and pod CIDRs", func() {
 			deploymentManager.DeployCilium(map[string]string{
-				"tunnel":                 "disabled",
-				"autoDirectNodeRoutes":   "true",
-				"ipv4NativeRoutingCIDR":  "192.168.56.0/24",
-				"ipv6.enabled":           "false",
-				"endpointRoutes.enabled": "true",
-				"encryption.enabled":     "true",
-				"encryption.type":        "wireguard",
-				"l7Proxy":                "false",
+				"routingMode":                                     "native",
+				"autoDirectNodeRoutes":                            "true",
+				"ipv4NativeRoutingCIDR":                           "192.168.56.0/24",
+				"ipv6.enabled":                                    "false",
+				"endpointRoutes.enabled":                          "true",
+				"encryption.enabled":                              "true",
+				"encryption.type":                                 "wireguard",
+				"l7Proxy":                                         "false",
 				"ipam.operator.clusterPoolIPv4PodCIDRList":        "192.168.56.128/25",
 				"ipam.operator.clusterPoolIPv4MaskSize":           "26",
 				"encryption.strictMode.enabled":                   "true",
@@ -601,7 +586,8 @@ var _ = Describe("K8sDatapathConfig", func() {
 				"encryption.ipsec.interface": privateIface,
 				"devices":                    devices,
 				"hostFirewall.enabled":       "false",
-				"kubeProxyReplacement":       "disabled",
+				"kubeProxyReplacement":       "false",
+				"bpf.masquerade":             "false",
 			}, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 		})
@@ -774,7 +760,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 				options["autoDirectNodeRoutes"] = "true"
 			}
 			if helpers.RunsWithKubeProxy() {
-				options["kubeProxyReplacement"] = "disabled"
+				options["kubeProxyReplacement"] = "false"
 			}
 			deploymentManager.DeployCilium(options, DeployCiliumOptionsAndDNS)
 

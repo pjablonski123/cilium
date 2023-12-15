@@ -22,16 +22,17 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
+	"github.com/cilium/cilium/pkg/common/ipsec"
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/fswatcher"
-	"github.com/cilium/cilium/pkg/inctimer"
+	"github.com/cilium/cilium/pkg/hive/cell"
+	"github.com/cilium/cilium/pkg/hive/job"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/encrypt"
 	"github.com/cilium/cilium/pkg/node"
-	"github.com/cilium/cilium/pkg/nodediscovery"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/resiliency"
 	"github.com/cilium/cilium/pkg/time"
@@ -58,10 +59,6 @@ const (
 	offsetEncKey   = 4
 	offsetIP       = 5
 	maxOffset      = offsetIP
-
-	// ipSecXfrmMarkSPIShift defines how many bits the SPI is shifted when
-	// encoded in a XfrmMark
-	ipSecXfrmMarkSPIShift = 12
 
 	defaultDropPriority      = 100
 	oldXFRMOutPolicyPriority = 50
@@ -148,11 +145,19 @@ func getIPSecKeys(ip net.IP) *ipSecKey {
 	return key
 }
 
-func ipSecNewState() *netlink.XfrmState {
+func ipSecNewState(keys *ipSecKey) *netlink.XfrmState {
 	state := netlink.XfrmState{
 		Mode:  netlink.XFRM_MODE_TUNNEL,
 		Proto: netlink.XFRM_PROTO_ESP,
 		ESN:   false,
+		Spi:   int(keys.Spi),
+		Reqid: keys.ReqID,
+	}
+	if keys.Aead != nil {
+		state.Aead = keys.Aead
+	} else {
+		state.Crypt = keys.Crypt
+		state.Auth = keys.Auth
 	}
 	return &state
 }
@@ -177,17 +182,6 @@ func ipSecAttachPolicyTempl(policy *netlink.XfrmPolicy, keys *ipSecKey, srcIP, d
 	}
 
 	policy.Tmpls = append(policy.Tmpls, tmpl)
-}
-
-func ipSecJoinState(state *netlink.XfrmState, keys *ipSecKey) {
-	if keys.Aead != nil {
-		state.Aead = keys.Aead
-	} else {
-		state.Crypt = keys.Crypt
-		state.Auth = keys.Auth
-	}
-	state.Spi = int(keys.Spi)
-	state.Reqid = keys.ReqID
 }
 
 // xfrmStateReplace attempts to add a new XFRM state only if one doesn't
@@ -339,8 +333,7 @@ func ipSecReplaceStateIn(localIP, remoteIP net.IP, zeroMark bool) (uint8, error)
 	if key == nil {
 		return 0, fmt.Errorf("IPSec key missing")
 	}
-	state := ipSecNewState()
-	ipSecJoinState(state, key)
+	state := ipSecNewState(key)
 	state.Src = remoteIP
 	state.Dst = localIP
 	state.Mark = &netlink.XfrmMark{
@@ -367,8 +360,7 @@ func ipSecReplaceStateOut(localIP, remoteIP net.IP, nodeID uint16) (uint8, error
 	if key == nil {
 		return 0, fmt.Errorf("IPSec key missing")
 	}
-	state := ipSecNewState()
-	ipSecJoinState(state, key)
+	state := ipSecNewState(key)
 	state.Src = localIP
 	state.Dst = remoteIP
 	state.Mark = generateEncryptMark(key.Spi, nodeID)
@@ -505,31 +497,11 @@ func deprioritizeOldOutPolicy(family int) {
 // ipSecXfrmMarkSetSPI takes a XfrmMark base value, an SPI, returns the mark
 // value with the SPI value encoded in it
 func ipSecXfrmMarkSetSPI(markValue uint32, spi uint8) uint32 {
-	return markValue | (uint32(spi) << ipSecXfrmMarkSPIShift)
-}
-
-// ipSecXfrmMarkGetSPI extracts from a XfrmMark value the encoded SPI
-func ipSecXfrmMarkGetSPI(markValue uint32) uint8 {
-	return uint8(markValue >> ipSecXfrmMarkSPIShift & 0xF)
-}
-
-func getSPIFromXfrmPolicy(policy *netlink.XfrmPolicy) uint8 {
-	if policy.Mark == nil {
-		return 0
-	}
-
-	return ipSecXfrmMarkGetSPI(policy.Mark.Value)
-}
-
-func getNodeIDFromXfrmMark(mark *netlink.XfrmMark) uint16 {
-	if mark == nil {
-		return 0
-	}
-	return uint16(mark.Value >> 16)
+	return markValue | (uint32(spi) << linux_defaults.IPsecXFRMMarkSPIShift)
 }
 
 func getNodeIDAsHexFromXfrmMark(mark *netlink.XfrmMark) string {
-	return fmt.Sprintf("0x%x", getNodeIDFromXfrmMark(mark))
+	return fmt.Sprintf("0x%x", ipsec.GetNodeIDFromXfrmMark(mark))
 }
 
 func getDirFromXfrmMark(mark *netlink.XfrmMark) dir {
@@ -594,7 +566,7 @@ func ipsecDeleteXfrmState(nodeID uint16) error {
 
 	errs := resiliency.NewErrorSet(fmt.Sprintf("failed to delete node (%d) xfrm states", nodeID), len(xfrmStateList))
 	for _, s := range xfrmStateList {
-		if matchesOnNodeID(s.Mark) && getNodeIDFromXfrmMark(s.Mark) == nodeID {
+		if matchesOnNodeID(s.Mark) && ipsec.GetNodeIDFromXfrmMark(s.Mark) == nodeID {
 			if err := netlink.XfrmStateDel(&s); err != nil {
 				errs.Add(fmt.Errorf("failed to delete xfrm state (%s): %w", s.String(), err))
 			}
@@ -616,7 +588,7 @@ func ipsecDeleteXfrmPolicy(nodeID uint16) error {
 	}
 	errs := resiliency.NewErrorSet("failed to delete xfrm policies", len(xfrmPolicyList))
 	for _, p := range xfrmPolicyList {
-		if matchesOnNodeID(p.Mark) && getNodeIDFromXfrmMark(p.Mark) == nodeID {
+		if matchesOnNodeID(p.Mark) && ipsec.GetNodeIDFromXfrmMark(p.Mark) == nodeID {
 			if err := netlink.XfrmPolicyDel(&p); err != nil {
 				errs.Add(fmt.Errorf("unable to delete xfrm policy %s: %w", p.String(), err))
 			}
@@ -839,9 +811,13 @@ func LoadIPSecKeys(r io.Reader) (int, uint8, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Split(bufio.ScanLines)
 	for scanner.Scan() {
-		var oldSpi uint8
-		var aeadKey, authKey []byte
-		offsetBase := 0
+		var (
+			oldSpi     uint8
+			aeadKey    []byte
+			authKey    []byte
+			err        error
+			offsetBase int
+		)
 
 		ipSecKey := &ipSecKey{
 			ReqID: 1,
@@ -857,21 +833,10 @@ func LoadIPSecKeys(r io.Reader) (int, uint8, error) {
 			return 0, 0, fmt.Errorf("missing IPSec key or invalid format")
 		}
 
-		spiI, err := strconv.Atoi(s[offsetSPI])
+		spi, offsetBase, err = parseSPI(s[offsetSPI])
 		if err != nil {
-			// If no version info is provided assume using key format without
-			// versioning and assign SPI.
-			log.Warning("IPsec secrets without an SPI as the first argument are deprecated and will be unsupported in v1.13.")
-			spiI = 1
-			offsetBase = -1
+			return 0, 0, fmt.Errorf("failed to parse SPI: %w", err)
 		}
-		if spiI > linux_defaults.IPsecMaxKeyVersion {
-			return 0, 0, fmt.Errorf("encryption key space exhausted. ID must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion+1, s[offsetSPI])
-		}
-		if spiI == 0 {
-			return 0, 0, fmt.Errorf("zero is not a valid key ID. ID must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion+1, s[offsetSPI])
-		}
-		spi = uint8(spiI)
 
 		if len(s) > offsetBase+maxOffset+1 {
 			return 0, 0, fmt.Errorf("invalid format: too many fields in the IPsec secret")
@@ -948,6 +913,23 @@ func LoadIPSecKeys(r io.Reader) (int, uint8, error) {
 	return keyLen, spi, nil
 }
 
+func parseSPI(spiStr string) (uint8, int, error) {
+	spi, err := strconv.Atoi(spiStr)
+	if err != nil {
+		// If no version info is provided assume using key format without
+		// versioning and assign SPI.
+		log.Warning("IPsec secrets without an SPI as the first argument are deprecated and will be unsupported in v1.13.")
+		return 1, -1, nil
+	}
+	if spi > linux_defaults.IPsecMaxKeyVersion {
+		return 0, 0, fmt.Errorf("encryption key space exhausted. ID must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion+1, spiStr)
+	}
+	if spi == 0 {
+		return 0, 0, fmt.Errorf("zero is not a valid key ID. ID must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion+1, spiStr)
+	}
+	return uint8(spi), 0, nil
+}
+
 func SetIPSecSPI(spi uint8) error {
 	scopedLog := log
 
@@ -980,7 +962,7 @@ func DeleteIPsecEncryptRoute() {
 	}
 }
 
-func keyfileWatcher(ctx context.Context, watcher *fswatcher.Watcher, keyfilePath string, nodediscovery *nodediscovery.NodeDiscovery, nodeHandler datapath.NodeHandler) {
+func keyfileWatcher(ctx context.Context, watcher *fswatcher.Watcher, keyfilePath string, nodeHandler datapath.NodeHandler, health cell.HealthReporter) error {
 	for {
 		select {
 		case event := <-watcher.Events:
@@ -990,13 +972,15 @@ func keyfileWatcher(ctx context.Context, watcher *fswatcher.Watcher, keyfilePath
 
 			_, spi, err := LoadIPSecKeysFile(keyfilePath)
 			if err != nil {
+				health.Degraded(fmt.Sprintf("Failed to load keyfile %q", keyfilePath), err)
 				log.WithError(err).Errorf("Failed to load IPsec keyfile")
 				continue
 			}
 
 			// Update the IPSec key identity in the local node.
 			// This will set addrs.ipsecKeyIdentity in the node
-			// package
+			// package, and eventually trigger an update to
+			// publish the updated information to k8s/kvstore.
 			node.SetIPsecKeyIdentity(spi)
 
 			// AllNodeValidateImplementation will eventually call
@@ -1005,27 +989,27 @@ func keyfileWatcher(ctx context.Context, watcher *fswatcher.Watcher, keyfilePath
 			// with ipsec.UpsertIPsecEndpoint()
 			nodeHandler.AllNodeValidateImplementation()
 
-			// Publish the updated node information to k8s/KVStore
-			nodediscovery.UpdateLocalNode()
-
 			// Push SPI update into BPF datapath now that XFRM state
 			// is configured.
 			if err := SetIPSecSPI(spi); err != nil {
+				health.Degraded("Failed to set IPsec SPI", err)
 				log.WithError(err).Errorf("Failed to set IPsec SPI")
 				continue
 			}
+			health.OK("Watching keyfiles")
 		case err := <-watcher.Errors:
 			log.WithError(err).WithField(logfields.Path, keyfilePath).
 				Warning("Error encountered while watching file with fsnotify")
 
 		case <-ctx.Done():
+			health.Stopped("Context done")
 			watcher.Close()
-			return
+			return nil
 		}
 	}
 }
 
-func StartKeyfileWatcher(ctx context.Context, keyfilePath string, nodediscovery *nodediscovery.NodeDiscovery, nodeHandler datapath.NodeHandler) error {
+func StartKeyfileWatcher(group job.Group, keyfilePath string, nodeHandler datapath.NodeHandler) error {
 	if !option.Config.EnableIPsecKeyWatcher {
 		return nil
 	}
@@ -1035,7 +1019,9 @@ func StartKeyfileWatcher(ctx context.Context, keyfilePath string, nodediscovery 
 		return err
 	}
 
-	go keyfileWatcher(ctx, watcher, keyfilePath, nodediscovery, nodeHandler)
+	group.Add(job.OneShot("keyfile-watcher", func(ctx context.Context, health cell.HealthReporter) error {
+		return keyfileWatcher(ctx, watcher, keyfilePath, nodeHandler, health)
+	}))
 
 	return nil
 }
@@ -1108,7 +1094,7 @@ func deleteStaleXfrmPolicies(reclaimTimestamp time.Time) error {
 
 	errs := resiliency.NewErrorSet("failed to delete stale xfrm policies", len(xfrmPolicyList))
 	for _, p := range xfrmPolicyList {
-		policySPI := getSPIFromXfrmPolicy(&p)
+		policySPI := ipsec.GetSPIFromXfrmPolicy(&p)
 		if !ipSecSPICanBeReclaimed(policySPI, reclaimTimestamp) {
 			continue
 		}
@@ -1152,14 +1138,14 @@ func equalDefaultDropPolicy(defaultDropPolicy, p *netlink.XfrmPolicy) bool {
 		p.Dst.String() == defaultDropPolicy.Dst.String()
 }
 
-func doReclaimStaleKeys() {
+func staleKeyReclaimer(ctx context.Context) error {
 	ipSecLock.Lock()
 	defer ipSecLock.Unlock()
 
 	// In case no IPSec key has been loaded yet, don't try to reclaim any
 	// old key
 	if ipSecCurrentKeySPI == 0 {
-		return
+		return nil
 	}
 
 	reclaimTimestamp := time.Now()
@@ -1167,41 +1153,12 @@ func doReclaimStaleKeys() {
 	scopedLog := log.WithField(logfields.SPI, ipSecCurrentKeySPI)
 	if err := deleteStaleXfrmStates(reclaimTimestamp); err != nil {
 		scopedLog.WithError(err).Warning("Failed to delete stale XFRM states")
+		return err
 	}
 	if err := deleteStaleXfrmPolicies(reclaimTimestamp); err != nil {
 		scopedLog.WithError(err).Warning("Failed to delete stale XFRM policies")
+		return err
 	}
-}
 
-func StartStaleKeysReclaimer(ctx context.Context) {
-	timer, timerDone := inctimer.New()
-
-	go func() {
-		for {
-			select {
-			case <-timer.After(1 * time.Minute):
-				doReclaimStaleKeys()
-			case <-ctx.Done():
-				timerDone()
-				return
-			}
-		}
-	}()
-}
-
-// We need to install xfrm state for the local router (cilium_host) early
-// in daemon init path. This is to ensure that we have the xfrm state in
-// place before we advertise the routerIP where other nodes may potentially
-// pick it up and start sending traffic to us. This was previously racing
-// and creating XfrmInNoState errors because other nodes picked up node
-// update before Xfrm config logic was in place. So special case init the
-// rule we need early in init flow.
-func Init() error {
-	outerLocalIP := node.GetInternalIPv4Router()
-	wildcardIP := net.ParseIP("0.0.0.0")
-	localCIDR := node.GetIPv4AllocRange().IPNet
-	localWildcardIP := &net.IPNet{IP: wildcardIP, Mask: net.IPv4Mask(0, 0, 0, 0)}
-
-	_, err := UpsertIPsecEndpoint(localCIDR, localWildcardIP, outerLocalIP, wildcardIP, 0, IPSecDirIn, false)
-	return err
+	return nil
 }

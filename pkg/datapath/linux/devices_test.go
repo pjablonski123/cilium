@@ -7,11 +7,10 @@ package linux
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"runtime"
-	"slices"
 	"sort"
-	"time"
 
 	. "github.com/cilium/checkmate"
 	"github.com/vishvananda/netlink"
@@ -19,7 +18,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/checker"
-	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/logging"
@@ -317,157 +315,6 @@ func (s *DevicesSuite) TestExpandDirectRoutingDevice(c *C) {
 	})
 }
 
-func (s *DevicesSuite) TestListenForNewDevices(c *C) {
-	s.withFixture(c, func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		timeout := time.After(10 * time.Second)
-
-		option.Config.SetDevices([]string{})
-		option.Config.EnableNodePort = true
-		c.Assert(createDummy("dummy0", "192.168.1.2/24", false), IsNil)
-
-		dm, err := newDeviceManagerForTests()
-		c.Assert(err, IsNil)
-		defer dm.Stop()
-
-		initialDevices, err := dm.Detect(false)
-		c.Assert(err, IsNil)
-		c.Assert(initialDevices, checker.DeepEquals, []string{"dummy0"})
-
-		devicesChan, err := dm.Listen(ctx)
-		c.Assert(err, IsNil)
-
-		// Create the IPv4 & IPv6 devices that should be detected.
-		c.Assert(createDummy("dummy1", "2001:db8::face/64", true), IsNil)
-
-		// Create another device without an IP address or routes. This should be ignored.
-		c.Assert(createDummy("dummy2", "", false), IsNil)
-
-		// Create a veth device with default route that should be detected. veth devices are used in test
-		// setups.
-		c.Assert(createVeth("veth0", "192.168.2.2/24", false), IsNil)
-		c.Assert(addRoute(addRouteParams{iface: "veth0", gw: "192.168.2.254", table: unix.RT_TABLE_MAIN}), IsNil)
-
-		// Create few devices with excluded prefixes
-		c.Assert(createDummy("lxc123", "", false), IsNil)
-		c.Assert(createDummy("cilium_foo", "", false), IsNil)
-
-		// Wait for the devices to be updated. Depending on how quickly the devices are created
-		// this may span multiple callbacks.
-		passed := false
-		for !passed {
-			var devices []string
-			select {
-			case <-timeout:
-				c.Fatalf("Test timed out, last devices seen: %v", devices)
-			case devices = <-devicesChan:
-				if slices.Equal(devices, initialDevices) {
-					c.Fatalf("Expected Listen() to not emit the initial devices")
-				}
-				passed, _ = checker.DeepEqual(devices, []string{"dummy0", "dummy1", "veth0"})
-			}
-		}
-
-		// Test that deletion of devices is detected.
-		link, err := netlink.LinkByName("dummy0")
-		c.Assert(err, IsNil)
-		err = netlink.LinkDel(link)
-		c.Assert(err, IsNil)
-
-		for !passed {
-			var devices []string
-			select {
-			case <-timeout:
-				c.Fatalf("Test timed out, last devices seen: %v", devices)
-			case devices = <-devicesChan:
-				passed, _ = checker.DeepEqual(devices, []string{"dummy1", "veth0"})
-			}
-		}
-	})
-}
-
-func (s *DevicesSuite) TestListenForNewDevicesFiltered(c *C) {
-	s.withFixture(c, func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		timeout := time.After(5 * time.Second)
-
-		option.Config.SetDevices([]string{"dummy+"})
-		dm, err := newDeviceManagerForTests()
-		c.Assert(err, IsNil)
-		defer dm.Stop()
-
-		devicesChan, err := dm.Listen(ctx)
-		c.Assert(err, IsNil)
-
-		// Create the IPv4 & IPv6 devices that should be detected.
-		c.Assert(createDummy("dummy0", "192.168.1.2/24", false), IsNil)
-		c.Assert(createDummy("dummy1", "2001:db8::face/64", true), IsNil)
-
-		// Create a device with non-matching name.
-		c.Assert(createDummy("other0", "192.168.2.2/24", false), IsNil)
-
-		// Wait for the devices to be updated. Depending on how quickly the devices are created
-		// this may span multiple callbacks.
-		passed := false
-		for !passed {
-			select {
-			case <-timeout:
-				c.Fatal("Test timed out")
-			case devices := <-devicesChan:
-				passed, _ = checker.DeepEqual(devices, []string{"dummy0", "dummy1"})
-			}
-		}
-	})
-}
-
-func (s *DevicesSuite) TestListenAfterDelete(c *C) {
-	s.withFixture(c, func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		timeout := time.After(time.Second * 5)
-
-		option.Config.SetDevices([]string{"dummy+"})
-		option.Config.DirectRoutingDevice = "dummy0"
-		c.Assert(createDummy("dummy0", "192.168.1.2/24", false), IsNil)
-		c.Assert(createDummy("dummy1", "2001:db8::face/64", true), IsNil)
-
-		// Detect the devices
-		dm, err := newDeviceManagerForTests()
-		c.Assert(err, IsNil)
-		defer dm.Stop()
-		devices, err := dm.Detect(true)
-		c.Assert(err, IsNil)
-		c.Assert(devices, checker.DeepEquals, []string{"dummy0", "dummy1"})
-
-		// Delete one of the devices before listening
-		link, err := netlink.LinkByName("dummy1")
-		c.Assert(err, IsNil)
-		err = netlink.LinkDel(link)
-		c.Assert(err, IsNil)
-
-		// Now start listening to device changes. We expect the dummy1 to
-		// be deleted.
-		devicesChan, err := dm.Listen(ctx)
-		c.Assert(err, IsNil)
-
-		passed := false
-		for !passed {
-			var devices []string
-			select {
-			case <-timeout:
-				c.Fatalf("Test timed out, last seen devices: %v", devices)
-			case devices := <-devicesChan:
-				passed, _ = checker.DeepEqual(devices, []string{"dummy0"})
-			}
-		}
-	})
-}
-
 func (s *DevicesSuite) withFixture(c *C, test func()) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -573,21 +420,23 @@ func setBondMaster(iface string, master string) error {
 	defer netlink.LinkSetUp(link)
 	return netlink.LinkSetBondSlave(link, masterLink.(*netlink.Bond))
 }
-
 func addAddr(iface string, cidr string) error {
+	return addAddrScoped(iface, cidr, netlink.SCOPE_SITE, 0)
+}
+
+func addAddrScoped(iface string, cidr string, scope netlink.Scope, flags int) error {
 	ip, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return err
+		return fmt.Errorf("ParseCIDR: %w", err)
 	}
 	ipnet.IP = ip
-
 	link, err := netlink.LinkByName(iface)
 	if err != nil {
-		return err
+		return fmt.Errorf("LinkByName: %w", err)
 	}
 
-	if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: ipnet}); err != nil {
-		return err
+	if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: ipnet, Scope: int(scope), Flags: flags}); err != nil {
+		return fmt.Errorf("AddrAdd: %w", err)
 	}
 	return nil
 }
@@ -669,7 +518,6 @@ func newDeviceManagerForTests() (dm *DeviceManager, err error) {
 	ns, _ := netns.Get()
 	h := hive.New(
 		statedb.Cell,
-		tables.Cell,
 		DevicesControllerCell,
 		cell.Provide(func() DevicesConfig {
 			return DevicesConfig{Devices: option.Config.GetDevices()}

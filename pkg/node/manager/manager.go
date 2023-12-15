@@ -18,7 +18,6 @@ import (
 
 	"github.com/cilium/cilium/pkg/backoff"
 	"github.com/cilium/cilium/pkg/controller"
-	"github.com/cilium/cilium/pkg/datapath/iptables"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
@@ -29,6 +28,7 @@ import (
 	ipcacheTypes "github.com/cilium/cilium/pkg/ipcache/types"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/metrics/metric"
 	"github.com/cilium/cilium/pkg/node"
@@ -79,6 +79,7 @@ type Configuration interface {
 	TunnelingEnabled() bool
 	RemoteNodeIdentitiesEnabled() bool
 	NodeEncryptionEnabled() bool
+	IsLocalRouterIP(string) bool
 }
 
 var _ Notifier = (*manager)(nil)
@@ -125,6 +126,9 @@ type manager struct {
 
 	// ipcache is the set operations performed against the ipcache
 	ipcache IPCache
+
+	// ipsetMgr is the ipset cluster nodes configuration manager
+	ipsetMgr ipsetManager
 
 	// controllerManager manages the controllers that are launched within the
 	// Manager.
@@ -239,13 +243,14 @@ func NewNodeMetrics() *nodeMetrics {
 }
 
 // New returns a new node manager
-func New(c Configuration, ipCache IPCache, nodeMetrics *nodeMetrics, healthScope cell.Scope) (*manager, error) {
+func New(c Configuration, ipCache IPCache, ipsetMgr ipsetManager, nodeMetrics *nodeMetrics, healthScope cell.Scope) (*manager, error) {
 	m := &manager{
 		nodes:             map[nodeTypes.Identity]*nodeEntry{},
 		conf:              c,
 		controllerManager: controller.NewManager(),
 		nodeHandlers:      map[datapath.NodeHandler]struct{}{},
 		ipcache:           ipCache,
+		ipsetMgr:          ipsetMgr,
 		metrics:           nodeMetrics,
 		healthScope:       healthScope,
 	}
@@ -445,7 +450,13 @@ func (m *manager) nodeIdentityLabels(n nodeTypes.Node) (nodeLabels labels.Labels
 // the node. If an update or addition has occurred, NodeUpdate() of the datapath
 // interface is invoked.
 func (m *manager) NodeUpdated(n nodeTypes.Node) {
-	log.Debugf("Received node update event from %s: %#v", n.Source, n)
+	log.WithFields(logrus.Fields{
+		logfields.ClusterName: n.Cluster,
+		logfields.NodeName:    n.Name,
+	}).Info("Node updated")
+	if log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.Debugf("Received node update event from %s: %#v", n.Source, n)
+	}
 
 	nodeIdentifier := n.Identity()
 	dpUpdate := true
@@ -467,7 +478,7 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 
 	for _, address := range n.IPAddresses {
 		if option.Config.NodeIpsetNeeded() && address.Type == addressing.NodeInternalIP {
-			iptables.AddToNodeIpset(address.IP)
+			m.ipsetMgr.AddToNodeIpset(address.IP)
 		}
 
 		if m.nodeAddressSkipsIPCache(address) {
@@ -490,12 +501,17 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 		// rest as it is the strongest source, i.e. only trigger datapath
 		// updates if the information we receive takes priority.
 		//
-		// The only exception are kube-apiserver entries. In that case,
-		// we still want to inform subscribers about changes in auxiliary
-		// data such as for example the health endpoint.
+		// There are two exceptions to the rules above:
+		// * kube-apiserver entries - in that case,
+		//   we still want to inform subscribers about changes in auxiliary
+		//   data such as for example the health endpoint.
+		// * CiliumInternal IP addresses that match configured local router IP.
+		//   In that case, we still want to inform subscribers about a new node
+		//   even when IP addresses may seem repeated across the nodes.
 		existing := m.ipcache.GetMetadataByPrefix(prefix).Source()
 		overwrite := source.AllowOverwrite(existing, n.Source)
-		if !overwrite && existing != source.KubeAPIServer {
+		if !overwrite && existing != source.KubeAPIServer &&
+			!(address.Type == addressing.NodeCiliumInternalIP && m.conf.IsLocalRouterIP(address.ToString())) {
 			dpUpdate = false
 		}
 
@@ -569,6 +585,7 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 		oldNode := entry.node
 		entry.node = n
 		if dpUpdate {
+			var errs error
 			m.Iter(func(nh datapath.NodeHandler) {
 				if err := nh.NodeUpdate(oldNode, entry.node); err != nil {
 					log.WithFields(logrus.Fields{
@@ -576,8 +593,16 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 						"node":    entry.node.Name,
 					}).WithError(err).
 						Error("Failed to handle node update event while applying handler. Cilium may be have degraded functionality. See error message for details.")
+					errs = errors.Join(errs, err)
 				}
 			})
+
+			hr := cell.GetHealthReporter(m.healthScope, "nodes-update")
+			if errs != nil {
+				hr.Degraded("Failed to update nodes", errs)
+			} else {
+				hr.OK("Node updates successful")
+			}
 		}
 
 		m.removeNodeFromIPCache(oldNode, resource, nodeIPsAdded, healthIPsAdded, ingressIPsAdded)
@@ -591,6 +616,7 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 		entry.mutex.Lock()
 		m.nodes[nodeIdentifier] = entry
 		m.mutex.Unlock()
+		var errs error
 		if dpUpdate {
 			m.Iter(func(nh datapath.NodeHandler) {
 				if err := nh.NodeAdd(entry.node); err != nil {
@@ -599,10 +625,18 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 						"handler": nh.Name(),
 					}).WithError(err).
 						Error("Failed to handle node update event while applying handler. Cilium may be have degraded functionality. See error message for details.")
+					errs = errors.Join(errs, err)
 				}
 			})
 		}
 		entry.mutex.Unlock()
+		hr := cell.GetHealthReporter(m.healthScope, "nodes-add")
+		if errs != nil {
+			hr.Degraded("Failed to add nodes", errs)
+		} else {
+			hr.OK("Node adds successful")
+		}
+
 	}
 }
 
@@ -628,7 +662,7 @@ func (m *manager) removeNodeFromIPCache(oldNode nodeTypes.Node, resource ipcache
 		}
 
 		if option.Config.NodeIpsetNeeded() && address.Type == addressing.NodeInternalIP {
-			iptables.RemoveFromNodeIpset(address.IP)
+			m.ipsetMgr.RemoveFromNodeIpset(address.IP)
 		}
 
 		if m.nodeAddressSkipsIPCache(address) {
@@ -686,9 +720,15 @@ func (m *manager) removeNodeFromIPCache(oldNode nodeTypes.Node, resource ipcache
 // origins from. If the node was removed, NodeDelete() is invoked of the
 // datapath interface.
 func (m *manager) NodeDeleted(n nodeTypes.Node) {
-	m.metrics.EventsReceived.WithLabelValues("delete", string(n.Source)).Inc()
+	log.WithFields(logrus.Fields{
+		logfields.ClusterName: n.Cluster,
+		logfields.NodeName:    n.Name,
+	}).Info("Node deleted")
+	if log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.Debugf("Received node delete event from %s", n.Source)
+	}
 
-	log.Debugf("Received node delete event from %s", n.Source)
+	m.metrics.EventsReceived.WithLabelValues("delete", string(n.Source)).Inc()
 
 	nodeIdentifier := n.Identity()
 
@@ -724,6 +764,7 @@ func (m *manager) NodeDeleted(n nodeTypes.Node) {
 	entry.mutex.Lock()
 	delete(m.nodes, nodeIdentifier)
 	m.mutex.Unlock()
+	var errs error
 	m.Iter(func(nh datapath.NodeHandler) {
 		if err := nh.NodeDelete(n); err != nil {
 			// For now we log the error and continue. Eventually we will want to encorporate
@@ -734,9 +775,17 @@ func (m *manager) NodeDeleted(n nodeTypes.Node) {
 				"handler": nh.Name(),
 				"node":    n.Name,
 			}).WithError(err).Error("Failed to handle node delete event while applying handler. Cilium may be have degraded functionality.")
+			errs = errors.Join(errs, err)
 		}
 	})
 	entry.mutex.Unlock()
+
+	hr := cell.GetHealthReporter(m.healthScope, "nodes-delete")
+	if errs != nil {
+		hr.Degraded("Failed to delete nodes", errs)
+	} else {
+		hr.OK("Node deletions successful")
+	}
 }
 
 // GetNodeIdentities returns a list of all node identities store in node
@@ -758,7 +807,7 @@ func (m *manager) GetNodes() map[nodeTypes.Identity]nodeTypes.Node {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	nodes := make(map[nodeTypes.Identity]nodeTypes.Node)
+	nodes := make(map[nodeTypes.Identity]nodeTypes.Node, len(m.nodes))
 	for nodeIdentity, entry := range m.nodes {
 		entry.mutex.Lock()
 		nodes[nodeIdentity] = entry.node

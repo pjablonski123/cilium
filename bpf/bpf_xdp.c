@@ -104,13 +104,14 @@ int tail_lb_ipv4(struct __ctx_buff *ctx)
 		int l3_off = ETH_HLEN;
 		void *data, *data_end;
 		struct iphdr *ip4;
+		bool __maybe_unused is_dsr = false;
 
 		if (!revalidate_data(ctx, &data, &data_end, &ip4)) {
 			ret = DROP_INVALID;
 			goto out;
 		}
 
-#if defined(ENABLE_DSR) && DSR_ENCAP_MODE == DSR_ENCAP_GENEVE
+#if defined(ENABLE_DSR) && !defined(ENABLE_DSR_HYBRID) && DSR_ENCAP_MODE == DSR_ENCAP_GENEVE
 		{
 			int l4_off, inner_l2_off;
 			struct genevehdr geneve;
@@ -182,9 +183,9 @@ int tail_lb_ipv4(struct __ctx_buff *ctx)
 			}
 		}
 no_encap:
-#endif /* ENABLE_DSR && DSR_ENCAP_MODE == DSR_ENCAP_GENEVE */
+#endif /* ENABLE_DSR && !ENABLE_DSR_HYBRID && DSR_ENCAP_MODE == DSR_ENCAP_GENEVE */
 
-		ret = nodeport_lb4(ctx, ip4, l3_off, 0, &ext_err);
+		ret = nodeport_lb4(ctx, ip4, l3_off, 0, &ext_err, &is_dsr);
 		if (ret == NAT_46X64_RECIRC) {
 			ep_tail_call(ctx, CILIUM_CALL_IPV6_FROM_NETDEV);
 			return send_drop_notify_error(ctx, 0, DROP_MISSED_TAIL_CALL,
@@ -257,13 +258,14 @@ int tail_lb_ipv6(struct __ctx_buff *ctx)
 	if (!ctx_skip_nodeport(ctx)) {
 		void *data, *data_end;
 		struct ipv6hdr *ip6;
+		bool is_dsr = false;
 
 		if (!revalidate_data(ctx, &data, &data_end, &ip6)) {
 			ret = DROP_INVALID;
 			goto drop_err;
 		}
 
-		ret = nodeport_lb6(ctx, ip6, 0, &ext_err);
+		ret = nodeport_lb6(ctx, ip6, 0, &ext_err, &is_dsr);
 		if (IS_ERR(ret))
 			goto drop_err;
 	}

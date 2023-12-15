@@ -67,6 +67,7 @@ cilium-agent [flags]
       --cni-chaining-mode string                                  Enable CNI chaining with the specified plugin (default "none")
       --cni-chaining-target string                                CNI network name into which to insert the Cilium chained configuration. Use '*' to select any network.
       --cni-exclusive                                             Whether to remove other CNI configurations
+      --cni-external-routing                                      Whether the chained CNI plugin handles routing on the node
       --cni-log-file string                                       Path where the CNI plugin should write logs (default "/var/run/cilium/cilium-cni.log")
       --config string                                             Configuration file (default "$HOME/ciliumd.yaml")
       --config-dir string                                         Configuration directory that contains a file for each option
@@ -130,7 +131,6 @@ cilium-agent [flags]
       --enable-k8s                                                Enable the k8s clientset (default true)
       --enable-k8s-api-discovery                                  Enable discovery of Kubernetes API groups and resources with the discovery API
       --enable-k8s-endpoint-slice                                 Enables k8s EndpointSlice feature in Cilium if the k8s cluster supports it (default true)
-      --enable-k8s-event-handover                                 Enable k8s event handover to kvstore for improved scalability
       --enable-k8s-terminating-endpoint                           Enable auto-detect of terminating endpoint condition (default true)
       --enable-l2-announcements                                   Enable L2 announcements
       --enable-l2-neigh-discovery                                 Enables L2 neighbor discovery used by kube-proxy-replacement and IPsec (default true)
@@ -188,6 +188,7 @@ cilium-agent [flags]
       --hubble-export-file-max-backups int                        Number of rotated Hubble export files to keep. (default 5)
       --hubble-export-file-max-size-mb int                        Size in MB at which to rotate Hubble export file. (default 10)
       --hubble-export-file-path string                            Filepath to write Hubble events to.
+      --hubble-flowlogs-config-path string                        Filepath with configuration of hubble flowlogs
       --hubble-listen-address string                              An additional address for Hubble server to listen to, e.g. ":4244"
       --hubble-metrics strings                                    List of Hubble metrics to enable.
       --hubble-metrics-server string                              Address to serve Hubble metrics on.
@@ -199,6 +200,7 @@ cilium-agent [flags]
       --hubble-redact-http-headers-allow strings                  HTTP headers to keep visible in flows
       --hubble-redact-http-headers-deny strings                   HTTP headers to redact from flows
       --hubble-redact-http-urlquery                               Hubble redact http URL query from flows
+      --hubble-redact-http-userinfo                               Hubble redact http user info from flows (default true)
       --hubble-redact-kafka-apikey                                Hubble redact Kafka API key from flows
       --hubble-skip-unknown-cgroup-ids                            Skip Hubble events with unknown cgroup ids (default true)
       --hubble-socket-path string                                 Set hubble's socket path to listen for connections (default "/var/run/cilium/hubble.sock")
@@ -263,6 +265,7 @@ cilium-agent [flags]
       --log-driver strings                                        Logging endpoints to use for example syslog
       --log-opt map                                               Log driver options for cilium-agent, configmap example for syslog driver: {"syslog.level":"info","syslog.facility":"local5","syslog.tag":"cilium-agent"}
       --log-system-load                                           Enable periodic logging of system load
+      --max-connected-clusters uint32                             Maximum number of clusters to be connected in a clustermesh. Increasing this value will reduce the maximum number of identities available. Valid configurations are [255, 511]. (default 255)
       --mesh-auth-enabled                                         Enable authentication processing & garbage collection (beta) (default true)
       --mesh-auth-gc-interval duration                            Interval in which auth entries are attempted to be garbage collected (default 5m0s)
       --mesh-auth-mutual-connect-timeout duration                 Timeout for connecting to the remote node TCP socket (default 5s)
@@ -280,6 +283,7 @@ cilium-agent [flags]
       --node-encryption-opt-out-labels string                     Label selector for nodes which will opt-out of node-to-node encryption (default "node-role.kubernetes.io/control-plane")
       --node-port-bind-protection                                 Reject application bind(2) requests to service ports in the NodePort range (default true)
       --node-port-range strings                                   Set the min/max NodePort port range (default [30000,32767])
+      --nodeport-addresses strings                                A whitelist of CIDRs to limit which IPs are used for NodePort. If not set, primary IPv4 and/or IPv6 address of each native device is used.
       --policy-audit-mode                                         Enable policy audit (non-drop) mode
       --policy-cidr-match-mode strings                            The entities that can be selected by CIDR policy. Supported values: 'nodes'
       --policy-queue-size int                                     Size of queues for policy-related events (default 100)
@@ -300,8 +304,8 @@ cilium-agent [flags]
       --restore                                                   Restores state, if possible, from previous daemon (default true)
       --route-metric int                                          Overwrite the metric used by cilium when adding routes to its 'cilium_host' device
       --routing-mode string                                       Routing mode ("native" or "tunnel") (default "tunnel")
+      --service-no-backend-response string                        Response to traffic for a service without backends (default "reject")
       --sidecar-istio-proxy-image string                          Regular expression matching compatible Istio sidecar istio-proxy container image names (default "cilium/istio_proxy")
-      --single-cluster-route                                      Use a single cluster route instead of per node routes
       --socket-path string                                        Sets daemon's socket path to listen for connections (default "/var/run/cilium/cilium.sock")
       --state-dir string                                          Directory path to store runtime state (default "/var/run/cilium")
       --tofqdns-dns-reject-response-code string                   DNS response code for rejecting DNS requests, available options are '[nameError refused]' (default "refused")
@@ -315,7 +319,7 @@ cilium-agent [flags]
       --tofqdns-proxy-response-max-delay duration                 The maximum time the DNS proxy holds an allowed DNS response before sending it along. Responses are sent as soon as the datapath is updated with the new IP information. (default 100ms)
       --trace-payloadlen int                                      Length of payload to capture when tracing (default 128)
       --trace-sock                                                Enable tracing for socket-based LB (default true)
-      --tunnel-port int                                           Tunnel port (default 8472 for "vxlan" and 6081 for "geneve")
+      --tunnel-port uint16                                        Tunnel port (default 8472 for "vxlan" and 6081 for "geneve")
       --tunnel-protocol string                                    Encapsulation protocol to use for the overlay ("vxlan" or "geneve") (default "vxlan")
       --version                                                   Print version information
       --vlan-bpf-bypass strings                                   List of explicitly allowed VLAN IDs, '0' id will allow all VLAN IDs
