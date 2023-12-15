@@ -20,6 +20,7 @@ import (
 	"github.com/cilium/cilium/pkg/backoff"
 	"github.com/cilium/cilium/pkg/controller"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
+	datapathTables "github.com/cilium/cilium/pkg/datapath/tables"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/identity"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
@@ -31,8 +32,8 @@ import (
 	"github.com/cilium/cilium/pkg/maps/lbmap"
 	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/maps/metricsmap"
+	"github.com/cilium/cilium/pkg/maps/timestamp"
 	tunnelmap "github.com/cilium/cilium/pkg/maps/tunnel"
-	"github.com/cilium/cilium/pkg/node"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/promise"
@@ -174,15 +175,15 @@ func (d *Daemon) getIPV4BigTCPStatus() *models.IPV4BigTCP {
 
 func (d *Daemon) getBandwidthManagerStatus() *models.BandwidthManager {
 	s := &models.BandwidthManager{
-		Enabled: option.Config.EnableBandwidthManager,
+		Enabled: d.bwManager.Enabled(),
 	}
 
-	if !option.Config.EnableBandwidthManager {
+	if !d.bwManager.Enabled() {
 		return s
 	}
 
 	s.CongestionControl = models.BandwidthManagerCongestionControlCubic
-	if option.Config.EnableBBR {
+	if d.bwManager.BBREnabled() {
 		s.CongestionControl = models.BandwidthManagerCongestionControlBbr
 	}
 
@@ -210,12 +211,7 @@ func (d *Daemon) getHostFirewallStatus() *models.HostFirewall {
 }
 
 func (d *Daemon) getClockSourceStatus() *models.ClockSource {
-	s := &models.ClockSource{Mode: models.ClockSourceModeKtime}
-	if option.Config.ClockSource == option.ClockSourceJiffies {
-		s.Mode = models.ClockSourceModeJiffies
-		s.Hertz = int64(option.Config.KernelHz)
-	}
-	return s
+	return timestamp.GetClockSourceFromOptions()
 }
 
 func (d *Daemon) getCNIChainingStatus() *models.CNIChainingStatus {
@@ -243,22 +239,17 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 		mode = models.KubeProxyReplacementModeDisabled
 	}
 
-	devicesLegacy := option.Config.GetDevices()
-	devices := make([]*models.KubeProxyReplacementDeviceListItems0, len(devicesLegacy))
-	v4Addrs := node.GetNodePortIPv4AddrsWithDevices()
-	v6Addrs := node.GetNodePortIPv6AddrsWithDevices()
-	for i, iface := range devicesLegacy {
+	devices, _ := datapathTables.SelectedDevices(d.devices, d.db.ReadTxn())
+	devicesList := make([]*models.KubeProxyReplacementDeviceListItems0, len(devices))
+	for i, dev := range devices {
 		info := &models.KubeProxyReplacementDeviceListItems0{
-			Name: iface,
-			IP:   make([]string, 0),
+			Name: dev.Name,
+			IP:   make([]string, len(dev.Addrs)),
 		}
-		if addr, ok := v4Addrs[iface]; ok {
-			info.IP = append(info.IP, addr.String())
+		for _, addr := range dev.Addrs {
+			info.IP = append(info.IP, addr.Addr.String())
 		}
-		if addr, ok := v6Addrs[iface]; ok {
-			info.IP = append(info.IP, addr.String())
-		}
-		devices[i] = info
+		devicesList[i] = info
 	}
 
 	features := &models.KubeProxyReplacementFeatures{
@@ -275,6 +266,14 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 	if option.Config.EnableNodePort {
 		features.NodePort.Enabled = true
 		features.NodePort.Mode = strings.ToUpper(option.Config.NodePortMode)
+		switch option.Config.LoadBalancerDSRDispatch {
+		case option.DSRDispatchIPIP:
+			features.NodePort.DsrMode = models.KubeProxyReplacementFeaturesNodePortDsrModeIPIP
+		case option.DSRDispatchOption:
+			features.NodePort.DsrMode = models.KubeProxyReplacementFeaturesNodePortDsrModeIPOptionExtension
+		case option.DSRDispatchGeneve:
+			features.NodePort.DsrMode = models.KubeProxyReplacementFeaturesNodePortDsrModeGeneve
+		}
 		if option.Config.NodePortMode == option.NodePortModeHybrid {
 			features.NodePort.Mode = strings.Title(option.Config.NodePortMode)
 		}
@@ -326,8 +325,8 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 
 	return &models.KubeProxyReplacement{
 		Mode:                mode,
-		Devices:             devicesLegacy,
-		DeviceList:          devices,
+		Devices:             datapathTables.DeviceNames(devices),
+		DeviceList:          devicesList,
 		DirectRoutingDevice: option.Config.DirectRoutingDevice,
 		Features:            features,
 	}
@@ -736,8 +735,8 @@ func (d *Daemon) getStatus(brief bool) models.StatusResponse {
 
 func (d *Daemon) getIdentityRange() *models.IdentityRange {
 	s := &models.IdentityRange{
-		MinIdentity: int64(identity.MinimalAllocationIdentity),
-		MaxIdentity: int64(identity.MaximumAllocationIdentity),
+		MinIdentity: int64(identity.GetMinimalAllocationIdentity()),
+		MaxIdentity: int64(identity.GetMaximumAllocationIdentity()),
 	}
 
 	return s

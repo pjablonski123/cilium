@@ -18,7 +18,7 @@ type L2AnnounceKey struct {
 	NetworkInterface string
 }
 
-func (k L2AnnounceKey) Key() []byte {
+func (k L2AnnounceKey) Key() index.Key {
 	key := append(index.NetIPAddr(k.IP), '+')
 	key = append(key, index.String(k.NetworkInterface)...)
 	return key
@@ -45,10 +45,8 @@ var (
 		FromObject: func(b *L2AnnounceEntry) index.KeySet {
 			return index.NewKeySet(b.Key())
 		},
-		FromKey: func(id L2AnnounceKey) []byte {
-			return id.Key()
-		},
-		Unique: true,
+		FromKey: L2AnnounceKey.Key,
+		Unique:  true,
 	}
 
 	L2AnnounceOriginIndex = statedb.Index[*L2AnnounceEntry, resource.Key]{
@@ -56,14 +54,28 @@ var (
 		FromObject: func(b *L2AnnounceEntry) index.KeySet {
 			return index.StringerSlice(b.Origins)
 		},
-		FromKey: func(id resource.Key) []byte {
-			return index.Stringer(id)
-		},
+		FromKey: index.Stringer[resource.Key],
 	}
+)
 
-	L2AnnounceTableCell = statedb.NewTableCell[*L2AnnounceEntry](
+func NewL2AnnounceTable() (statedb.RWTable[*L2AnnounceEntry], error) {
+	return statedb.NewTable[*L2AnnounceEntry](
 		"l2-announce",
 		L2AnnounceIDIndex,
 		L2AnnounceOriginIndex,
 	)
-)
+}
+
+func (*L2AnnounceEntry) TableHeader() []string {
+	return []string{
+		"IP",
+		"NetworkInterface",
+	}
+}
+
+func (e *L2AnnounceEntry) TableRow() []string {
+	return []string{
+		e.IP.String(),
+		e.NetworkInterface,
+	}
+}

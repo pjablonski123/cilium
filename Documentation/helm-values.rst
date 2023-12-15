@@ -84,6 +84,10 @@
      - Enable SPIRE integration (beta)
      - bool
      - ``false``
+   * - :spelling:ignore:`authentication.mutual.spire.install.agent.affinity`
+     - SPIRE agent affinity configuration
+     - object
+     - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.agent.annotations`
      - SPIRE agent annotations
      - object
@@ -91,9 +95,21 @@
    * - :spelling:ignore:`authentication.mutual.spire.install.agent.image`
      - SPIRE agent image
      - object
-     - ``{"digest":"sha256:8eef9857bf223181ecef10d9bbcd2f7838f3689e9bd2445bede35066a732e823","override":null,"pullPolicy":"Always","repository":"ghcr.io/spiffe/spire-agent","tag":"1.6.3","useDigest":true}``
+     - ``{"digest":"sha256:99405637647968245ff9fe215f8bd2bd0ea9807be9725f8bf19fe1b21471e52b","override":null,"pullPolicy":"Always","repository":"ghcr.io/spiffe/spire-agent","tag":"1.8.5","useDigest":true}``
    * - :spelling:ignore:`authentication.mutual.spire.install.agent.labels`
      - SPIRE agent labels
+     - object
+     - ``{}``
+   * - :spelling:ignore:`authentication.mutual.spire.install.agent.nodeSelector`
+     - SPIRE agent nodeSelector configuration ref: ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
+     - object
+     - ``{}``
+   * - :spelling:ignore:`authentication.mutual.spire.install.agent.podSecurityContext`
+     - Security context to be added to spire agent pods. SecurityContext holds pod-level security attributes and common container settings. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
+     - object
+     - ``{}``
+   * - :spelling:ignore:`authentication.mutual.spire.install.agent.securityContext`
+     - Security context to be added to spire agent containers. SecurityContext holds pod-level security attributes and common container settings. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container
      - object
      - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.agent.serviceAccount`
@@ -112,10 +128,14 @@
      - Enable SPIRE installation. This will only take effect only if authentication.mutual.spire.enabled is true
      - bool
      - ``true``
+   * - :spelling:ignore:`authentication.mutual.spire.install.existingNamespace`
+     - SPIRE namespace already exists. Set to true if Helm should not create, manage, and import the SPIRE namespace.
+     - bool
+     - ``false``
    * - :spelling:ignore:`authentication.mutual.spire.install.initImage`
      - init container image of SPIRE agent and server
      - object
-     - ``{"digest":"sha256:223ae047b1065bd069aac01ae3ac8088b3ca4a527827e283b85112f29385fb1b","override":null,"pullPolicy":"Always","repository":"docker.io/library/busybox","tag":"1.35.0","useDigest":true}``
+     - ``{"digest":"sha256:223ae047b1065bd069aac01ae3ac8088b3ca4a527827e283b85112f29385fb1b","override":null,"pullPolicy":"Always","repository":"docker.io/library/busybox","tag":"1.36.1","useDigest":true}``
    * - :spelling:ignore:`authentication.mutual.spire.install.namespace`
      - SPIRE namespace to install into
      - string
@@ -155,7 +175,7 @@
    * - :spelling:ignore:`authentication.mutual.spire.install.server.image`
      - SPIRE server image
      - object
-     - ``{"digest":"sha256:f4bc49fb0bd1d817a6c46204cc7ce943c73fb0a5496a78e0e4dc20c9a816ad7f","override":null,"pullPolicy":"Always","repository":"ghcr.io/spiffe/spire-server","tag":"1.6.3","useDigest":true}``
+     - ``{"digest":"sha256:28269265882048dcf0fed32fe47663cd98613727210b8d1a55618826f9bf5428","override":null,"pullPolicy":"Always","repository":"ghcr.io/spiffe/spire-server","tag":"1.8.5","useDigest":true}``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.initContainers`
      - SPIRE server init containers
      - list
@@ -251,7 +271,7 @@
    * - :spelling:ignore:`bgpControlPlane`
      - This feature set enables virtual BGP routers to be created via CiliumBGPPeeringPolicy CRDs.
      - object
-     - ``{"enabled":false,"secretsNamespace":{"create":true,"name":"cilium-bgp-secrets"}}``
+     - ``{"enabled":false,"secretsNamespace":{"create":false,"name":"kube-system"}}``
    * - :spelling:ignore:`bgpControlPlane.enabled`
      - Enables the BGP control plane.
      - bool
@@ -259,15 +279,15 @@
    * - :spelling:ignore:`bgpControlPlane.secretsNamespace`
      - SecretsNamespace is the namespace which BGP support will retrieve secrets from.
      - object
-     - ``{"create":true,"name":"cilium-bgp-secrets"}``
+     - ``{"create":false,"name":"kube-system"}``
    * - :spelling:ignore:`bgpControlPlane.secretsNamespace.create`
      - Create secrets namespace for BGP secrets.
      - bool
-     - ``true``
+     - ``false``
    * - :spelling:ignore:`bgpControlPlane.secretsNamespace.name`
      - The name of the secret namespace to which Cilium agents are given read access
      - string
-     - ``"cilium-bgp-secrets"``
+     - ``"kube-system"``
    * - :spelling:ignore:`bpf.authMapMax`
      - Configure the maximum number of entries in auth map.
      - int
@@ -420,10 +440,14 @@
      - Affinity for clustermesh.apiserver
      - object
      - ``{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"labelSelector":{"matchLabels":{"k8s-app":"clustermesh-apiserver"}},"topologyKey":"kubernetes.io/hostname"}]}}``
-   * - :spelling:ignore:`clustermesh.apiserver.etcd.image`
-     - Clustermesh API server etcd image.
-     - object
-     - ``{"digest":"sha256:795d8660c48c439a7c3764c2330ed9222ab5db5bb524d8d0607cac76f7ba82a3","override":null,"pullPolicy":"Always","repository":"quay.io/coreos/etcd","tag":"v3.5.4","useDigest":true}``
+   * - :spelling:ignore:`clustermesh.apiserver.etcd.init.extraArgs`
+     - Additional arguments to ``clustermesh-apiserver etcdinit``.
+     - list
+     - ``[]``
+   * - :spelling:ignore:`clustermesh.apiserver.etcd.init.extraEnv`
+     - Additional environment variables to ``clustermesh-apiserver etcdinit``.
+     - list
+     - ``[]``
    * - :spelling:ignore:`clustermesh.apiserver.etcd.init.resources`
      - Specifies the resources for etcd init container in the apiserver
      - object
@@ -476,10 +500,6 @@
      - Additional KVStoreMesh volumeMounts.
      - list
      - ``[]``
-   * - :spelling:ignore:`clustermesh.apiserver.kvstoremesh.image`
-     - KVStoreMesh image.
-     - object
-     - ``{"digest":"","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/kvstoremesh-ci","tag":"latest","useDigest":false}``
    * - :spelling:ignore:`clustermesh.apiserver.kvstoremesh.lifecycle`
      - lifecycle setting for the KVStoreMesh container
      - object
@@ -712,6 +732,10 @@
      - Enable the Clustermesh explicit configuration.
      - bool
      - ``false``
+   * - :spelling:ignore:`clustermesh.maxConnectedClusters`
+     - The maximum number of clusters to support in a ClusterMesh. This value cannot be changed on running clusters, and all clusters in a ClusterMesh must be configured with the same value. Values > 255 will decrease the maximum allocatable cluster-local identities. Supported values are 255 and 511.
+     - int
+     - ``255``
    * - :spelling:ignore:`clustermesh.useAPIServer`
      - Deploy clustermesh-apiserver for clustermesh
      - bool
@@ -760,6 +784,10 @@
      - Configure the log file for CNI logging with retention policy of 7 days. Disable CNI file logging by setting this field to empty explicitly.
      - string
      - ``"/var/run/cilium/cilium-cni.log"``
+   * - :spelling:ignore:`cni.resources`
+     - Specifies the resources for the cni initContainer
+     - object
+     - ``{"requests":{"cpu":"100m","memory":"10Mi"}}``
    * - :spelling:ignore:`cni.uninstall`
      - Remove the CNI configuration and binary files on agent shutdown. Enable this if you're removing Cilium from the cluster. Disable this to prevent the CNI configuration file from being removed during agent upgrade, which can cause nodes to go unmanageable.
      - bool
@@ -880,10 +908,6 @@
      - Enable CiliumEndpointSlice feature.
      - bool
      - ``false``
-   * - :spelling:ignore:`enableCnpStatusUpdates`
-     - Whether to enable CNP status updates.
-     - bool
-     - ``false``
    * - :spelling:ignore:`enableCriticalPriorityClass`
      - Explicitly enable or disable priority class. .Capabilities.KubeVersion is unsettable in ``helm template`` calls, it depends on k8s libraries version that Helm was compiled against. This option allows to explicitly disable setting the priority class, which is useful for rendering charts for gke clusters in advance.
      - bool
@@ -904,10 +928,6 @@
      - Enables masquerading of IPv6 traffic leaving the node from endpoints.
      - bool
      - ``true``
-   * - :spelling:ignore:`enableK8sEventHandover`
-     - Configures the use of the KVStore to optimize Kubernetes event handling by mirroring it into the KVstore for reduced overhead in large clusters.
-     - bool
-     - ``false``
    * - :spelling:ignore:`enableK8sTerminatingEndpoint`
      - Configure whether to enable auto detect of terminating state for endpoints in order to support graceful termination.
      - bool
@@ -1115,7 +1135,7 @@
    * - :spelling:ignore:`envoy.image`
      - Envoy container image.
      - object
-     - ``{"digest":"sha256:2b590be37624547d638a578a3f31278d3be53a1a2649ba888a9f15771628521e","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/cilium-envoy","tag":"v1.27.2-ab187719b71b513150f30209569695adf16ec869","useDigest":true}``
+     - ``{"digest":"sha256:80de27c1d16ab92923cc0cd1fff90f2e7047a9abf3906fda712268d9cbc5b950","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/cilium-envoy","tag":"v1.27.2-f19708f3d0188fe39b7e024b4525b75a9eeee61f","useDigest":true}``
    * - :spelling:ignore:`envoy.livenessProbe.failureThreshold`
      - failure threshold of liveness probe
      - int
@@ -1448,6 +1468,38 @@
      - Enable Hubble (true by default).
      - bool
      - ``true``
+   * - :spelling:ignore:`hubble.export`
+     - Hubble flows export.
+     - object
+     - ``{"dynamic":{"config":{"configMapName":"cilium-flowlog-config","content":[{"excludeFilters":[],"fieldMask":[],"filePath":"/var/run/cilium/hubble/events.log","includeFilters":[],"name":"all"}],"createConfigMap":true},"enabled":false},"fileMaxBackups":5,"fileMaxSizeMb":10,"static":{"allowList":[],"denyList":[],"enabled":false,"fieldMask":[],"filePath":"/var/run/cilium/hubble/events.log"}}``
+   * - :spelling:ignore:`hubble.export.dynamic`
+     - - Dynamic exporters configuration. Dynamic exporters may be reconfigured without a need of agent restarts.
+     - object
+     - ``{"config":{"configMapName":"cilium-flowlog-config","content":[{"excludeFilters":[],"fieldMask":[],"filePath":"/var/run/cilium/hubble/events.log","includeFilters":[],"name":"all"}],"createConfigMap":true},"enabled":false}``
+   * - :spelling:ignore:`hubble.export.dynamic.config.configMapName`
+     - -- Name of configmap with configuration that may be altered to reconfigure exporters within a running agents.
+     - string
+     - ``"cilium-flowlog-config"``
+   * - :spelling:ignore:`hubble.export.dynamic.config.content`
+     - -- Exporters configuration in YAML format.
+     - list
+     - ``[{"excludeFilters":[],"fieldMask":[],"filePath":"/var/run/cilium/hubble/events.log","includeFilters":[],"name":"all"}]``
+   * - :spelling:ignore:`hubble.export.dynamic.config.createConfigMap`
+     - -- True if helm installer should create config map. Switch to false if you want to self maintain the file content.
+     - bool
+     - ``true``
+   * - :spelling:ignore:`hubble.export.fileMaxBackups`
+     - - Defines max number of backup/rotated files.
+     - int
+     - ``5``
+   * - :spelling:ignore:`hubble.export.fileMaxSizeMb`
+     - - Defines max file size of output file before it gets rotated.
+     - int
+     - ``10``
+   * - :spelling:ignore:`hubble.export.static`
+     - - Static exporter configuration. Static exporter is bound to agent lifecycle.
+     - object
+     - ``{"allowList":[],"denyList":[],"enabled":false,"fieldMask":[],"filePath":"/var/run/cilium/hubble/events.log"}``
    * - :spelling:ignore:`hubble.listenAddress`
      - An additional address for Hubble to listen to. Set this field ":4244" if you are enabling Hubble Relay, as it assumes that Hubble is listening on port 4244.
      - string
@@ -1519,7 +1571,7 @@
    * - :spelling:ignore:`hubble.redact`
      - Enables redacting sensitive information present in Layer 7 flows.
      - object
-     - ``{"enabled":false,"http":{"headers":{"allow":[],"deny":[]},"urlQuery":false},"kafka":{"apiKey":false}}``
+     - ``{"enabled":false,"http":{"headers":{"allow":[],"deny":[]},"urlQuery":false,"userInfo":true},"kafka":{"apiKey":false}}``
    * - :spelling:ignore:`hubble.redact.http.headers.allow`
      - List of HTTP headers to allow: headers not matching will be redacted. Note: ``allow`` and ``deny`` lists cannot be used both at the same time, only one can be present. Example:   redact:     enabled: true     http:       headers:         allow:           - traceparent           - tracestate           - Cache-Control  You can specify the options from the helm CLI:   --set hubble.redact.enabled="true"   --set hubble.redact.http.headers.allow="traceparent,tracestate,Cache-Control"
      - list
@@ -1532,6 +1584,10 @@
      - Enables redacting URL query (GET) parameters. Example:    redact:     enabled: true     http:       urlQuery: true  You can specify the options from the helm CLI:    --set hubble.redact.enabled="true"   --set hubble.redact.http.urlQuery="true"
      - bool
      - ``false``
+   * - :spelling:ignore:`hubble.redact.http.userInfo`
+     - Enables redacting user info, e.g., password when basic auth is used. Example:    redact:     enabled: true     http:       userInfo: true  You can specify the options from the helm CLI:    --set hubble.redact.enabled="true"   --set hubble.redact.http.userInfo="true"
+     - bool
+     - ``true``
    * - :spelling:ignore:`hubble.redact.kafka.apiKey`
      - Enables redacting Kafka's API key. Example:    redact:     enabled: true     kafka:       apiKey: true  You can specify the options from the helm CLI:    --set hubble.redact.enabled="true"   --set hubble.redact.kafka.apiKey="true"
      - bool
@@ -1554,6 +1610,14 @@
      - ``false``
    * - :spelling:ignore:`hubble.relay.extraEnv`
      - Additional hubble-relay environment variables.
+     - list
+     - ``[]``
+   * - :spelling:ignore:`hubble.relay.extraVolumeMounts`
+     - Additional hubble-relay volumeMounts.
+     - list
+     - ``[]``
+   * - :spelling:ignore:`hubble.relay.extraVolumes`
+     - Additional hubble-relay volumes.
      - list
      - ``[]``
    * - :spelling:ignore:`hubble.relay.gops.enabled`
@@ -1977,7 +2041,7 @@
      - bool
      - ``true``
    * - :spelling:ignore:`ingressController.ingressLBAnnotationPrefixes`
-     - IngressLBAnnotations are the annotation prefixes, which are used to filter annotations to propagate from Ingress to the Load Balancer service
+     - IngressLBAnnotations are the annotation and label prefixes, which are used to filter annotations and/or labels to propagate from Ingress to the Load Balancer service
      - list
      - ``["service.beta.kubernetes.io","service.kubernetes.io","cloud.google.com"]``
    * - :spelling:ignore:`ingressController.loadbalancerMode`
@@ -2040,6 +2104,10 @@
      - Service type for the shared LB service
      - string
      - ``"LoadBalancer"``
+   * - :spelling:ignore:`initResources`
+     - resources & limits for the agent init containers
+     - object
+     - ``{}``
    * - :spelling:ignore:`installNoConntrackIptablesRules`
      - Install Iptables rules to skip netfilter connection tracking on all pod traffic. This option is only effective when Cilium is running in direct routing and full KPR mode. Moreover, this option cannot be enabled when Cilium is running in a managed Kubernetes environment or in a chained CNI setup.
      - bool
@@ -2107,15 +2175,15 @@
    * - :spelling:ignore:`k8sClientRateLimit`
      - Configure the client side rate limit for the agent and operator  If the amount of requests to the Kubernetes API server exceeds the configured rate limit, the agent and operator will start to throttle requests by delaying them until there is budget or the request times out.
      - object
-     - ``{"burst":10,"qps":5}``
+     - ``{"burst":null,"qps":null}``
    * - :spelling:ignore:`k8sClientRateLimit.burst`
      - The burst request rate in requests per second. The rate limiter will allow short bursts with a higher rate.
      - int
-     - ``10``
+     - 10 for k8s up to 1.26. 20 for k8s version 1.27+
    * - :spelling:ignore:`k8sClientRateLimit.qps`
      - The sustained request rate in requests per second.
      - int
-     - ``5``
+     - 5 for k8s up to 1.26. 10 for k8s version 1.27+
    * - :spelling:ignore:`k8sNetworkPolicy.enabled`
      - Enable support for K8s NetworkPolicy
      - bool
@@ -2187,7 +2255,11 @@
    * - :spelling:ignore:`loadBalancer`
      - Configure service load balancing
      - object
-     - ``{"l7":{"algorithm":"round_robin","backend":"disabled","ports":[]}}``
+     - ``{"acceleration":"disabled","l7":{"algorithm":"round_robin","backend":"disabled","ports":[]}}``
+   * - :spelling:ignore:`loadBalancer.acceleration`
+     - acceleration is the option to accelerate service handling via XDP Applicable values can be: disabled (do not use XDP), native (XDP BPF program is run directly out of the networking driver's early receive path), or best-effort (use native mode XDP acceleration on devices that support it).
+     - string
+     - ``"disabled"``
    * - :spelling:ignore:`loadBalancer.l7`
      - L7 LoadBalancer
      - object
@@ -2796,6 +2868,10 @@
      - Enabled is temporary until https://github.com/cilium/cilium-cli/issues/1396 is implemented. Cilium CLI doesn't create the SAs for node-init, thus the workaround. Helm is not affected by this issue. Name and automount can be configured, if enabled is set to true. Otherwise, they are ignored. Enabled can be removed once the issue is fixed. Cilium-nodeinit DS must also be fixed.
      - bool
      - ``false``
+   * - :spelling:ignore:`serviceNoBackendResponse`
+     - Configure what the response should be to traffic for a service without backends. "reject" only works on kernels >= 5.10, on lower kernels we fallback to "drop". Possible values:  - reject (default)  - drop
+     - string
+     - ``"reject"``
    * - :spelling:ignore:`sleepAfterInit`
      - Do not run Cilium agent when running with clean mode. Useful to completely uninstall Cilium as it will stop Cilium from starting and create artifacts in the node.
      - bool
@@ -2876,10 +2952,6 @@
      - Node tolerations for agent scheduling to nodes with taints ref: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
      - list
      - ``[{"operator":"Exists"}]``
-   * - :spelling:ignore:`tunnel`
-     - Configure the encapsulation configuration for communication between nodes. Deprecated in favor of tunnelProtocol and routingMode. To be removed in 1.15. Possible values:   - disabled   - vxlan   - geneve
-     - string
-     - ``"vxlan"``
    * - :spelling:ignore:`tunnelPort`
      - Configure VXLAN and Geneve tunnel port.
      - int

@@ -17,10 +17,12 @@ import (
 	"github.com/cilium/ebpf"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/inctimer"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/mac"
+	"github.com/cilium/cilium/pkg/maps/policymap"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/sysctl"
 	"github.com/cilium/cilium/pkg/time"
@@ -92,6 +94,14 @@ func replaceDatapath(ctx context.Context, ifName, objPath string, progs []progDe
 		return nil, fmt.Errorf("loading eBPF ELF: %w", err)
 	}
 
+	revert := func() {
+		// Program replacement unsuccessful, revert bpffs migration.
+		l.Debug("Reverting bpffs map migration")
+		if err := bpf.FinalizeBPFFSMigration(bpf.TCGlobalsPath(), spec, true); err != nil {
+			l.WithError(err).Error("Failed to revert bpffs map migration")
+		}
+	}
+
 	for _, prog := range progs {
 		if spec.Programs[prog.progName] == nil {
 			return nil, fmt.Errorf("no program %s found in eBPF ELF", prog.progName)
@@ -125,11 +135,29 @@ func replaceDatapath(ctx context.Context, ifName, objPath string, progs []progDe
 		break
 	}
 
+	// Inserting a program into these maps will immediately cause other BPF
+	// programs to call into it, even if other maps like cilium_calls haven't been
+	// fully populated for the current ELF. Save their contents and avoid sending
+	// them to the ELF loader.
+	var policyProgs, egressPolicyProgs []ebpf.MapKV
+	if pm, ok := spec.Maps[policymap.PolicyCallMapName]; ok {
+		policyProgs = append(policyProgs, pm.Contents...)
+		pm.Contents = nil
+	}
+	if pm, ok := spec.Maps[policymap.PolicyEgressCallMapName]; ok {
+		egressPolicyProgs = append(egressPolicyProgs, pm.Contents...)
+		pm.Contents = nil
+	}
+
 	// Load the CollectionSpec into the kernel, picking up any pinned maps from
 	// bpffs in the process.
 	finalize := func() {}
+	pinPath := bpf.TCGlobalsPath()
 	opts := ebpf.CollectionOptions{
-		Maps: ebpf.MapOptions{PinPath: bpf.TCGlobalsPath()},
+		Maps: ebpf.MapOptions{PinPath: pinPath},
+	}
+	if err := bpf.MkdirBPF(pinPath); err != nil {
+		return nil, fmt.Errorf("creating bpffs pin path: %w", err)
 	}
 	l.Debug("Loading Collection into kernel")
 	coll, err := bpf.LoadCollection(spec, opts)
@@ -170,37 +198,79 @@ func replaceDatapath(ctx context.Context, ifName, objPath string, progs []progDe
 
 	for _, prog := range progs {
 		scopedLog := l.WithField("progName", prog.progName).WithField("direction", prog.direction)
-		scopedLog.Debug("Attaching program to interface")
-		if err := attachProgram(link, coll.Programs[prog.progName], prog.progName, directionToParent(prog.direction), xdpModeToFlag(xdpMode)); err != nil {
-			// Program replacement unsuccessful, revert bpffs migration.
-			l.Debug("Reverting bpffs map migration")
-			if err := bpf.FinalizeBPFFSMigration(bpf.TCGlobalsPath(), spec, true); err != nil {
-				l.WithError(err).Error("Failed to revert bpffs map migration")
+		if xdpMode != "" {
+			linkDir := bpffsDeviceLinksDir(bpf.CiliumPath(), link)
+			if err := bpf.MkdirBPF(linkDir); err != nil {
+				return nil, fmt.Errorf("creating bpffs link dir for device %s: %w", link.Attrs().Name, err)
 			}
 
+			scopedLog.Debug("Attaching XDP program to interface")
+			err = attachXDPProgram(link, coll.Programs[prog.progName], prog.progName, linkDir, xdpModeToFlag(xdpMode))
+		} else {
+			scopedLog.Debug("Attaching TC program to interface")
+			err = attachTCProgram(link, coll.Programs[prog.progName], prog.progName, directionToParent(prog.direction))
+		}
+
+		if err != nil {
+			revert()
 			return nil, fmt.Errorf("program %s: %w", prog.progName, err)
 		}
 		scopedLog.Debug("Successfully attached program to interface")
 	}
 
+	// If an ELF contains one of the policy call maps, resolve and insert the
+	// programs it refers to into the map.
+
+	if len(policyProgs) != 0 {
+		if err := resolveAndInsertCalls(coll, policymap.PolicyCallMapName, policyProgs); err != nil {
+			revert()
+			return nil, fmt.Errorf("inserting policy programs: %w", err)
+		}
+	}
+
+	if len(egressPolicyProgs) != 0 {
+		if err := resolveAndInsertCalls(coll, policymap.PolicyEgressCallMapName, egressPolicyProgs); err != nil {
+			revert()
+			return nil, fmt.Errorf("inserting egress policy programs: %w", err)
+		}
+	}
+
 	return finalize, nil
 }
 
-// attachProgram attaches prog to link.
-// If xdpFlags is non-zero, attaches prog to XDP.
-func attachProgram(link netlink.Link, prog *ebpf.Program, progName string, qdiscParent uint32, xdpFlags uint32) error {
-	if prog == nil {
-		return errors.New("cannot attach a nil program")
+// resolveAndInsertCalls resolves a given slice of ebpf.MapKV containing u32 keys
+// and string values (typical for a prog array) to the Programs they point to in
+// the Collection. The Programs are then inserted into the Map with the given
+// mapName contained within the Collection.
+func resolveAndInsertCalls(coll *ebpf.Collection, mapName string, calls []ebpf.MapKV) error {
+	m, ok := coll.Maps[mapName]
+	if !ok {
+		return fmt.Errorf("call map %s not found in Collection", mapName)
 	}
 
-	if xdpFlags != 0 {
-		// Omitting XDP_FLAGS_UPDATE_IF_NOEXIST equals running 'ip' with -force,
-		// and will clobber any existing XDP attachment to the interface.
-		if err := netlink.LinkSetXdpFdWithFlags(link, prog.FD(), int(xdpFlags)); err != nil {
-			return fmt.Errorf("attaching XDP program to interface %s: %w", link.Attrs().Name, err)
+	for _, v := range calls {
+		name := v.Value.(string)
+		slot := v.Key.(uint32)
+
+		p, ok := coll.Programs[name]
+		if !ok {
+			return fmt.Errorf("program %s not found in Collection", name)
 		}
 
-		return nil
+		if err := m.Update(slot, p, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("inserting program %s into slot %d", name, slot)
+		}
+
+		log.Debugf("Inserted program %s into %s slot %d", name, mapName, slot)
+	}
+
+	return nil
+}
+
+// attachTCProgram attaches the TC program 'prog' to link.
+func attachTCProgram(link netlink.Link, prog *ebpf.Program, progName string, qdiscParent uint32) error {
+	if prog == nil {
+		return errors.New("cannot attach a nil program")
 	}
 
 	if err := replaceQdisc(link); err != nil {
@@ -221,15 +291,15 @@ func attachProgram(link netlink.Link, prog *ebpf.Program, progName string, qdisc
 	}
 
 	if err := netlink.FilterReplace(filter); err != nil {
-		return fmt.Errorf("replacing tc filter: %w", err)
+		return fmt.Errorf("replacing tc filter for interface %s: %w", link.Attrs().Name, err)
 	}
 
 	return nil
 }
 
-// RemoveTCFilters removes all tc filters from the given interface.
+// removeTCFilters removes all tc filters from the given interface.
 // Direction is passed as netlink.HANDLE_MIN_{INGRESS,EGRESS} via tcDir.
-func RemoveTCFilters(ifName string, tcDir uint32) error {
+func removeTCFilters(ifName string, tcDir uint32) error {
 	link, err := netlink.LinkByName(ifName)
 	if err != nil {
 		return err
@@ -471,9 +541,9 @@ func addHostDeviceAddr(hostDev netlink.Link, ipv4, ipv6 net.IP) error {
 
 // setupTunnelDevice ensures the cilium_{mode} device is created and
 // unused leftover devices are cleaned up in case mode changes.
-func setupTunnelDevice(mode string, port, mtu int) error {
+func setupTunnelDevice(mode tunnel.Protocol, port uint16, mtu int) error {
 	switch mode {
-	case option.TunnelGeneve:
+	case tunnel.Geneve:
 		if err := setupGeneveDevice(port, mtu); err != nil {
 			return fmt.Errorf("setting up geneve device: %w", err)
 		}
@@ -481,7 +551,7 @@ func setupTunnelDevice(mode string, port, mtu int) error {
 			return fmt.Errorf("removing %s: %w", defaults.VxlanDevice, err)
 		}
 
-	case option.TunnelVXLAN:
+	case tunnel.VXLAN:
 		if err := setupVxlanDevice(port, mtu); err != nil {
 			return fmt.Errorf("setting up vxlan device: %w", err)
 		}
@@ -506,7 +576,7 @@ func setupTunnelDevice(mode string, port, mtu int) error {
 //
 // Changing the destination port will recreate the device. Changing the MTU will
 // modify the device without recreating it.
-func setupGeneveDevice(dport, mtu int) error {
+func setupGeneveDevice(dport uint16, mtu int) error {
 	mac, err := mac.GenerateRandMAC()
 	if err != nil {
 		return err
@@ -519,7 +589,7 @@ func setupGeneveDevice(dport, mtu int) error {
 			HardwareAddr: net.HardwareAddr(mac),
 		},
 		FlowBased: true,
-		Dport:     uint16(dport),
+		Dport:     dport,
 	}
 
 	l, err := ensureDevice(dev)
@@ -530,7 +600,7 @@ func setupGeneveDevice(dport, mtu int) error {
 	// Recreate the device with the correct destination port. Modifying the device
 	// without recreating it is not supported.
 	geneve, _ := l.(*netlink.Geneve)
-	if geneve.Dport != uint16(dport) {
+	if geneve.Dport != dport {
 		if err := netlink.LinkDel(l); err != nil {
 			return fmt.Errorf("deleting outdated geneve device: %w", err)
 		}
@@ -547,7 +617,7 @@ func setupGeneveDevice(dport, mtu int) error {
 //
 // Changing the port will recreate the device. Changing the MTU will modify the
 // device without recreating it.
-func setupVxlanDevice(port, mtu int) error {
+func setupVxlanDevice(port uint16, mtu int) error {
 	mac, err := mac.GenerateRandMAC()
 	if err != nil {
 		return err
@@ -560,7 +630,7 @@ func setupVxlanDevice(port, mtu int) error {
 			HardwareAddr: net.HardwareAddr(mac),
 		},
 		FlowBased: true,
-		Port:      port,
+		Port:      int(port),
 	}
 
 	l, err := ensureDevice(dev)
@@ -571,7 +641,7 @@ func setupVxlanDevice(port, mtu int) error {
 	// Recreate the device with the correct destination port. Modifying the device
 	// without recreating it is not supported.
 	vxlan, _ := l.(*netlink.Vxlan)
-	if vxlan.Port != port {
+	if vxlan.Port != int(port) {
 		if err := netlink.LinkDel(l); err != nil {
 			return fmt.Errorf("deleting outdated vxlan device: %w", err)
 		}

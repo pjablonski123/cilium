@@ -35,12 +35,12 @@ import (
 	api "github.com/osrg/gobgp/v3/api"
 	"github.com/osrg/gobgp/v3/internal/pkg/table"
 	"github.com/osrg/gobgp/v3/internal/pkg/version"
-	"github.com/osrg/gobgp/v3/internal/pkg/zebra"
 	"github.com/osrg/gobgp/v3/pkg/apiutil"
 	"github.com/osrg/gobgp/v3/pkg/config/oc"
 	"github.com/osrg/gobgp/v3/pkg/log"
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/osrg/gobgp/v3/pkg/packet/bmp"
+	"github.com/osrg/gobgp/v3/pkg/zebra"
 )
 
 type tcpListener struct {
@@ -915,12 +915,13 @@ func (s *BgpServer) notifyPostPolicyUpdateWatcher(peer *peer, pathList []*table.
 func newWatchEventPeer(peer *peer, m *fsmMsg, oldState bgp.FSMState, t PeerEventType) *watchEventPeer {
 	var laddr string
 	var rport, lport uint16
+
+	peer.fsm.lock.RLock()
 	if peer.fsm.conn != nil {
 		_, rport = peer.fsm.RemoteHostPort()
 		laddr, lport = peer.fsm.LocalHostPort()
 	}
 	sentOpen := buildopen(peer.fsm.gConf, peer.fsm.pConf)
-	peer.fsm.lock.RLock()
 	recvOpen := peer.fsm.recvOpen
 	e := &watchEventPeer{
 		Type:          t,
@@ -3102,6 +3103,28 @@ func (s *BgpServer) AddDynamicNeighbor(ctx context.Context, r *api.AddDynamicNei
 			PeerGroup: r.DynamicNeighbor.PeerGroup},
 		}
 		s.peerGroupMap[c.Config.PeerGroup].AddDynamicNeighbor(c)
+
+		pConf := s.peerGroupMap[c.Config.PeerGroup].Conf
+		if pConf.Config.AuthPassword != "" {
+			prefix := r.DynamicNeighbor.Prefix
+			addr, _, _ := net.ParseCIDR(prefix)
+			for _, l := range s.listListeners(addr.String()) {
+				if err := setTCPMD5SigSockopt(l, prefix, pConf.Config.AuthPassword); err != nil {
+					s.logger.Warn("failed to set md5",
+						log.Fields{
+							"Topic": "Peer",
+							"Key":   prefix,
+							"Err":   err})
+				} else {
+					s.logger.Info("successfully set md5 for dynamic peer",
+						log.Fields{
+							"Topic": "Peer",
+							"Key":   prefix,
+						},
+					)
+				}
+			}
+		}
 		return nil
 	}, true)
 }
@@ -3206,6 +3229,32 @@ func (s *BgpServer) DeleteDynamicNeighbor(ctx context.Context, r *api.DeleteDyna
 	}
 	return s.mgmtOperation(func() error {
 		s.peerGroupMap[r.PeerGroup].DeleteDynamicNeighbor(r.Prefix)
+
+		if pg, ok := s.peerGroupMap[r.PeerGroup]; ok {
+			pConf := pg.Conf
+			if pConf.Config.AuthPassword != "" {
+				prefix := r.Prefix
+				addr, _, perr := net.ParseCIDR(prefix)
+				if perr == nil {
+					for _, l := range s.listListeners(addr.String()) {
+						if err := setTCPMD5SigSockopt(l, prefix, ""); err != nil {
+							s.logger.Warn("failed to clear md5",
+								log.Fields{
+									"Topic": "Peer",
+									"Key":   prefix,
+									"Err":   err})
+						}
+					}
+				} else {
+					s.logger.Warn("Cannot clear up dynamic MD5, invalid prefix",
+						log.Fields{
+							"Topic": "Peer",
+							"Key":   prefix,
+							"Err":   perr,
+						})
+				}
+			}
+		}
 		return nil
 	}, true)
 }
@@ -3626,7 +3675,7 @@ func (s *BgpServer) AddDefinedSet(ctx context.Context, r *api.AddDefinedSetReque
 		if err != nil {
 			return err
 		}
-		return s.policy.AddDefinedSet(set)
+		return s.policy.AddDefinedSet(set, r.GetReplace())
 	}, false)
 }
 

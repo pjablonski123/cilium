@@ -38,8 +38,9 @@ Cluster Addressing Requirements
 
 .. note::
   
-  If you intend to connect two AKS (Azure Kubernetes Service) clusters together
-  you can follow the :ref:`gs_clustermesh_aks_prep` guide for instruction on
+  For cloud-specific deployments, you can check out the :ref:`gs_clustermesh_aks_prep`
+  guide for Azure Kubernetes Service (AKS) or the :ref:`gs_clustermesh_gke_prep` 
+  guide for Google Kubernetes Engine (GKE) clusters for instructions on
   how to meet the above requirements.
 
 Additional Requirements for Native-routed Datapath Modes
@@ -64,6 +65,37 @@ Additional Requirements for Native-routed Datapath Modes
   firewall rules allowing pods in different clusters to reach each other on all
   ports.
 
+Scaling Limitations
+=============================
+
+* By default, the maximum number of clusters that can be connected together using Cluster Mesh is
+  255. By using the option ``maxConnectedClusters`` this limit can be set to 511, at the expense of
+  lowering the maximum number of cluster-local identities. Valid configurations for this option are
+  255 and 511.
+
+* All clusters across a Cluster Mesh must be configured with the same ``maxConnectedClusters``
+  value.
+
+ * ConfigMap option ``max-connected-clusters=511``
+ * Helm option ``--set clustermesh.maxConnectedClusters=511``
+ * ``cilium install`` option ``--set clustermesh.maxConnectedClusters=511``
+
+* This option controls the bit allocation of numeric identities and will affect the number of
+  identities that can be allocated per cluster:
+
++------------------------+------------+----------+----------+
+| MaxConnectedClusters   | Maximum cluster-local identities |
++========================+============+==========+==========+
+| 255 (default)          | 65535                            |
++------------------------+------------+----------+----------+
+| 511                    | 32767                            |
++------------------------+------------+----------+----------+
+
+.. warning::
+  ``MaxConnectedClusters`` can only be set once during Cilium installation and should not be
+  changed for existing clusters. Changing this option on a live cluster may result in connection
+  disruption and possible incorrect enforcement of network policies
+
 Install the Cilium CLI
 ======================
 
@@ -86,6 +118,8 @@ same as you typically pass to ``kubectl --context``.
 Specify the Cluster Name and ID
 ===============================
 
+Cilium needs to be installed onto each cluster.
+
 Each cluster must be assigned a unique human-readable name as well as a numeric
 cluster ID (1-255). It is best to assign both these attributes at installation
 time of Cilium:
@@ -93,6 +127,15 @@ time of Cilium:
  * ConfigMap options ``cluster-name`` and ``cluster-id``
  * Helm options ``cluster.name`` and ``cluster.id``
  * Cilium CLI install options ``--set cluster.name`` and ``--set cluster.id``
+
+Review :ref:`k8s_install_quick` for more details and use cases.
+
+Example install using the Cilium CLI:
+
+.. code-block:: shell-session
+
+  cilium install --set cluster.name=$CLUSTER1 --set cluster.id=1 --context $CLUSTER1
+  cilium install --set cluster.name=$CLUSTER2 --set cluster.id=2 --context $CLUSTER2
 
 .. important::
 
@@ -260,10 +303,3 @@ Use the following list of steps to troubleshoot issues with ClusterMesh:
 
 If you cannot resolve the issue with the above commands, see the
 :ref:`troubleshooting_clustermesh` for a more detailed troubleshooting guide.
-
-Limitations
-###########
-
- * The number of clusters that can be connected together is currently limited
-   to 255. This limitation will be lifted in the future when running in direct
-   routing mode or when running in encapsulation mode with encryption enabled.

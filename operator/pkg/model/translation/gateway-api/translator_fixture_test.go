@@ -51,45 +51,7 @@ var httpInsecureListenerXDSResource = toAny(&envoy_config_listener.Listener{
 		{
 			FilterChainMatch: &envoy_config_listener.FilterChainMatch{TransportProtocol: "raw_buffer"},
 			Filters: []*envoy_config_listener.Filter{
-				{
-					Name: "envoy.filters.network.http_connection_manager",
-					ConfigType: &envoy_config_listener.Filter_TypedConfig{
-						TypedConfig: toAny(&http_connection_manager_v3.HttpConnectionManager{
-							StatPrefix: "listener-insecure",
-							RouteSpecifier: &http_connection_manager_v3.HttpConnectionManager_Rds{
-								Rds: &http_connection_manager_v3.Rds{RouteConfigName: "listener-insecure"},
-							},
-							UpgradeConfigs: []*http_connection_manager_v3.HttpConnectionManager_UpgradeConfig{
-								{UpgradeType: "websocket"},
-							},
-							UseRemoteAddress: &wrapperspb.BoolValue{Value: true},
-							SkipXffAppend:    false,
-							HttpFilters: []*http_connection_manager_v3.HttpFilter{
-								{
-									Name: "envoy.filters.http.grpc_web",
-									ConfigType: &http_connection_manager_v3.HttpFilter_TypedConfig{
-										TypedConfig: toAny(&grpc_web_v3.GrpcWeb{}),
-									},
-								},
-								{
-									Name: "envoy.filters.http.grpc_stats",
-									ConfigType: &http_connection_manager_v3.HttpFilter_TypedConfig{
-										TypedConfig: toAny(&grpc_stats_v3.FilterConfig{
-											EmitFilterState:     true,
-											EnableUpstreamStats: true,
-										}),
-									},
-								},
-								{
-									Name: "envoy.filters.http.router",
-									ConfigType: &http_connection_manager_v3.HttpFilter_TypedConfig{
-										TypedConfig: toAny(&envoy_extensions_filters_http_router_v3.Router{}),
-									},
-								},
-							},
-						}),
-					},
-				},
+				toListenerFilter("listener-insecure"),
 			},
 		},
 	},
@@ -101,44 +63,7 @@ var httpInsecureListenerXDSResource = toAny(&envoy_config_listener.Listener{
 			},
 		},
 	},
-	SocketOptions: []*envoy_config_core_v3.SocketOption{
-		{
-			Description: "Enable TCP keep-alive (default to enabled)",
-			Level:       syscall.SOL_SOCKET,
-			Name:        syscall.SO_KEEPALIVE,
-			Value: &envoy_config_core_v3.SocketOption_IntValue{
-				IntValue: 1,
-			},
-			State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
-		},
-		{
-			Description: "TCP keep-alive idle time (in seconds) (defaults to 10s)",
-			Level:       syscall.IPPROTO_TCP,
-			Name:        syscall.TCP_KEEPIDLE,
-			Value: &envoy_config_core_v3.SocketOption_IntValue{
-				IntValue: 10,
-			},
-			State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
-		},
-		{
-			Description: "TCP keep-alive probe intervals (in seconds) (defaults to 5s)",
-			Level:       syscall.IPPROTO_TCP,
-			Name:        syscall.TCP_KEEPINTVL,
-			Value: &envoy_config_core_v3.SocketOption_IntValue{
-				IntValue: 5,
-			},
-			State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
-		},
-		{
-			Description: "TCP keep-alive probe max failures.",
-			Level:       syscall.IPPROTO_TCP,
-			Name:        syscall.TCP_KEEPCNT,
-			Value: &envoy_config_core_v3.SocketOption_IntValue{
-				IntValue: 10,
-			},
-			State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
-		},
-	},
+	SocketOptions: toSocketOptions(),
 })
 
 // basicHTTPListeners is the internal model representation of the simple HTTP listeners
@@ -181,6 +106,9 @@ var basicHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-my-gateway",
 		Namespace: "default",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -269,6 +197,9 @@ var basicTLSListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-my-gateway",
 		Namespace: "default",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -306,9 +237,9 @@ var basicTLSListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 								Name: "envoy.filters.network.tcp_proxy",
 								ConfigType: &envoy_config_listener.Filter_TypedConfig{
 									TypedConfig: toAny(&envoy_extensions_filters_network_tcp_v3.TcpProxy{
-										StatPrefix: "default/my-service:8080",
+										StatPrefix: "default:my-service:8080",
 										ClusterSpecifier: &envoy_extensions_filters_network_tcp_v3.TcpProxy_Cluster{
-											Cluster: "default/my-service:8080",
+											Cluster: "default:my-service:8080",
 										},
 									}),
 								},
@@ -323,49 +254,15 @@ var basicTLSListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 							},
 						},
 					},
-					SocketOptions: []*envoy_config_core_v3.SocketOption{
-						{
-							Description: "Enable TCP keep-alive (default to enabled)",
-							Level:       syscall.SOL_SOCKET,
-							Name:        syscall.SO_KEEPALIVE,
-							Value: &envoy_config_core_v3.SocketOption_IntValue{
-								IntValue: 1,
-							},
-							State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
-						},
-						{
-							Description: "TCP keep-alive idle time (in seconds) (defaults to 10s)",
-							Level:       syscall.IPPROTO_TCP,
-							Name:        syscall.TCP_KEEPIDLE,
-							Value: &envoy_config_core_v3.SocketOption_IntValue{
-								IntValue: 10,
-							},
-							State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
-						},
-						{
-							Description: "TCP keep-alive probe intervals (in seconds) (defaults to 5s)",
-							Level:       syscall.IPPROTO_TCP,
-							Name:        syscall.TCP_KEEPINTVL,
-							Value: &envoy_config_core_v3.SocketOption_IntValue{
-								IntValue: 5,
-							},
-							State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
-						},
-						{
-							Description: "TCP keep-alive probe max failures.",
-							Level:       syscall.IPPROTO_TCP,
-							Name:        syscall.TCP_KEEPCNT,
-							Value: &envoy_config_core_v3.SocketOption_IntValue{
-								IntValue: 10,
-							},
-							State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
-						},
-					},
+					SocketOptions: toSocketOptions(),
 				}),
 			},
 			{
 				Any: toAny(&envoy_config_cluster_v3.Cluster{
-					Name: "default/my-service:8080",
+					Name: "default:my-service:8080",
+					EdsClusterConfig: &envoy_config_cluster_v3.Cluster_EdsClusterConfig{
+						ServiceName: "default/my-service:8080",
+					},
 					ClusterDiscoveryType: &envoy_config_cluster_v3.Cluster_Type{
 						Type: envoy_config_cluster_v3.Cluster_EDS,
 					},
@@ -413,6 +310,9 @@ var simpleSameNamespaceHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyCon
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -497,6 +397,9 @@ var crossNamespaceHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-backend-namespaces",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -594,6 +497,9 @@ var exactPathMatchingHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfi
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -803,6 +709,9 @@ var headerMatchingHTTPCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -1103,6 +1012,9 @@ var hostnameIntersectionHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyCo
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-httproute-hostname-intersection",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -1339,6 +1251,9 @@ var listenerHostNameMatchingCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-httproute-listener-hostname-matching",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -1498,6 +1413,9 @@ var matchingAcrossHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -1671,6 +1589,9 @@ var matchingHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -1854,6 +1775,9 @@ var queryParamMatchingHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConf
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -2045,6 +1969,9 @@ var methodMatchingHTTPListenersHTTPListenersCiliumEnvoyConfig = &ciliumv2.Cilium
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -2281,6 +2208,9 @@ var requestHeaderModifierHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyC
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -2501,6 +2431,9 @@ var requestRedirectHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -2745,6 +2678,9 @@ var responseHeaderModifierHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoy
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -2983,6 +2919,9 @@ var rewriteHostHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -3030,10 +2969,7 @@ var rewriteHostHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 									Action: &envoy_config_route_v3.Route_Route{
 										Route: &envoy_config_route_v3.RouteAction{
 											ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
-												Cluster: fmt.Sprintf("%s/%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
-											},
-											MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
-												MaxStreamDuration: &durationpb.Duration{Seconds: 0},
+												Cluster: fmt.Sprintf("%s:%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
 											},
 											HostRewriteSpecifier: &envoy_config_route_v3.RouteAction_HostRewriteLiteral{
 												HostRewriteLiteral: "one.example.org",
@@ -3050,10 +2986,7 @@ var rewriteHostHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 									Action: &envoy_config_route_v3.Route_Route{
 										Route: &envoy_config_route_v3.RouteAction{
 											ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
-												Cluster: fmt.Sprintf("%s/%s:%s", "gateway-conformance-infra", "infra-backend-v2", "8080"),
-											},
-											MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
-												MaxStreamDuration: &durationpb.Duration{Seconds: 0},
+												Cluster: fmt.Sprintf("%s:%s:%s", "gateway-conformance-infra", "infra-backend-v2", "8080"),
 											},
 											HostRewriteSpecifier: &envoy_config_route_v3.RouteAction_HostRewriteLiteral{
 												HostRewriteLiteral: "example.org",
@@ -3200,6 +3133,9 @@ var rewritePathHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -3242,10 +3178,7 @@ var rewritePathHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 									Action: &envoy_config_route_v3.Route_Route{
 										Route: &envoy_config_route_v3.RouteAction{
 											ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
-												Cluster: fmt.Sprintf("%s/%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
-											},
-											MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
-												MaxStreamDuration: &durationpb.Duration{Seconds: 0},
+												Cluster: fmt.Sprintf("%s:%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
 											},
 											PrefixRewrite: "/prefix",
 										},
@@ -3284,10 +3217,7 @@ var rewritePathHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 									Action: &envoy_config_route_v3.Route_Route{
 										Route: &envoy_config_route_v3.RouteAction{
 											ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
-												Cluster: fmt.Sprintf("%s/%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
-											},
-											MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
-												MaxStreamDuration: &durationpb.Duration{Seconds: 0},
+												Cluster: fmt.Sprintf("%s:%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
 											},
 											RegexRewrite: &envoy_type_matcher_v3.RegexMatchAndSubstitute{
 												Pattern: &envoy_type_matcher_v3.RegexMatcher{
@@ -3331,10 +3261,7 @@ var rewritePathHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 									Action: &envoy_config_route_v3.Route_Route{
 										Route: &envoy_config_route_v3.RouteAction{
 											ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
-												Cluster: fmt.Sprintf("%s/%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
-											},
-											MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
-												MaxStreamDuration: &durationpb.Duration{Seconds: 0},
+												Cluster: fmt.Sprintf("%s:%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
 											},
 											PrefixRewrite: "/one",
 										},
@@ -3349,10 +3276,7 @@ var rewritePathHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 									Action: &envoy_config_route_v3.Route_Route{
 										Route: &envoy_config_route_v3.RouteAction{
 											ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
-												Cluster: fmt.Sprintf("%s/%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
-											},
-											MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
-												MaxStreamDuration: &durationpb.Duration{Seconds: 0},
+												Cluster: fmt.Sprintf("%s:%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
 											},
 											RegexRewrite: &envoy_type_matcher_v3.RegexMatchAndSubstitute{
 												Pattern: &envoy_type_matcher_v3.RegexMatcher{
@@ -3418,6 +3342,9 @@ var mirrorHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-gateway-same-namespace",
 		Namespace: "gateway-conformance-infra",
+		Labels: map[string]string{
+			"cilium.io/use-original-source-address": "false",
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion: "gateway.networking.k8s.io/v1",
@@ -3465,14 +3392,11 @@ var mirrorHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 									Action: &envoy_config_route_v3.Route_Route{
 										Route: &envoy_config_route_v3.RouteAction{
 											ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
-												Cluster: fmt.Sprintf("%s/%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
-											},
-											MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
-												MaxStreamDuration: &durationpb.Duration{Seconds: 0},
+												Cluster: fmt.Sprintf("%s:%s:%s", "gateway-conformance-infra", "infra-backend-v1", "8080"),
 											},
 											RequestMirrorPolicies: []*envoy_config_route_v3.RouteAction_RequestMirrorPolicy{
 												{
-													Cluster: fmt.Sprintf("%s/%s:%s", "gateway-conformance-infra", "infra-backend-v2", "8080"),
+													Cluster: fmt.Sprintf("%s:%s:%s", "gateway-conformance-infra", "infra-backend-v2", "8080"),
 													RuntimeFraction: &envoy_config_core_v3.RuntimeFractionalPercent{
 														DefaultValue: &envoy_type_v3.FractionalPercent{
 															Numerator: 100,
@@ -3494,9 +3418,78 @@ var mirrorHTTPListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	},
 }
 
+var multipleListenerGatewayListeners = []model.HTTPListener{
+	{
+		Name: "http-example",
+		Sources: []model.FullyQualifiedResource{
+			{
+				Name:      "my-gateway",
+				Namespace: "default",
+				Group:     "gateway.networking.k8s.io",
+				Version:   "v1",
+				Kind:      "Gateway",
+			},
+		},
+		Address:  "",
+		Port:     80,
+		Hostname: "example.com",
+		Routes: []model.HTTPRoute{
+			{
+				Hostnames: []string{"example.com"},
+				DirectResponse: &model.DirectResponse{
+					StatusCode: 500,
+				},
+				RequestRedirect: &model.HTTPRequestRedirectFilter{
+					Scheme:     model.AddressOf("https"),
+					StatusCode: model.AddressOf(301),
+				},
+				Backends: []model.Backend{},
+			},
+		},
+	},
+	{
+		Name: "https-example",
+		Sources: []model.FullyQualifiedResource{
+			{
+				Name:      "my-gateway",
+				Namespace: "default",
+				Group:     "gateway.networking.k8s.io",
+				Version:   "v1",
+				Kind:      "Gateway",
+			},
+		},
+		Address:  "",
+		Port:     443,
+		Hostname: "example.com",
+		TLS: []model.TLSSecret{
+			{
+				Name:      "example-cert",
+				Namespace: "default",
+			},
+		},
+		Routes: []model.HTTPRoute{
+			{
+				Hostnames: []string{"example.com"},
+				Backends: []model.Backend{
+					{
+						Name:      "my-service",
+						Namespace: "default",
+						Port: &model.BackendPort{
+							Port: 8080,
+						},
+					},
+				},
+			},
+		},
+	},
+}
+
 func toEnvoyCluster(namespace, name, port string) *envoy_config_cluster_v3.Cluster {
 	return &envoy_config_cluster_v3.Cluster{
-		Name: fmt.Sprintf("%s/%s:%s", namespace, name, port),
+		Name: fmt.Sprintf("%s:%s:%s", namespace, name, port),
+		EdsClusterConfig: &envoy_config_cluster_v3.Cluster_EdsClusterConfig{
+			ServiceName: fmt.Sprintf("%s/%s:%s", namespace, name, port),
+		},
 		TypedExtensionProtocolOptions: map[string]*anypb.Any{
 			"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": toAny(&envoy_upstreams_http_v3.HttpProtocolOptions{
 				CommonHttpProtocolOptions: &envoy_config_core_v3.HttpProtocolOptions{
@@ -3524,11 +3517,96 @@ func toRouteAction(namespace, name, port string) *envoy_config_route_v3.Route_Ro
 	return &envoy_config_route_v3.Route_Route{
 		Route: &envoy_config_route_v3.RouteAction{
 			ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
-				Cluster: fmt.Sprintf("%s/%s:%s", namespace, name, port),
+				Cluster: fmt.Sprintf("%s:%s:%s", namespace, name, port),
 			},
-			MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
-				MaxStreamDuration: &durationpb.Duration{Seconds: 0},
+		},
+	}
+}
+
+func toListenerFilter(routeName string) *envoy_config_listener.Filter {
+	return &envoy_config_listener.Filter{
+		Name: "envoy.filters.network.http_connection_manager",
+		ConfigType: &envoy_config_listener.Filter_TypedConfig{
+			TypedConfig: toAny(&http_connection_manager_v3.HttpConnectionManager{
+				StatPrefix: routeName,
+				RouteSpecifier: &http_connection_manager_v3.HttpConnectionManager_Rds{
+					Rds: &http_connection_manager_v3.Rds{RouteConfigName: routeName},
+				},
+				UpgradeConfigs: []*http_connection_manager_v3.HttpConnectionManager_UpgradeConfig{
+					{UpgradeType: "websocket"},
+				},
+				UseRemoteAddress: &wrapperspb.BoolValue{Value: true},
+				SkipXffAppend:    false,
+				HttpFilters: []*http_connection_manager_v3.HttpFilter{
+					{
+						Name: "envoy.filters.http.grpc_web",
+						ConfigType: &http_connection_manager_v3.HttpFilter_TypedConfig{
+							TypedConfig: toAny(&grpc_web_v3.GrpcWeb{}),
+						},
+					},
+					{
+						Name: "envoy.filters.http.grpc_stats",
+						ConfigType: &http_connection_manager_v3.HttpFilter_TypedConfig{
+							TypedConfig: toAny(&grpc_stats_v3.FilterConfig{
+								EmitFilterState:     true,
+								EnableUpstreamStats: true,
+							}),
+						},
+					},
+					{
+						Name: "envoy.filters.http.router",
+						ConfigType: &http_connection_manager_v3.HttpFilter_TypedConfig{
+							TypedConfig: toAny(&envoy_extensions_filters_http_router_v3.Router{}),
+						},
+					},
+				},
+				CommonHttpProtocolOptions: &envoy_config_core_v3.HttpProtocolOptions{
+					MaxStreamDuration: &durationpb.Duration{
+						Seconds: 0,
+					},
+				},
+			}),
+		},
+	}
+}
+
+func toSocketOptions() []*envoy_config_core_v3.SocketOption {
+	return []*envoy_config_core_v3.SocketOption{
+		{
+			Description: "Enable TCP keep-alive (default to enabled)",
+			Level:       syscall.SOL_SOCKET,
+			Name:        syscall.SO_KEEPALIVE,
+			Value: &envoy_config_core_v3.SocketOption_IntValue{
+				IntValue: 1,
 			},
+			State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
+		},
+		{
+			Description: "TCP keep-alive idle time (in seconds) (defaults to 10s)",
+			Level:       syscall.IPPROTO_TCP,
+			Name:        syscall.TCP_KEEPIDLE,
+			Value: &envoy_config_core_v3.SocketOption_IntValue{
+				IntValue: 10,
+			},
+			State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
+		},
+		{
+			Description: "TCP keep-alive probe intervals (in seconds) (defaults to 5s)",
+			Level:       syscall.IPPROTO_TCP,
+			Name:        syscall.TCP_KEEPINTVL,
+			Value: &envoy_config_core_v3.SocketOption_IntValue{
+				IntValue: 5,
+			},
+			State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
+		},
+		{
+			Description: "TCP keep-alive probe max failures.",
+			Level:       syscall.IPPROTO_TCP,
+			Name:        syscall.TCP_KEEPCNT,
+			Value: &envoy_config_core_v3.SocketOption_IntValue{
+				IntValue: 10,
+			},
+			State: envoy_config_core_v3.SocketOption_STATE_LISTENING,
 		},
 	}
 }

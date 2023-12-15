@@ -145,6 +145,7 @@ func (d *Daemon) launchHubble() {
 			parserOptions.Redact(
 				logger,
 				option.Config.HubbleRedactHttpURLQuery,
+				option.Config.HubbleRedactHttpUserInfo,
 				option.Config.HubbleRedactKafkaApiKey,
 				option.Config.HubbleRedactHttpHeadersAllow,
 				option.Config.HubbleRedactHttpHeadersDeny,
@@ -188,6 +189,11 @@ func (d *Daemon) launchHubble() {
 			opt := observeroption.WithOnDecodedEvent(hubbleExporter)
 			observerOpts = append(observerOpts, opt)
 		}
+	}
+	if option.Config.HubbleFlowlogsConfigFilePath != "" {
+		dynamicHubbleExporter := exporter.NewDynamicExporter(logger, option.Config.HubbleFlowlogsConfigFilePath, option.Config.HubbleExportFileMaxSizeMB, option.Config.HubbleExportFileMaxBackups)
+		opt := observeroption.WithOnDecodedEvent(dynamicHubbleExporter)
+		observerOpts = append(observerOpts, opt)
 	}
 	namespaceManager := observer.NewNamespaceManager()
 	go namespaceManager.Run(d.ctx)

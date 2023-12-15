@@ -23,6 +23,7 @@ import (
 	"github.com/cilium/cilium/pkg/cidr"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/envoy"
@@ -39,7 +40,6 @@ import (
 	"github.com/cilium/cilium/pkg/k8s/synced"
 	"github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
-	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/lock"
@@ -57,7 +57,6 @@ import (
 )
 
 const (
-	k8sAPIGroupNodeV1Core                       = "core/v1::Node"
 	k8sAPIGroupNamespaceV1Core                  = "core/v1::Namespace"
 	K8sAPIGroupServiceV1Core                    = "core/v1::Service"
 	k8sAPIGroupNetworkingV1Core                 = "networking.k8s.io/v1::NetworkPolicy"
@@ -198,7 +197,7 @@ type cgroupManager interface {
 }
 
 type ipcacheManager interface {
-	AllocateCIDRs(prefixes []netip.Prefix, oldNIDs []identity.NumericIdentity, newlyAllocatedIdentities map[netip.Prefix]*identity.Identity) ([]*identity.Identity, error)
+	AllocateCIDRs(prefixes []netip.Prefix, newlyAllocatedIdentities map[netip.Prefix]*identity.Identity) ([]*identity.Identity, error)
 	ReleaseCIDRIdentitiesByCIDR(prefixes []netip.Prefix)
 
 	// GH-21142: Re-evaluate the need for these APIs
@@ -226,12 +225,6 @@ type K8sWatcher struct {
 	// K8sSvcCache is a cache of all Kubernetes services and endpoints
 	K8sSvcCache *k8s.ServiceCache
 
-	// NodeChain is the root of a notification chain for k8s Node events.
-	// This NodeChain allows registration of subscriber.Node implementations.
-	// On k8s Node events all registered subscriber.Node implementations will
-	// have their event handling methods called in order of registration.
-	NodeChain *subscriber.NodeChain
-
 	endpointManager endpointManager
 
 	nodeDiscoverManager   nodeDiscoverManager
@@ -243,6 +236,8 @@ type K8sWatcher struct {
 	ipcache               ipcacheManager
 	envoyConfigManager    envoyConfigManager
 	cgroupManager         cgroupManager
+
+	bandwidthManager bandwidth.Manager
 
 	// controllersStarted is a channel that is closed when all watchers that do not depend on
 	// local node configuration have been started
@@ -256,9 +251,6 @@ type K8sWatcher struct {
 	// variable is written for the first time.
 	podStoreSet  chan struct{}
 	podStoreOnce sync.Once
-
-	// nodesInitOnce is used to guarantee that only one function call of NodesInit is executed.
-	nodesInitOnce sync.Once
 
 	ciliumNodeStoreMU lock.RWMutex
 	ciliumNodeStore   cache.Store
@@ -300,6 +292,7 @@ func NewK8sWatcher(
 	cgroupManager cgroupManager,
 	resources agentK8s.Resources,
 	serviceCache *k8s.ServiceCache,
+	bandwidthManager bandwidth.Manager,
 ) *K8sWatcher {
 	return &K8sWatcher{
 		clientset:               clientset,
@@ -318,7 +311,7 @@ func NewK8sWatcher(
 		redirectPolicyManager:   redirectPolicyManager,
 		bgpSpeakerManager:       bgpSpeakerManager,
 		cgroupManager:           cgroupManager,
-		NodeChain:               subscriber.NewNodeChain(),
+		bandwidthManager:        bandwidthManager,
 		envoyConfigManager:      envoyConfigManager,
 		cfg:                     cfg,
 		resources:               resources,
@@ -482,9 +475,6 @@ func (k *K8sWatcher) resourceGroups() (beforeNodeInitGroups, afterNodeInitGroups
 		// Pods can contain labels which are essential for endpoints
 		// being restored to have the right identity.
 		resources.K8sAPIGroupPodV1Core,
-		// We need to know the node labels to populate the host
-		// endpoint labels.
-		k8sAPIGroupNodeV1Core,
 		// To perform the service translation and have the BPF LB datapath
 		// with the right service -> backend (k8s endpoints) translation.
 		resources.K8sAPIGroupEndpointSliceOrEndpoint,
@@ -581,8 +571,6 @@ func (k *K8sWatcher) enableK8sWatchers(ctx context.Context, resourceNames []stri
 		case resources.K8sAPIGroupPodV1Core:
 			asyncControllers.Add(1)
 			go k.podsInit(k.clientset.Slim(), asyncControllers)
-		case k8sAPIGroupNodeV1Core:
-			k.NodesInit(k.clientset)
 		case k8sAPIGroupNamespaceV1Core:
 			k.namespacesInit()
 		case k8sAPIGroupCiliumNodeV2:
@@ -673,7 +661,7 @@ func (k *K8sWatcher) k8sServiceHandler() {
 			} else if result.NumToServicesRules > 0 {
 				// Only trigger policy updates if ToServices rules are in effect
 				k.ipcache.ReleaseCIDRIdentitiesByCIDR(result.PrefixesToRelease)
-				_, err := k.ipcache.AllocateCIDRs(result.PrefixesToAdd, nil, nil)
+				_, err := k.ipcache.AllocateCIDRs(result.PrefixesToAdd, nil)
 				if err != nil {
 					scopedLog.WithError(err).
 						Error("Unabled to allocate ipcache CIDR for toService rule")

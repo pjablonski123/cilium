@@ -49,8 +49,7 @@ func (w *remoteEtcdClientWrapper) ListAndWatch(ctx context.Context, prefix strin
 
 type fakeIPCache struct{ updates atomic.Int32 }
 
-func (f *fakeIPCache) ForEachListener(func(listener ipcache.IPIdentityMappingListener)) {}
-func (f *fakeIPCache) Delete(string, source.Source) bool                                { return false }
+func (f *fakeIPCache) Delete(string, source.Source) bool { return false }
 func (f *fakeIPCache) Upsert(string, net.IP, uint8, *ipcache.K8sMetadata, ipcache.Identity) (bool, error) {
 	f.updates.Add(1)
 	return false, nil
@@ -83,7 +82,8 @@ func TestRemoteClusterRun(t *testing.T) {
 			name: "remote cluster supports sync canaries",
 			srccfg: &types.CiliumClusterConfig{
 				Capabilities: types.CiliumClusterConfigCapabilities{
-					SyncedCanaries: true,
+					SyncedCanaries:       true,
+					MaxConnectedClusters: 255,
 				},
 			},
 			kvs: map[string]string{
@@ -102,8 +102,9 @@ func TestRemoteClusterRun(t *testing.T) {
 			name: "remote cluster supports both sync canaries and cached prefixes",
 			srccfg: &types.CiliumClusterConfig{
 				Capabilities: types.CiliumClusterConfigCapabilities{
-					SyncedCanaries: true,
-					Cached:         true,
+					SyncedCanaries:       true,
+					Cached:               true,
+					MaxConnectedClusters: 255,
 				},
 			},
 			kvs: map[string]string{
@@ -153,6 +154,7 @@ func TestRemoteClusterRun(t *testing.T) {
 					ClusterIDsManager:     NewClusterMeshUsedIDs(),
 					Metrics:               NewMetrics(),
 					StoreFactory:          store,
+					ClusterInfo:           types.ClusterInfo{MaxConnectedClusters: 255},
 				},
 				globalServices: newGlobalServiceCache(metrics.NoOpGauge),
 			}
