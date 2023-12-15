@@ -290,6 +290,7 @@ etcd
 eth
 ethernet
 ethtool
+exfiltrate
 extTrafficPolicy
 extern
 externalIPs

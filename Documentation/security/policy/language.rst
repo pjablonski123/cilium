@@ -567,8 +567,19 @@ IPs to be allowed are selected via:
 
   * ``**`` within a domain allows 0 or more valid DNS subdomains and characters, including
     ``.`` separator. ``**.cilium.io`` will match ``sub1.cilium.io`` as well as  ``sub2.sub1.cilium.io``.
-  * ``**`` alone matches all names, and inserts all cached DNS IPs into this
-    rule.
+  * ``**`` alone matches all names, and inserts all cached DNS IPs into this rule.
+
+   ``*`` and ``**`` interactions:
+
+  * Before this enhancement two or more directly adjacent asterisks meant the same - a single asterisk, eg. ``cil**.io == cil*.io``.
+  * The correct usage of the asterisk before this enhancement should be a single presence between other characters, eg. ``c*m.io``, ``*.cil*.io``.
+  * With this enhancement the correct usage of the single asterisk does not change.
+  * A double asterisk must be at the beginning of the FQDN string only, eg. ``**.cilium.io``.
+  * The single and double asterisk can be present in the same FQDN if they are separated by a dot directly or indirectly, eg. ``**.*lium.io``, ``**.cili*.io``.
+
+
+.. note::   This feature can break current configuration if a double asterisk was used inside of FQDN, eg. cil**.io.
+
 
 The example below allows all DNS traffic on port 53 to the DNS service and
 intercepts it via the `DNS Proxy`_. If using a non-standard DNS port for
