@@ -146,7 +146,7 @@ const (
 	ForceNamespace Option = iota
 )
 
-func ResourceQualifiedName(namespace, cecName, resourceName string, options ...Option) (name string, updated bool) {
+func ResourceQualifiedName(namespace, cecName, resourceName string, options ...Option) string {
 	forceNamespace := false
 	for _, option := range options {
 		switch option {
@@ -157,7 +157,7 @@ func ResourceQualifiedName(namespace, cecName, resourceName string, options ...O
 
 	idx := strings.IndexRune(resourceName, '/')
 	if resourceName == "" || idx >= 0 && (!forceNamespace || (idx == len(namespace) && strings.HasPrefix(resourceName, namespace))) {
-		return resourceName, false
+		return resourceName
 	}
 
 	var sb strings.Builder
@@ -168,5 +168,5 @@ func ResourceQualifiedName(namespace, cecName, resourceName string, options ...O
 	sb.WriteRune('/')
 	sb.WriteString(resourceName)
 
-	return sb.String(), true
+	return sb.String()
 }

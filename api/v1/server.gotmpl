@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/go-openapi/loads"
-	"github.com/go-openapi/runtime/middleware"
   "github.com/go-openapi/swag"
   {{ if .UsePFlags }}flag "github.com/spf13/pflag"
   {{ end -}}
@@ -42,46 +41,7 @@ var Cell = cell.Module(
 	"{{ humanize .Name }} server",
 
 	cell.Provide(newForCell),
-	APICell,
 )
-
-// APICell provides the {{ .Package }}.{{pascalize .Name}}API type, populated
-// with the request handlers. This cell is an alternative to 'Cell' when only
-// the API type is required and not the full server implementation.
-var APICell = cell.Provide(newAPI)
-
-type apiParams struct {
-	cell.In
-
-	Spec       *Spec
-
-	Middleware middleware.Builder `name:"{{ dasherize .Name }}-middleware" optional:"true"`
-
-	{{- $package := .Package }}
-	{{ range .Operations }}
-		{{ if ne  .Package $package }}{{ pascalize .Package }}{{ end }}{{ pascalize .Name }}Handler {{ .PackageAlias }}.{{ pascalize .Name }}Handler
-	{{- end }}
-}
-
-
-func newAPI(p apiParams) *{{ .Package }}.{{pascalize .Name}}API {
-	api := {{ .Package }}.New{{pascalize .Name}}API(p.Spec.Document)
-
-	// Construct the API from the provided handlers
-	{{- $package := .Package }}
-	{{ range .Operations }}
-	  api.{{ if ne  .Package $package }}{{ pascalize .Package }}{{ end }}{{ pascalize .Name }}Handler = p.{{ if ne  .Package $package }}{{ pascalize .Package }}{{ end }}{{ pascalize .Name }}Handler
-	{{- end }}
-
-        // Inject custom middleware if provided by Hive
-	if p.Middleware != nil {
-		api.Middleware = func(builder middleware.Builder) http.Handler {
-                      return p.Middleware(api.Context().APIHandler(builder))
-		}
-	}
-
-	return api
-}
 
 type serverParams struct {
 	cell.In
@@ -90,15 +50,27 @@ type serverParams struct {
 	Shutdowner hive.Shutdowner
 	Logger     logrus.FieldLogger
 	Spec       *Spec
-	API	   *{{ .Package }}.{{pascalize .Name}}API
+
+	{{- $package := .Package }}
+	{{ range .Operations }}
+		{{ if ne  .Package $package }}{{ pascalize .Package }}{{ end }}{{ pascalize .Name }}Handler {{ .PackageAlias }}.{{ pascalize .Name }}Handler
+	{{- end }}
 }
 
-
 func newForCell(p serverParams) (*Server, error) {
-	s := NewServer(p.API)
+	api := {{ .Package }}.New{{pascalize .Name}}API(p.Spec.Document)
+
+	// Construct the API from the provided handlers
+	{{- $package := .Package }}
+	{{ range .Operations }}
+	  api.{{ if ne  .Package $package }}{{ pascalize .Package }}{{ end }}{{ pascalize .Name }}Handler = p.{{ if ne  .Package $package }}{{ pascalize .Package }}{{ end }}{{ pascalize .Name }}Handler
+	{{- end }}
+
+	s := NewServer(api)
 	s.shutdowner = p.Shutdowner
 	s.logger = p.Logger
 	p.Lifecycle.Append(s)
+
 	return s, nil
 }
 

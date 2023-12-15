@@ -20,7 +20,6 @@ import (
 	"google.golang.org/grpc"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
@@ -34,13 +33,12 @@ import (
 	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/cilium/cilium/operator/pkg/ciliumendpointslice"
 	"github.com/cilium/cilium/operator/pkg/ciliumenvoyconfig"
-	controllerruntime "github.com/cilium/cilium/operator/pkg/controller-runtime"
 	gatewayapi "github.com/cilium/cilium/operator/pkg/gateway-api"
 	"github.com/cilium/cilium/operator/pkg/ingress"
 	"github.com/cilium/cilium/operator/pkg/lbipam"
-	"github.com/cilium/cilium/operator/pkg/secretsync"
 	operatorWatchers "github.com/cilium/cilium/operator/watchers"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
+	"github.com/cilium/cilium/pkg/components"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/gops"
@@ -61,6 +59,7 @@ import (
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/pprof"
+	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/version"
 )
 
@@ -119,7 +118,6 @@ var (
 		"Operator Control Plane",
 
 		cell.Config(cmtypes.DefaultClusterInfo),
-		cell.Invoke(func(cinfo cmtypes.ClusterInfo) error { return cinfo.InitClusterIDMax() }),
 		cell.Invoke(func(cinfo cmtypes.ClusterInfo) error { return cinfo.Validate() }),
 
 		cell.Invoke(
@@ -205,20 +203,11 @@ var (
 			// Cilium Endpoints and delete the ones that should be deleted.
 			endpointgc.Cell,
 
-			// Integrates the controller-runtime library and provides its components via Hive.
-			controllerruntime.Cell,
-
 			// Cilium Gateway API controller that manages the Gateway API related CRDs.
 			gatewayapi.Cell,
 
 			// Cilium Ingress controller that manages the Kubernetes Ingress related CRDs.
 			ingress.Cell,
-
-			// Cilium Secret synchronizes K8s TLS Secrets referenced by
-			// Ciliums "Ingress resources" from the application namespaces into a dedicated
-			// secrets namespace that is accessible by the Cilium Agents.
-			// Resources might be K8s `Ingress` or Gateway API `Gateway`.
-			secretsync.Cell,
 
 			// Cilium L7 LoadBalancing with Envoy.
 			ciliumenvoyconfig.Cell,
@@ -320,8 +309,8 @@ func initEnv(vp *viper.Viper) {
 	option.Config.Populate(vp)
 	operatorOption.Config.Populate(vp)
 
-	// add hooks after setting up metrics in the option.Config
-	logging.DefaultLogger.Hooks.Add(metrics.NewLoggingHook())
+	// add hooks after setting up metrics in the option.Confog
+	logging.DefaultLogger.Hooks.Add(metrics.NewLoggingHook(components.CiliumOperatortName))
 
 	// Logging should always be bootstrapped first. Do not add any code above this!
 	if err := logging.SetupLogging(option.Config.LogDriver, logging.LogOptions(option.Config.LogOpt), binaryName, option.Config.Debug); err != nil {
@@ -374,7 +363,7 @@ func runOperator(lc *LeaderLifecycle, clientset k8sClient.Clientset, shutdowner 
 	if err != nil {
 		log.WithError(err).Fatal("Failed to get hostname when generating lease lock identity")
 	}
-	operatorID = fmt.Sprintf("%s-%s", operatorID, rand.String(10))
+	operatorID = rand.RandomStringWithPrefix(operatorID+"-", 10)
 
 	ns := option.Config.K8sNamespace
 	// If due to any reason the CILIUM_K8S_NAMESPACE is not set we assume the operator
@@ -679,6 +668,10 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 					operatorOption.Config.CNPStatusCleanupBurst,
 				),
 			)
+		}
+
+		if operatorOption.Config.CNPNodeStatusGCInterval != 0 {
+			RunCNPNodeStatusGC(legacy.ctx, &legacy.wg, legacy.clientset, ciliumNodeSynchronizer.ciliumNodeStore)
 		}
 
 		if operatorOption.Config.NodesGCInterval != 0 {

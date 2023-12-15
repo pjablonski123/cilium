@@ -10,7 +10,6 @@ import (
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 
 	"github.com/stretchr/testify/assert"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
@@ -47,7 +46,7 @@ func TestFieldMask_copy_with_alloc(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, fm.Active())
 
-	flow := &flowpb.Flow{}
+	flow := new(flowpb.Flow)
 	fm.Alloc(flow.ProtoReflect())
 
 	srcA := &flowpb.Flow{
@@ -55,17 +54,16 @@ func TestFieldMask_copy_with_alloc(t *testing.T) {
 		Source:      &flowpb.Endpoint{ID: 1234, PodName: "podA", Namespace: "nsA"},
 		Destination: &flowpb.Endpoint{ID: 5678, PodName: "podB", Namespace: "nsB", Identity: 9123},
 	}
-	srcACopy := proto.Clone(srcA).(*flowpb.Flow)
+	srcACopy := *srcA
 
 	fm.Copy(flow.ProtoReflect(), srcA.ProtoReflect())
 	// Confirm that source flow wasn't modified
-	assert.True(t, assert.ObjectsExportedFieldsAreEqual(srcACopy, srcA),
-		"expected exported flow fields to be equal")
+	assert.EqualExportedValues(t, srcACopy, *srcA)
 
-	assert.True(t, assert.ObjectsExportedFieldsAreEqual(&flowpb.Flow{
+	assert.EqualExportedValues(t, flowpb.Flow{
 		Source:      &flowpb.Endpoint{PodName: "podA"},
 		Destination: &flowpb.Endpoint{ID: 5678, PodName: "podB", Namespace: "nsB", Identity: 9123},
-	}, flow), "expected exported flow fields to be equal")
+	}, *flow)
 
 	// Set a new field and confirm that previous values were cleared.
 	srcB := &flowpb.Flow{
@@ -74,10 +72,10 @@ func TestFieldMask_copy_with_alloc(t *testing.T) {
 		Destination: &flowpb.Endpoint{Namespace: "nsA", Identity: 0234},
 	}
 	fm.Copy(flow.ProtoReflect(), srcB.ProtoReflect())
-	assert.True(t, assert.ObjectsExportedFieldsAreEqual(&flowpb.Flow{
+	assert.EqualExportedValues(t, flowpb.Flow{
 		Source:      &flowpb.Endpoint{Identity: 1234},
 		Destination: &flowpb.Endpoint{Namespace: "nsA", Identity: 0234},
-	}, flow), "expected exported flow fields to be equal")
+	}, *flow)
 }
 
 func TestFieldMask_copy_without_alloc(t *testing.T) {
@@ -85,7 +83,7 @@ func TestFieldMask_copy_without_alloc(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, fm.Active())
 
-	flow := &flowpb.Flow{}
+	flow := new(flowpb.Flow)
 
 	srcA := &flowpb.Flow{
 		NodeName:    "srcA",
@@ -95,8 +93,8 @@ func TestFieldMask_copy_without_alloc(t *testing.T) {
 
 	// Allocate field when not pre-allocated
 	assert.NotPanics(t, func() { fm.Copy(flow.ProtoReflect(), srcA.ProtoReflect()) })
-	assert.True(t, assert.ObjectsExportedFieldsAreEqual(&flowpb.Flow{
+	assert.EqualExportedValues(t, flowpb.Flow{
 		Source:      &flowpb.Endpoint{PodName: "podA"},
 		Destination: &flowpb.Endpoint{ID: 5678, PodName: "podB", Namespace: "nsB", Identity: 9123},
-	}, flow), "expected exported flow fields to be equal")
+	}, *flow)
 }

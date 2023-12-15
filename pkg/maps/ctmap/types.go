@@ -264,12 +264,7 @@ func (k *CtKey4) Dump(sb *strings.Builder, reverse bool) bool {
 		addrDest = k.DestAddr.String()
 	}
 
-	if k.Flags&TUPLE_F_SERVICE != 0 {
-		sb.WriteString(fmt.Sprintf("%s SVC %s %d:%d ",
-			k.NextHeader.String(), k.DestAddr.String(), k.DestPort,
-			k.SourcePort),
-		)
-	} else if k.Flags&TUPLE_F_IN != 0 {
+	if k.Flags&TUPLE_F_IN != 0 {
 		sb.WriteString(fmt.Sprintf("%s IN %s %d:%d ",
 			k.NextHeader.String(), addrDest, k.SourcePort,
 			k.DestPort),
@@ -283,6 +278,10 @@ func (k *CtKey4) Dump(sb *strings.Builder, reverse bool) bool {
 
 	if k.Flags&TUPLE_F_RELATED != 0 {
 		sb.WriteString("related ")
+	}
+
+	if k.Flags&TUPLE_F_SERVICE != 0 {
+		sb.WriteString("service ")
 	}
 
 	return true
@@ -347,12 +346,7 @@ func (k *CtKey4Global) Dump(sb *strings.Builder, reverse bool) bool {
 		addrDest = k.DestAddr.String()
 	}
 
-	if k.Flags&TUPLE_F_SERVICE != 0 {
-		sb.WriteString(fmt.Sprintf("%s SVC %s:%d -> %s:%d ",
-			k.NextHeader.String(), k.SourceAddr.String(), k.DestPort,
-			k.DestAddr.String(), k.SourcePort),
-		)
-	} else if k.Flags&TUPLE_F_IN != 0 {
+	if k.Flags&TUPLE_F_IN != 0 {
 		sb.WriteString(fmt.Sprintf("%s IN %s:%d -> %s:%d ",
 			k.NextHeader.String(), addrSource, k.SourcePort,
 			addrDest, k.DestPort),
@@ -366,6 +360,10 @@ func (k *CtKey4Global) Dump(sb *strings.Builder, reverse bool) bool {
 
 	if k.Flags&TUPLE_F_RELATED != 0 {
 		sb.WriteString("related ")
+	}
+
+	if k.Flags&TUPLE_F_SERVICE != 0 {
+		sb.WriteString("service ")
 	}
 
 	return true
@@ -421,12 +419,7 @@ func (k *CtKey6) Dump(sb *strings.Builder, reverse bool) bool {
 		addrDest = k.DestAddr.String()
 	}
 
-	if k.Flags&TUPLE_F_SERVICE != 0 {
-		sb.WriteString(fmt.Sprintf("%s SVC %s %d:%d ",
-			k.NextHeader.String(), k.DestAddr.String(), k.DestPort,
-			k.SourcePort),
-		)
-	} else if k.Flags&TUPLE_F_IN != 0 {
+	if k.Flags&TUPLE_F_IN != 0 {
 		sb.WriteString(fmt.Sprintf("%s IN %s %d:%d ",
 			k.NextHeader.String(), addrDest, k.SourcePort,
 			k.DestPort),
@@ -440,6 +433,10 @@ func (k *CtKey6) Dump(sb *strings.Builder, reverse bool) bool {
 
 	if k.Flags&TUPLE_F_RELATED != 0 {
 		sb.WriteString("related ")
+	}
+
+	if k.Flags&TUPLE_F_SERVICE != 0 {
+		sb.WriteString("service ")
 	}
 
 	return true
@@ -507,12 +504,7 @@ func (k *CtKey6Global) Dump(sb *strings.Builder, reverse bool) bool {
 		addrDest = k.DestAddr.String()
 	}
 
-	if k.Flags&TUPLE_F_SERVICE != 0 {
-		sb.WriteString(fmt.Sprintf("%s SVC %s:%d -> %s:%d ",
-			k.NextHeader.String(), k.SourceAddr.String(), k.DestPort,
-			k.DestAddr.String(), k.SourcePort),
-		)
-	} else if k.Flags&TUPLE_F_IN != 0 {
+	if k.Flags&TUPLE_F_IN != 0 {
 		sb.WriteString(fmt.Sprintf("%s IN %s:%d -> %s:%d ",
 			k.NextHeader.String(), addrSource, k.SourcePort,
 			addrDest, k.DestPort),
@@ -526,6 +518,10 @@ func (k *CtKey6Global) Dump(sb *strings.Builder, reverse bool) bool {
 
 	if k.Flags&TUPLE_F_RELATED != 0 {
 		sb.WriteString("related ")
+	}
+
+	if k.Flags&TUPLE_F_SERVICE != 0 {
+		sb.WriteString("service ")
 	}
 
 	return true

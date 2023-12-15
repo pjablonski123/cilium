@@ -9,7 +9,6 @@ import (
 	"net"
 
 	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
-	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/lock"
 )
 
@@ -22,7 +21,7 @@ type Loader interface {
 	ReloadDatapath(ctx context.Context, ep Endpoint, stats *metrics.SpanStat) error
 	EndpointHash(cfg EndpointConfiguration) (string, error)
 	Unload(ep Endpoint)
-	Reinitialize(ctx context.Context, o BaseProgramOwner, tunnelConfig tunnel.Config, deviceMTU int, iptMgr IptablesManager, p Proxy) error
+	Reinitialize(ctx context.Context, o BaseProgramOwner, deviceMTU int, iptMgr IptablesManager, p Proxy) error
 	HostDatapathInitialized() <-chan struct{}
 }
 

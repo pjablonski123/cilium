@@ -13,11 +13,9 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
-	controllerruntime "github.com/cilium/cilium/operator/pkg/controller-runtime"
 	"github.com/cilium/cilium/operator/pkg/gateway-api/routechecks"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
@@ -42,15 +40,15 @@ func (r *grpcRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	original := &gatewayv1alpha2.GRPCRoute{}
 	if err := r.Client.Get(ctx, req.NamespacedName, original); err != nil {
 		if k8serrors.IsNotFound(err) {
-			return controllerruntime.Success()
+			return success()
 		}
 		scopedLog.WithError(err).Error("Unable to fetch GRPCRoute")
-		return controllerruntime.Fail(err)
+		return fail(err)
 	}
 
 	// Ignore deleted GRPCRoute, this can happen when foregroundDeletion is enabled
 	if original.GetDeletionTimestamp() != nil {
-		return controllerruntime.Success()
+		return success()
 	}
 
 	gr := original.DeepCopy()
@@ -63,7 +61,7 @@ func (r *grpcRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// check if the backend is allowed
 	grants := &gatewayv1beta1.ReferenceGrantList{}
 	if err := r.Client.List(ctx, grants); err != nil {
-		return controllerruntime.Fail(fmt.Errorf("failed to retrieve reference grants: %w", err))
+		return fail(fmt.Errorf("failed to retrieve reference grants: %w", err))
 	}
 
 	// input for the validators
@@ -79,9 +77,9 @@ func (r *grpcRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	for _, parent := range gr.Spec.ParentRefs {
 		// set acceptance to okay, this wil be overwritten in checks if needed
 		i.SetParentCondition(parent, metav1.Condition{
-			Type:    string(gatewayv1.RouteConditionAccepted),
+			Type:    conditionStatusAccepted,
 			Status:  metav1.ConditionTrue,
-			Reason:  string(gatewayv1.RouteReasonAccepted),
+			Reason:  conditionReasonAccepted,
 			Message: "Accepted GRPCRoute",
 		})
 
@@ -123,7 +121,7 @@ func (r *grpcRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	scopedLog.Info("Successfully reconciled GRPCRoute")
-	return controllerruntime.Success()
+	return success()
 }
 
 func (r *grpcRouteReconciler) updateStatus(ctx context.Context, original *gatewayv1alpha2.GRPCRoute, new *gatewayv1alpha2.GRPCRoute) error {

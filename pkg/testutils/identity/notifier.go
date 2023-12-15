@@ -4,47 +4,52 @@
 package testidentity
 
 import (
-	"net/netip"
+	"net"
 
+	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/policy/api"
 )
 
 type DummyIdentityNotifier struct {
 	mutex     lock.Mutex
-	selectors map[api.FQDNSelector][]netip.Addr
+	selectors map[api.FQDNSelector][]identity.NumericIdentity
 }
 
 func NewDummyIdentityNotifier() *DummyIdentityNotifier {
 	return &DummyIdentityNotifier{
-		selectors: make(map[api.FQDNSelector][]netip.Addr),
+		selectors: make(map[api.FQDNSelector][]identity.NumericIdentity),
 	}
 }
 
-// Lock must be held during any calls to RegisterForIPUpdatesLocked or
-// UnregisterForIPUpdatesLocked.
+// Lock must be held during any calls to RegisterForIdentityUpdatesLocked or
+// UnregisterForIdentityUpdatesLocked.
 func (d *DummyIdentityNotifier) Lock() {
 	d.mutex.Lock()
 }
 
-// Unlock must be called after calls to RegisterForIPUpdatesLocked or
-// UnregisterForIPUpdatesLocked are done.
+// Unlock must be called after calls to RegisterForIdentityUpdatesLocked or
+// UnregisterForIdentityUpdatesLocked are done.
 func (d *DummyIdentityNotifier) Unlock() {
 	d.mutex.Unlock()
 }
 
-// RegisterForIPUpdatesLocked starts managing this selector.
+// RegisterForIdentityUpdatesLocked starts managing this selector.
 //
 // It doesn't implement the identity allocation semantics of the interface.
-func (d *DummyIdentityNotifier) RegisterForIPUpdatesLocked(selector api.FQDNSelector) []netip.Addr {
-	return d.selectors[selector]
+func (d *DummyIdentityNotifier) RegisterForIdentityUpdatesLocked(selector api.FQDNSelector) {
+	if _, ok := d.selectors[selector]; !ok {
+		d.selectors[selector] = []identity.NumericIdentity{}
+	}
 }
 
-// UnregisterForIPUpdatesLocked stops managing this selector.
-func (d *DummyIdentityNotifier) UnregisterForIPUpdatesLocked(selector api.FQDNSelector) {
+// UnregisterForIdentityUpdatesLocked stops managing this selector.
+func (d *DummyIdentityNotifier) UnregisterForIdentityUpdatesLocked(selector api.FQDNSelector) {
 	delete(d.selectors, selector)
 }
 
-func (d *DummyIdentityNotifier) SetSelectorIPs(selector api.FQDNSelector, ips []netip.Addr) {
-	d.selectors[selector] = ips
+// MapSelectorsToIPsLocked is a dummy implementation that does not implement
+// the selectors of the real implementation.
+func (d *DummyIdentityNotifier) MapSelectorsToIPsLocked(fqdnSelectors map[api.FQDNSelector]struct{}) (selectorsMissingIPs []api.FQDNSelector, selectorIPMapping map[api.FQDNSelector][]net.IP) {
+	return nil, nil
 }

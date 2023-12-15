@@ -8,6 +8,7 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 
+	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/lock"
 )
@@ -97,7 +98,7 @@ type IPAM struct {
 	// expirationTimers is a map of all expiration timers. Each entry
 	// represents a IP allocation which is protected by an expiration
 	// timer.
-	expirationTimers map[timerKey]expirationTimer
+	expirationTimers map[string]string
 
 	// mutex covers access to all members of this struct
 	allocatorMutex lock.RWMutex
@@ -120,19 +121,25 @@ func (ipam *IPAM) DebugStatus() string {
 	return str
 }
 
+// GetVpcCIDRs returns all the CIDRs associated with the VPC this node belongs to.
+// This works only cloud provider IPAM modes and returns nil for other modes.
+// sharedNodeStore must be initialized before calling this method.
+func (ipam *IPAM) GetVpcCIDRs() (vpcCIDRs []*cidr.CIDR) {
+	sharedNodeStore.mutex.RLock()
+	defer sharedNodeStore.mutex.RUnlock()
+	primary, secondary := deriveVpcCIDRs(sharedNodeStore.ownNode)
+	if primary == nil {
+		return nil
+	}
+	if secondary == nil {
+		return []*cidr.CIDR{primary}
+	}
+	return append(secondary, primary)
+}
+
 // Pool is the the IP pool from which to allocate.
 type Pool string
 
 func (p Pool) String() string {
 	return string(p)
-}
-
-type timerKey struct {
-	ip   string
-	pool Pool
-}
-
-type expirationTimer struct {
-	uuid string
-	stop chan<- struct{}
 }

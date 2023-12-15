@@ -84,9 +84,6 @@ func NewCiliumAPIAPI(spec *loads.Document) *CiliumAPIAPI {
 		BgpGetBgpPeersHandler: bgp.GetBgpPeersHandlerFunc(func(params bgp.GetBgpPeersParams) middleware.Responder {
 			return middleware.NotImplemented("operation bgp.GetBgpPeers has not yet been implemented")
 		}),
-		BgpGetBgpRoutePoliciesHandler: bgp.GetBgpRoutePoliciesHandlerFunc(func(params bgp.GetBgpRoutePoliciesParams) middleware.Responder {
-			return middleware.NotImplemented("operation bgp.GetBgpRoutePolicies has not yet been implemented")
-		}),
 		BgpGetBgpRoutesHandler: bgp.GetBgpRoutesHandlerFunc(func(params bgp.GetBgpRoutesParams) middleware.Responder {
 			return middleware.NotImplemented("operation bgp.GetBgpRoutes has not yet been implemented")
 		}),
@@ -192,9 +189,6 @@ func NewCiliumAPIAPI(spec *loads.Document) *CiliumAPIAPI {
 		StatedbGetStatedbDumpHandler: statedb.GetStatedbDumpHandlerFunc(func(params statedb.GetStatedbDumpParams) middleware.Responder {
 			return middleware.NotImplemented("operation statedb.GetStatedbDump has not yet been implemented")
 		}),
-		StatedbGetStatedbQueryTableHandler: statedb.GetStatedbQueryTableHandlerFunc(func(params statedb.GetStatedbQueryTableParams) middleware.Responder {
-			return middleware.NotImplemented("operation statedb.GetStatedbQueryTable has not yet been implemented")
-		}),
 		DaemonPatchConfigHandler: daemon.PatchConfigHandlerFunc(func(params daemon.PatchConfigParams) middleware.Responder {
 			return middleware.NotImplemented("operation daemon.PatchConfig has not yet been implemented")
 		}),
@@ -285,8 +279,6 @@ type CiliumAPIAPI struct {
 	ServiceDeleteServiceIDHandler service.DeleteServiceIDHandler
 	// BgpGetBgpPeersHandler sets the operation handler for the get bgp peers operation
 	BgpGetBgpPeersHandler bgp.GetBgpPeersHandler
-	// BgpGetBgpRoutePoliciesHandler sets the operation handler for the get bgp route policies operation
-	BgpGetBgpRoutePoliciesHandler bgp.GetBgpRoutePoliciesHandler
 	// BgpGetBgpRoutesHandler sets the operation handler for the get bgp routes operation
 	BgpGetBgpRoutesHandler bgp.GetBgpRoutesHandler
 	// DaemonGetCgroupDumpMetadataHandler sets the operation handler for the get cgroup dump metadata operation
@@ -357,8 +349,6 @@ type CiliumAPIAPI struct {
 	ServiceGetServiceIDHandler service.GetServiceIDHandler
 	// StatedbGetStatedbDumpHandler sets the operation handler for the get statedb dump operation
 	StatedbGetStatedbDumpHandler statedb.GetStatedbDumpHandler
-	// StatedbGetStatedbQueryTableHandler sets the operation handler for the get statedb query table operation
-	StatedbGetStatedbQueryTableHandler statedb.GetStatedbQueryTableHandler
 	// DaemonPatchConfigHandler sets the operation handler for the patch config operation
 	DaemonPatchConfigHandler daemon.PatchConfigHandler
 	// EndpointPatchEndpointIDHandler sets the operation handler for the patch endpoint ID operation
@@ -488,9 +478,6 @@ func (o *CiliumAPIAPI) Validate() error {
 	if o.BgpGetBgpPeersHandler == nil {
 		unregistered = append(unregistered, "bgp.GetBgpPeersHandler")
 	}
-	if o.BgpGetBgpRoutePoliciesHandler == nil {
-		unregistered = append(unregistered, "bgp.GetBgpRoutePoliciesHandler")
-	}
 	if o.BgpGetBgpRoutesHandler == nil {
 		unregistered = append(unregistered, "bgp.GetBgpRoutesHandler")
 	}
@@ -595,9 +582,6 @@ func (o *CiliumAPIAPI) Validate() error {
 	}
 	if o.StatedbGetStatedbDumpHandler == nil {
 		unregistered = append(unregistered, "statedb.GetStatedbDumpHandler")
-	}
-	if o.StatedbGetStatedbQueryTableHandler == nil {
-		unregistered = append(unregistered, "statedb.GetStatedbQueryTableHandler")
 	}
 	if o.DaemonPatchConfigHandler == nil {
 		unregistered = append(unregistered, "daemon.PatchConfigHandler")
@@ -761,10 +745,6 @@ func (o *CiliumAPIAPI) initHandlerCache() {
 	if o.handlers["GET"] == nil {
 		o.handlers["GET"] = make(map[string]http.Handler)
 	}
-	o.handlers["GET"]["/bgp/route-policies"] = bgp.NewGetBgpRoutePolicies(o.context, o.BgpGetBgpRoutePoliciesHandler)
-	if o.handlers["GET"] == nil {
-		o.handlers["GET"] = make(map[string]http.Handler)
-	}
 	o.handlers["GET"]["/bgp/routes"] = bgp.NewGetBgpRoutes(o.context, o.BgpGetBgpRoutesHandler)
 	if o.handlers["GET"] == nil {
 		o.handlers["GET"] = make(map[string]http.Handler)
@@ -902,10 +882,6 @@ func (o *CiliumAPIAPI) initHandlerCache() {
 		o.handlers["GET"] = make(map[string]http.Handler)
 	}
 	o.handlers["GET"]["/statedb/dump"] = statedb.NewGetStatedbDump(o.context, o.StatedbGetStatedbDumpHandler)
-	if o.handlers["GET"] == nil {
-		o.handlers["GET"] = make(map[string]http.Handler)
-	}
-	o.handlers["GET"]["/statedb/query/{table}"] = statedb.NewGetStatedbQueryTable(o.context, o.StatedbGetStatedbQueryTableHandler)
 	if o.handlers["PATCH"] == nil {
 		o.handlers["PATCH"] = make(map[string]http.Handler)
 	}

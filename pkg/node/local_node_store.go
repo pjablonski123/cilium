@@ -5,9 +5,6 @@ package node
 
 import (
 	"context"
-	"sync"
-
-	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
@@ -21,18 +18,11 @@ type LocalNode struct {
 	// OptOutNodeEncryption will make the local node opt-out of node-to-node
 	// encryption
 	OptOutNodeEncryption bool
-	// Unique identifier of the Kubernetes node, used to construct the
-	// corresponding owner reference.
-	UID k8stypes.UID
-	// ID of the node assigned by the cloud provider.
-	ProviderID string
 }
 
-// LocalNodeSynchronizer specifies how to build, and keep synchronized the local
-// node object.
-type LocalNodeSynchronizer interface {
+// LocalNodeInitializer specifies how to build the initial local node object.
+type LocalNodeInitializer interface {
 	InitLocalNode(context.Context, *LocalNode) error
-	SyncLocalNode(context.Context, *LocalNodeStore)
 }
 
 // LocalNodeStoreCell provides the LocalNodeStore instance.
@@ -50,7 +40,7 @@ type LocalNodeStoreParams struct {
 	cell.In
 
 	Lifecycle hive.Lifecycle
-	Sync      LocalNodeSynchronizer `optional:"true"`
+	Init      LocalNodeInitializer `optional:"true"`
 }
 
 // LocalNodeStore is the canonical owner for the local node object and provides
@@ -81,32 +71,16 @@ func NewLocalNodeStore(params LocalNodeStoreParams) (*LocalNodeStore, error) {
 
 	s := &LocalNodeStore{
 		Observable: src,
-		value: LocalNode{Node: types.Node{
-			// Explicitly initialize the labels and annotations maps, so that
-			// we don't need to always check for nil values.
-			Labels:      make(map[string]string),
-			Annotations: make(map[string]string),
-		}},
 	}
-
-	bctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
 
 	params.Lifecycle.Append(hive.Hook{
 		OnStart: func(ctx hive.HookContext) error {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			if params.Sync != nil {
-				if err := params.Sync.InitLocalNode(ctx, &s.value); err != nil {
+			if params.Init != nil {
+				if err := params.Init.InitLocalNode(ctx, &s.value); err != nil {
 					return err
 				}
-
-				// Start the synchronization process in background
-				wg.Add(1)
-				go func() {
-					params.Sync.SyncLocalNode(bctx, s)
-					wg.Done()
-				}()
 			}
 
 			// Set the global variable still used by getters
@@ -120,10 +94,6 @@ func NewLocalNodeStore(params LocalNodeStoreParams) (*LocalNodeStore, error) {
 			return nil
 		},
 		OnStop: func(hive.HookContext) error {
-			// Stop the synchronization process (no-op if it had not been started)
-			cancel()
-			wg.Wait()
-
 			s.mu.Lock()
 			s.complete(nil)
 			s.complete = nil

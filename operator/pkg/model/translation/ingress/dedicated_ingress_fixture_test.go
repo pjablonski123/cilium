@@ -71,10 +71,7 @@ var socketOptions = []*envoy_config_core_v3.SocketOption{
 
 func toEnvoyCluster(namespace, name, port string) *envoy_config_cluster_v3.Cluster {
 	return &envoy_config_cluster_v3.Cluster{
-		Name: fmt.Sprintf("%s:%s:%s", namespace, name, port),
-		EdsClusterConfig: &envoy_config_cluster_v3.Cluster_EdsClusterConfig{
-			ServiceName: fmt.Sprintf("%s/%s:%s", namespace, name, port),
-		},
+		Name: fmt.Sprintf("%s/%s:%s", namespace, name, port),
 		TypedExtensionProtocolOptions: map[string]*anypb.Any{
 			"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": toAny(&envoy_upstreams_http_v3.HttpProtocolOptions{
 				CommonHttpProtocolOptions: &envoy_config_core_v3.HttpProtocolOptions{
@@ -102,7 +99,33 @@ func toRouteAction(namespace, name, port string) *envoy_config_route_v3.Route_Ro
 	return &envoy_config_route_v3.Route_Route{
 		Route: &envoy_config_route_v3.RouteAction{
 			ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
-				Cluster: fmt.Sprintf("%s:%s:%s", namespace, name, port),
+				Cluster: fmt.Sprintf("%s/%s:%s", namespace, name, port),
+			},
+			MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
+				MaxStreamDuration: &durationpb.Duration{Seconds: 0},
+			},
+		},
+	}
+}
+
+func toWeightedClusterRouteAction(names []string) *envoy_config_route_v3.Route_Route {
+	weightedClusters := make([]*envoy_config_route_v3.WeightedCluster_ClusterWeight, 0, len(names))
+	for _, name := range names {
+		weightedClusters = append(weightedClusters, &envoy_config_route_v3.WeightedCluster_ClusterWeight{
+			Name:   name,
+			Weight: &wrapperspb.UInt32Value{Value: 1},
+		})
+	}
+
+	return &envoy_config_route_v3.Route_Route{
+		Route: &envoy_config_route_v3.RouteAction{
+			ClusterSpecifier: &envoy_config_route_v3.RouteAction_WeightedClusters{
+				WeightedClusters: &envoy_config_route_v3.WeightedCluster{
+					Clusters: weightedClusters,
+				},
+			},
+			MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
+				MaxStreamDuration: &durationpb.Duration{Seconds: 0},
 			},
 		},
 	}
@@ -153,11 +176,6 @@ func toListenerFilter(name string) *envoy_config_listener.Filter {
 						ConfigType: &http_connection_manager_v3.HttpFilter_TypedConfig{
 							TypedConfig: toAny(&envoy_extensions_filters_http_router_v3.Router{}),
 						},
-					},
-				},
-				CommonHttpProtocolOptions: &envoy_config_core_v3.HttpProtocolOptions{
-					MaxStreamDuration: &durationpb.Duration{
-						Seconds: 0,
 					},
 				},
 			}),
@@ -285,8 +303,12 @@ var defaultBackendListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-ingress-random-namespace-load-balancing",
 		Namespace: "random-namespace",
-		Labels: map[string]string{
-			"cilium.io/use-original-source-address": "false",
+		OwnerReferences: []metav1.OwnerReference{
+			{
+				APIVersion: "networking.k8s.io/v1",
+				Kind:       "Ingress",
+				Name:       "load-balancing",
+			},
 		},
 	},
 	Spec: ciliumv2.CiliumEnvoyConfigSpec{
@@ -432,8 +454,12 @@ var hostRulesListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-ingress-random-namespace-host-rules",
 		Namespace: "random-namespace",
-		Labels: map[string]string{
-			"cilium.io/use-original-source-address": "false",
+		OwnerReferences: []metav1.OwnerReference{
+			{
+				APIVersion: "networking.k8s.io/v1",
+				Kind:       "Ingress",
+				Name:       "host-rules",
+			},
 		},
 	},
 	Spec: ciliumv2.CiliumEnvoyConfigSpec{
@@ -521,7 +547,10 @@ var hostRulesListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 											Prefix: "/",
 										},
 									},
-									Action: toRouteAction("random-namespace", "foo-bar-com", "http"),
+									Action: toWeightedClusterRouteAction([]string{
+										"random-namespace/foo-bar-com:http",
+										"random-namespace/foo-bar-com:http",
+									}),
 								},
 							},
 						},
@@ -714,8 +743,12 @@ var pathRulesListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-ingress-random-namespace-path-rules",
 		Namespace: "random-namespace",
-		Labels: map[string]string{
-			"cilium.io/use-original-source-address": "false",
+		OwnerReferences: []metav1.OwnerReference{
+			{
+				APIVersion: "networking.k8s.io/v1",
+				Kind:       "Ingress",
+				Name:       "path-rules",
+			},
 		},
 	},
 	Spec: ciliumv2.CiliumEnvoyConfigSpec{
@@ -897,8 +930,12 @@ var proxyProtoListenersCiliumEnvoyConfig = &ciliumv2.CiliumEnvoyConfig{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "cilium-ingress-random-namespace-load-balancing",
 		Namespace: "random-namespace",
-		Labels: map[string]string{
-			"cilium.io/use-original-source-address": "false",
+		OwnerReferences: []metav1.OwnerReference{
+			{
+				APIVersion: "networking.k8s.io/v1",
+				Kind:       "Ingress",
+				Name:       "load-balancing",
+			},
 		},
 	},
 	Spec: ciliumv2.CiliumEnvoyConfigSpec{

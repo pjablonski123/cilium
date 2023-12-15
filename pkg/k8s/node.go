@@ -135,13 +135,7 @@ func ParseNode(k8sNode *slim_corev1.Node, source source.Source) *nodeTypes.Node 
 	}
 
 	newNode.Labels = k8sNode.GetLabels()
-	newNode.Annotations = make(map[string]string)
-	// Propagate only Cilium specific annotations.
-	for key, value := range k8sNode.GetAnnotations() {
-		if annotation.CiliumPrefixRegex.MatchString(key) {
-			newNode.Annotations[key] = value
-		}
-	}
+	newNode.Annotations = k8sNode.GetAnnotations()
 
 	if !option.Config.AnnotateK8sNode {
 		return newNode

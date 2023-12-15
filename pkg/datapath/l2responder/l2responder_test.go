@@ -39,19 +39,13 @@ func newFixture() *fixture {
 
 	hive.New(
 		statedb.Cell,
+		tables.Cell,
 		job.Cell,
-		cell.Provide(
-			tables.NewL2AnnounceTable,
-			statedb.RWTable[*tables.L2AnnounceEntry].ToTable,
-		),
-		cell.Invoke(
-			statedb.RegisterTable[*tables.L2AnnounceEntry],
-			func(d *statedb.DB, t statedb.RWTable[*tables.L2AnnounceEntry], j job.Registry) {
-
-				db = d
-				tbl = t
-				jr = j
-			}),
+		cell.Invoke(func(d *statedb.DB, t statedb.RWTable[*tables.L2AnnounceEntry], j job.Registry) {
+			db = d
+			tbl = t
+			jr = j
+		}),
 	).Populate()
 
 	nl := &mockNeighborNetlink{}

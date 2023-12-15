@@ -216,7 +216,7 @@ func benchmarkRelayGetFlows(b *testing.B, withFieldMask bool) {
 			grpc.WithReturnConnectionError(),
 		},
 	}
-	plr := &testutils.FakePeerLister{
+	plr := &testutils.FakePeerListReporter{
 		OnList: func() []poolTypes.Peer {
 			ret := make([]poolTypes.Peer, len(peers))
 			for i := range peers {

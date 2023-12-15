@@ -40,9 +40,6 @@ inputs:
   mutual-auth:
     description: 'Enable mTLS-based Mutual Authentication'
     default: true
-  ingress-controller:
-    description: 'Enable ingress controller, required kubeProxyReplacement'
-    default: false
   devices:
     description: 'List of native devices to attach datapath programs'
     default: ''
@@ -88,7 +85,7 @@ runs:
 
           TUNNEL="--helm-set-string=tunnelProtocol=${{ inputs.tunnel }}"
           if [ "${{ inputs.tunnel }}" == "disabled" ]; then
-            TUNNEL="--helm-set-string=routingMode=native --helm-set-string=autoDirectNodeRoutes=true --helm-set-string=ipv4NativeRoutingCIDR=10.244.0.0/16"
+            TUNNEL="--helm-set-string=routingMode=native --helm-set-string=autoDirectNodeRoutes=true --helm-set-string=ipv4NativeRoutingCIDR=10.244.0.0/16 --helm-set-string=tunnel=disabled"
             TUNNEL="${TUNNEL} --helm-set-string=ipv6NativeRoutingCIDR=fd00:10:244::/56"
           fi
 
@@ -145,12 +142,5 @@ runs:
             HOST_FW="--helm-set=hostFirewall.enabled=true"
           fi
 
-          if [ "${{ inputs.kpr }}" == "true" ]; then
-            if [ "${{ inputs.ingress-controller }}" == "true" ]; then
-              INGRESS_CONTROLLER="--helm-set=ingressController.enabled=true"
-              INGRESS_CONTROLLER+=" --helm-set=ingressController.service.type=NodePort"
-            fi
-          fi
-        
-          CONFIG="${DEFAULTS} ${IMAGE} ${TUNNEL} ${DEVICES} ${LB_MODE} ${ENDPOINT_ROUTES} ${IPV6} ${MASQ} ${EGRESS_GATEWAY} ${ENCRYPT} ${HOST_FW} ${LB_ACCELERATION} ${INGRESS_CONTROLLER}"
+          CONFIG="${DEFAULTS} ${IMAGE} ${TUNNEL} ${DEVICES} ${LB_MODE} ${ENDPOINT_ROUTES} ${IPV6} ${MASQ} ${EGRESS_GATEWAY} ${ENCRYPT} ${HOST_FW} ${LB_ACCELERATION}"
           echo "config=${CONFIG}" >> $GITHUB_OUTPUT

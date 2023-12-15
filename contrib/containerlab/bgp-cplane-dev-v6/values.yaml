@@ -1,4 +1,4 @@
-routingMode: native
+tunnel: disabled
 
 ipv4:
   enabled: false

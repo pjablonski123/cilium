@@ -17,13 +17,9 @@ on:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
         default: '{}'
-
-  push:
-    branches:
-      - main
-      - ft/main/**
-    paths-ignore:
-      - 'Documentation/**'
+  # Run every 6 hours
+  schedule:
+    - cron:  '0 3/6 * * *'
 
 # By specifying the access of one of the scopes, all of those that are not
 # specified are set to 'none'.
@@ -40,7 +36,7 @@ concurrency:
   # - Workflow name
   # - Event type
   # - A unique identifier depending on event type:
-  #   - push: SHA
+  #   - schedule: SHA
   #   - workflow_dispatch: PR number
   #
   # This structure ensures a unique concurrency group name is generated for each
@@ -49,7 +45,7 @@ concurrency:
     ${{ github.workflow }}
     ${{ github.event_name }}
     ${{
-      (github.event_name == 'push' && github.sha) ||
+      (github.event_name == 'schedule' && github.sha) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number)
     }}
   cancel-in-progress: true
@@ -58,7 +54,9 @@ env:
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind
   kind_version: v0.20.0
   # renovate: datasource=docker depName=quay.io/cilium/kindest-node
-  k8s_version: v1.29.0-rc.1
+  k8s_version: v1.28.2
+  # renovate: datasource=github-releases depName=cilium/cilium-cli
+  cilium_cli_version: v0.15.11
   cilium_cli_ci_version:
 
   clusterName1: cluster1
@@ -68,8 +66,7 @@ env:
 
 jobs:
   commit-status-start:
-    if: ${{ github.event_name != 'push' }}
-    name: Commit Status Start
+    name: Commmit Status Start
     runs-on: ubuntu-latest
     steps:
       - name: Set initial commit status
@@ -137,6 +134,9 @@ jobs:
           echo "downgrade_version=${CILIUM_DOWNGRADE_VERSION}" >> $GITHUB_OUTPUT
 
           # * bpf.masquerade is disabled due to #23283
+          # * IPv6 is disabled because an issue under investigation (#28088) seems
+          #   to possibly cause seldom and brief connection disruptions on agent
+          #   restart in dual stack clusters, independently of clustermesh.
           # * Hubble is disabled to avoid the performance penalty in the testing
           #   environment due to the relatively high traffic load.
           # * We explicitly configure the sync timeout to a higher value to
@@ -147,10 +147,9 @@ jobs:
             --set=bpf.masquerade=false \
             --set=bpf.monitorAggregation=none \
             --set=hubble.enabled=false \
-            --set=routingMode=tunnel \
-            --set=tunnelProtocol=vxlan \
+            --set=tunnel=vxlan \
             --set=ipv4.enabled=true \
-            --set=ipv6.enabled=true \
+            --set=ipv6.enabled=false \
             --set=clustermesh.useAPIServer=true \
             --set=clustermesh.config.enabled=true \
             --set=extraConfig.clustermesh-ip-identities-sync-timeout=5m"
@@ -183,10 +182,9 @@ jobs:
           echo "connectivity_test_defaults=${CONNECTIVITY_TEST_DEFAULTS}" >> $GITHUB_OUTPUT
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@c1fa8afda634f0457e9905d4f638e5164c4e0fc8 # v0.15.17
+        uses: cilium/cilium-cli@951eb9108277f4ffeb86d047bd492b6b96a52542 # v0.15.11
         with:
-          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
-          release-version: ${{ env.CILIUM_CLI_VERSION }}
+          release-version: ${{ env.cilium_cli_version }}
           ci-version: ${{ env.cilium_cli_ci_version }}
 
       - name: Generate Kind configuration files
@@ -297,23 +295,14 @@ jobs:
             --set=clustermesh.apiserver.image.override=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/clustermesh-apiserver-ci:${SHA} \
             --set=clustermesh.apiserver.kvstoremesh.image.override=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/kvstoremesh-ci:${SHA} \
           "
-          echo "sha=${SHA}" >> $GITHUB_OUTPUT
           echo "cilium_image_settings=${CILIUM_IMAGE_SETTINGS}" >> $GITHUB_OUTPUT
 
-      - name: Wait for images to be available (newest)
+      - name: Wait for images to be available
         timeout-minutes: 10
         shell: bash
         run: |
-          for image in cilium-ci operator-generic-ci hubble-relay-ci clustermesh-apiserver-ci ; do
+          for image in cilium-ci operator-generic-ci hubble-relay-ci clustermesh-apiserver-ci kvstoremesh-ci ; do
             until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ steps.newest-vars.outputs.sha }} &> /dev/null; do sleep 45s; done
-          done
-
-      - name: Wait for images to be available (downgrade)
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          for image in cilium-ci operator-generic-ci hubble-relay-ci clustermesh-apiserver-ci ; do
-            until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ steps.downgrade-vars.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
 
 
@@ -361,8 +350,7 @@ jobs:
           # interruption in such flows.
           cilium --context ${{ env.contextName1 }} connectivity test \
             --multi-cluster=${{ env.contextName2 }} --hubble=false \
-            --include-conn-disrupt-test --conn-disrupt-test-setup \
-            --conn-disrupt-dispatch-interval 0ms
+            --include-conn-disrupt-test --conn-disrupt-test-setup
 
 
       - name: Upgrade Cilium in cluster1 and enable kvstoremesh
@@ -408,8 +396,7 @@ jobs:
           # interruption in such flows.
           cilium --context ${{ env.contextName1 }} connectivity test \
             --multi-cluster=${{ env.contextName2 }} --hubble=false \
-            --include-conn-disrupt-test --conn-disrupt-test-setup \
-            --conn-disrupt-dispatch-interval 0ms
+            --include-conn-disrupt-test --conn-disrupt-test-setup
 
 
       # Perform an additional "stress" test, scaling the clustermesh-apiservers in both clusters
@@ -425,8 +412,8 @@ jobs:
           kubectl --context ${{ env.contextName2 }} rollout restart -n kube-system ds/cilium
 
           # Wait until all agents successfully restarted before scaling the replicas again
-          kubectl --context ${{ env.contextName1 }} rollout status -n kube-system ds/cilium --timeout=5m
-          kubectl --context ${{ env.contextName2 }} rollout status -n kube-system ds/cilium --timeout=5m
+          kubectl --context ${{ env.contextName1 }} rollout status -n kube-system ds/cilium --timeout=1m
+          kubectl --context ${{ env.contextName2 }} rollout status -n kube-system ds/cilium --timeout=1m
 
       - name: Scale the clustermesh-apiserver replicas back to 1
         run: |
@@ -466,8 +453,7 @@ jobs:
           # interruption in such flows.
           cilium --context ${{ env.contextName1 }} connectivity test \
             --multi-cluster=${{ env.contextName2 }} --hubble=false \
-            --include-conn-disrupt-test --conn-disrupt-test-setup \
-            --conn-disrupt-dispatch-interval 0ms
+            --include-conn-disrupt-test --conn-disrupt-test-setup
 
 
       - name: Downgrade Cilium in cluster1 and disable kvstoremesh
@@ -548,7 +534,7 @@ jobs:
           junit-directory: "cilium-junits"
 
   commit-status-final:
-    if: ${{ always() && github.event_name != 'push' }}
+    if: ${{ always() }}
     name: Commit Status Final
     needs: upgrade-and-downgrade
     runs-on: ubuntu-latest

@@ -4,14 +4,15 @@
 package ciliumenvoyconfig
 
 import (
-	"fmt"
+	"context"
 
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
-	ctrlRuntime "sigs.k8s.io/controller-runtime"
 
+	operatorK8s "github.com/cilium/cilium/operator/k8s"
 	operatorOption "github.com/cilium/cilium/operator/option"
+	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
+	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 )
 
 // Cell manages the CiliumEnvoyConfig related controllers.
@@ -27,42 +28,37 @@ var Cell = cell.Module(
 )
 
 type l7LoadBalancerConfig struct {
-	LoadBalancerL7Algorithm string
 	LoadBalancerL7Ports     []string
+	LoadBalancerL7Algorithm string
 }
 
 func (r l7LoadBalancerConfig) Flags(flags *pflag.FlagSet) {
-	flags.String("loadbalancer-l7-algorithm", r.LoadBalancerL7Algorithm, "Default LB algorithm for services that do not specify related annotation")
 	flags.StringSlice("loadbalancer-l7-ports", r.LoadBalancerL7Ports, "List of service ports that will be automatically redirected to backend.")
+	flags.String("loadbalancer-l7-algorithm", r.LoadBalancerL7Algorithm, "Default LB algorithm for services that do not specify related annotation")
 }
 
-type l7LoadbalancerParams struct {
-	cell.In
-
-	Logger             logrus.FieldLogger
-	CtrlRuntimeManager ctrlRuntime.Manager
-	Config             l7LoadBalancerConfig
-}
-
-func registerL7LoadBalancingController(params l7LoadbalancerParams) error {
+func registerL7LoadBalancingController(lc hive.Lifecycle, clientset k8sClient.Clientset, resources operatorK8s.Resources, config l7LoadBalancerConfig) error {
 	if operatorOption.Config.LoadBalancerL7 != "envoy" {
 		return nil
 	}
 
-	params.Logger.Info("Register Envoy load balancer reconciler")
+	ctx, cancelCtx := context.WithCancel(context.Background())
 
-	reconciler := newCiliumEnvoyConfigReconciler(
-		params.CtrlRuntimeManager.GetClient(),
-		params.Logger,
-		params.Config.LoadBalancerL7Algorithm,
-		params.Config.LoadBalancerL7Ports,
-		10,
-		operatorOption.Config.ProxyIdleTimeoutSeconds,
-	)
-
-	if err := reconciler.SetupWithManager(params.CtrlRuntimeManager); err != nil {
-		return fmt.Errorf("failed to setup Envoy load balancer reconciler: %w", err)
-	}
+	lc.Append(hive.Hook{
+		OnStart: func(_ hive.HookContext) error {
+			log.Info("Starting Envoy load balancer controller")
+			StartCECController(ctx, clientset, resources.Services,
+				config.LoadBalancerL7Ports,
+				config.LoadBalancerL7Algorithm,
+				operatorOption.Config.ProxyIdleTimeoutSeconds,
+			)
+			return nil
+		},
+		OnStop: func(hive.HookContext) error {
+			cancelCtx()
+			return nil
+		},
+	})
 
 	return nil
 }

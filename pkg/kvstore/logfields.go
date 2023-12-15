@@ -17,6 +17,9 @@ const (
 	// key revision
 	fieldRev = "revision"
 
+	// fieldSession refers to a connection/session with the kvstore
+	fieldSession = "session"
+
 	// fieldPrefix is the prefix of the key used in the operation
 	fieldPrefix = "prefix"
 
@@ -37,6 +40,9 @@ const (
 
 	// fieldAttachLease is true if the key must be attached to a lease
 	fieldAttachLease = "attachLease"
+
+	// fieldEtcdEndpoint is the etcd endpoint we talk to
+	fieldEtcdEndpoint = "etcdEndpoint"
 
 	// FieldUser identifies a user in the kvstore
 	FieldUser = logfields.User

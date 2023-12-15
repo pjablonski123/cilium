@@ -22,7 +22,6 @@ import (
 
 // exporter is an implementation of OnDecodedEvent interface that writes Hubble events to a file.
 type exporter struct {
-	FlowLogExporter
 	ctx     context.Context
 	logger  logrus.FieldLogger
 	encoder *json.Encoder

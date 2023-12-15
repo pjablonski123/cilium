@@ -7,8 +7,6 @@ import (
 	"context"
 	"io"
 
-	"github.com/sirupsen/logrus"
-	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
@@ -19,7 +17,6 @@ import (
 	poolTypes "github.com/cilium/cilium/pkg/hubble/relay/pool/types"
 	"github.com/cilium/cilium/pkg/hubble/relay/queue"
 	"github.com/cilium/cilium/pkg/inctimer"
-	"github.com/cilium/cilium/pkg/lock"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/time"
 )
@@ -28,9 +25,11 @@ func isAvailable(conn poolTypes.ClientConn) bool {
 	if conn == nil {
 		return false
 	}
-	state := conn.GetState()
-	return state != connectivity.TransientFailure &&
-		state != connectivity.Shutdown
+	switch conn.GetState() {
+	case connectivity.Ready, connectivity.Idle:
+		return true
+	}
+	return false
 }
 
 func retrieveFlowsFromPeer(
@@ -220,85 +219,4 @@ func aggregateErrors(
 
 	}()
 	return aggregated
-}
-
-func sendFlowsResponse(ctx context.Context, stream observerpb.Observer_GetFlowsServer, sortedFlows <-chan *observerpb.GetFlowsResponse) error {
-	for {
-		select {
-		case flow, ok := <-sortedFlows:
-			if !ok {
-				return nil
-			}
-			if err := stream.Send(flow); err != nil {
-				return err
-			}
-		case <-ctx.Done():
-			return nil
-		}
-	}
-}
-
-func newFlowCollector(req *observerpb.GetFlowsRequest, opts options) *flowCollector {
-	fc := &flowCollector{
-		log: opts.log,
-		ocb: opts.ocb,
-
-		req: req,
-
-		connectedNodes: map[string]struct{}{},
-	}
-	return fc
-}
-
-type flowCollector struct {
-	log logrus.FieldLogger
-	ocb observerClientBuilder
-
-	req *observerpb.GetFlowsRequest
-
-	mu             lock.Mutex
-	connectedNodes map[string]struct{}
-}
-
-func (fc *flowCollector) collect(ctx context.Context, g *errgroup.Group, peers []poolTypes.Peer, flows chan *observerpb.GetFlowsResponse) ([]string, []string) {
-	var connected, unavailable []string
-	fc.mu.Lock()
-	defer fc.mu.Unlock()
-	for _, p := range peers {
-		if _, ok := fc.connectedNodes[p.Name]; ok {
-			connected = append(connected, p.Name)
-			continue
-		}
-		if !isAvailable(p.Conn) {
-			fc.log.WithField("address", p.Address).Infof(
-				"No connection to peer %s, skipping", p.Name,
-			)
-			unavailable = append(unavailable, p.Name)
-			continue
-		}
-		connected = append(connected, p.Name)
-		fc.connectedNodes[p.Name] = struct{}{}
-		p := p
-		g.Go(func() error {
-			// retrieveFlowsFromPeer returns blocks until the peer finishes
-			// the request by closing the connection, an error occurs,
-			// or ctx expires.
-			err := retrieveFlowsFromPeer(ctx, fc.ocb.observerClient(&p), fc.req, flows)
-			if err != nil {
-				fc.log.WithFields(logrus.Fields{
-					"error": err,
-					"peer":  p,
-				}).Warning("Failed to retrieve flows from peer")
-				fc.mu.Lock()
-				delete(fc.connectedNodes, p.Name)
-				fc.mu.Unlock()
-				select {
-				case flows <- nodeStatusError(err, p.Name):
-				case <-ctx.Done():
-				}
-			}
-			return nil
-		})
-	}
-	return connected, unavailable
 }

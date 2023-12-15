@@ -4,11 +4,9 @@
 package tables
 
 import (
-	"fmt"
 	"net"
 	"net/netip"
 	"slices"
-	"strings"
 
 	"github.com/cilium/cilium/pkg/statedb"
 	"github.com/cilium/cilium/pkg/statedb/index"
@@ -20,8 +18,10 @@ var (
 		FromObject: func(d *Device) index.KeySet {
 			return index.NewKeySet(index.Int(d.Index))
 		},
-		FromKey: index.Int,
-		Unique:  true,
+		FromKey: func(idx int) []byte {
+			return index.Int(idx)
+		},
+		Unique: true,
 	}
 
 	DeviceNameIndex = statedb.Index[*Device, string]{
@@ -29,7 +29,9 @@ var (
 		FromObject: func(d *Device) index.KeySet {
 			return index.NewKeySet(index.String(d.Name))
 		},
-		FromKey: index.String,
+		FromKey: func(name string) []byte {
+			return index.String(name)
+		},
 	}
 
 	DeviceSelectedIndex = statedb.Index[*Device, bool]{
@@ -37,18 +39,18 @@ var (
 		FromObject: func(d *Device) index.KeySet {
 			return index.NewKeySet(index.Bool(d.Selected))
 		},
-		FromKey: index.Bool,
+		FromKey: func(selected bool) []byte {
+			return index.Bool(selected)
+		},
 	}
-)
 
-func NewDeviceTable() (statedb.RWTable[*Device], error) {
-	return statedb.NewTable[*Device](
+	DeviceTableCell = statedb.NewPrivateRWTableCell[*Device](
 		"devices",
 		DeviceIDIndex,
 		DeviceNameIndex,
 		DeviceSelectedIndex,
 	)
-}
+)
 
 // HardwareAddr is the physical address for a network device.
 // Defined here instead of using net.Hardwareaddr for proper
@@ -98,40 +100,9 @@ func (d *Device) HasIP(ip net.IP) bool {
 	return false
 }
 
-func (*Device) TableHeader() []string {
-	return []string{
-		"Name",
-		"Index",
-		"Selected",
-		"Type",
-		"MTU",
-		"HWAddr",
-		"Flags",
-		"Addresses",
-	}
-}
-
-func (d *Device) TableRow() []string {
-	addrs := []string{}
-	for _, addr := range d.Addrs {
-		addrs = append(addrs, addr.Addr.String())
-	}
-	return []string{
-		d.Name,
-		fmt.Sprintf("%d", d.Index),
-		fmt.Sprintf("%v", d.Selected),
-		d.Type,
-		fmt.Sprintf("%d", d.MTU),
-		d.HardwareAddr.String(),
-		d.Flags.String(),
-		strings.Join(addrs, ", "),
-	}
-}
-
 type DeviceAddress struct {
-	Addr      netip.Addr
-	Secondary bool
-	Scope     uint8 // Address scope, e.g. unix.RT_SCOPE_LINK, unix.RT_SCOPE_HOST etc.
+	Addr  netip.Addr
+	Scope uint8 // Routing table scope
 }
 
 func (d *DeviceAddress) AsIP() net.IP {

@@ -274,7 +274,7 @@ NAME(struct __ctx_buff *ctx, struct PREFIX ## _ct_tuple *tuple)		\
 	if (err != CTX_ACT_OK)						\
 		return err;						\
 									\
-	if (l4_load_ports(ctx, l4_off, &tuple->dport) < 0)		\
+	if (ctx_load_bytes(ctx, l4_off, &tuple->dport, 4) < 0)		\
 		return DROP_CT_INVALID_HDR;				\
 									\
 	__ ## PREFIX ## _ct_tuple_reverse(tuple);			\
@@ -362,30 +362,30 @@ out: __maybe_unused;
 }
 
 /**
- * tc_index_from_ingress_proxy - returns true if packet originates from ingress proxy
+ * tc_index_skip_ingress_proxy - returns true if packet originates from ingress proxy
  */
-static __always_inline bool tc_index_from_ingress_proxy(struct __ctx_buff *ctx)
+static __always_inline bool tc_index_skip_ingress_proxy(struct __ctx_buff *ctx)
 {
 	volatile __u32 tc_index = ctx->tc_index;
 #ifdef DEBUG
-	if (tc_index & TC_INDEX_F_FROM_INGRESS_PROXY)
+	if (tc_index & TC_INDEX_F_SKIP_INGRESS_PROXY)
 		cilium_dbg(ctx, DBG_SKIP_PROXY, tc_index, 0);
 #endif
 
-	return tc_index & TC_INDEX_F_FROM_INGRESS_PROXY;
+	return tc_index & TC_INDEX_F_SKIP_INGRESS_PROXY;
 }
 
 /**
- * tc_index_from_egress_proxy - returns true if packet originates from egress proxy
+ * tc_index_skip_egress_proxy - returns true if packet originates from egress proxy
  */
-static __always_inline bool tc_index_from_egress_proxy(struct __ctx_buff *ctx)
+static __always_inline bool tc_index_skip_egress_proxy(struct __ctx_buff *ctx)
 {
 	volatile __u32 tc_index = ctx->tc_index;
 #ifdef DEBUG
-	if (tc_index & TC_INDEX_F_FROM_EGRESS_PROXY)
+	if (tc_index & TC_INDEX_F_SKIP_EGRESS_PROXY)
 		cilium_dbg(ctx, DBG_SKIP_PROXY, tc_index, 0);
 #endif
 
-	return tc_index & TC_INDEX_F_FROM_EGRESS_PROXY;
+	return tc_index & TC_INDEX_F_SKIP_EGRESS_PROXY;
 }
 #endif /* __LIB_PROXY_H_ */

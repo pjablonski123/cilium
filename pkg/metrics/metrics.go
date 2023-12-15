@@ -20,7 +20,6 @@ import (
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/metrics/metric"
 	"github.com/cilium/cilium/pkg/promise"
-	"github.com/cilium/cilium/pkg/source"
 	"github.com/cilium/cilium/pkg/time"
 	"github.com/cilium/cilium/pkg/version"
 )
@@ -97,21 +96,11 @@ const (
 
 	// Labels
 
-	// LabelValueFalse is the string value for true metric label values.
-	LabelValueTrue = "true"
-
-	// LabelValueFalse is the string value for false metric label values.
-	LabelValueFalse = "false"
-
 	// LabelValueOutcomeSuccess is used as a successful outcome of an operation
 	LabelValueOutcomeSuccess = "success"
 
 	// LabelValueOutcomeFail is used as an unsuccessful outcome of an operation
 	LabelValueOutcomeFail = "fail"
-
-	// LabelValueOutcomeFailure is used as an unsuccessful outcome of an operation.
-	// NOTE: This should only be used for existing metrics, new metrics should use LabelValueOutcomeFail.
-	LabelValueOutcomeFailure = "failure"
 
 	// LabelDropReason is used to describe reason for dropping a packets/bytes
 	LabelDropReason = "reason"
@@ -155,8 +144,6 @@ const (
 
 	// LabelPolicySource is the label used to see the enforcement status
 	LabelPolicySource = "source"
-
-	LabelSource = "source"
 
 	// LabelScope is the label used to defined multiples scopes in the same
 	// metric. For example, one counter may measure a metric over the scope of
@@ -237,12 +224,6 @@ const (
 	LabelLocationRemoteIntraCluster = "remote_intra_cluster"
 	LabelLocationRemoteInterCluster = "remote_inter_cluster"
 
-	// Rule label is a label for a L7 rule name.
-	LabelL7Rule = "rule"
-
-	// LabelL7ProxyType is the label for denoting a L7 proxy type.
-	LabelL7ProxyType = "proxy_type"
-
 	// LabelType is the label for type in general (e.g. endpoint, node)
 	LabelType         = "type"
 	LabelPeerEndpoint = "endpoint"
@@ -257,9 +238,6 @@ const (
 )
 
 var (
-	// LabelValuesBool is metric label value set for boolean type.
-	LabelValuesBool = metric.NewValues(LabelValueTrue, LabelValueFalse)
-
 	// Namespace is used to scope metrics from cilium. It is prepended to metric
 	// names and separated with a '_'
 	Namespace = CiliumAgentNamespace
@@ -355,9 +333,11 @@ var (
 
 	// Events
 
-	// EventTS is the time in seconds since epoch that we last received an
-	// event that was handled by Cilium. This metric tracks the source of the
-	// event which can be one of K8s or Cilium's API.
+	// EventTS*is the time in seconds since epoch that we last received an
+	// event that we will handle
+	// source is one of k8s, docker or apia
+
+	// EventTS is the timestamp of k8s resource events.
 	EventTS = NoOpGaugeVec
 
 	// EventLagK8s is the lag calculation for k8s Pod events.
@@ -738,18 +718,13 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:      "Duration of processed API calls labeled by path, method and return code.",
 		}, []string{LabelPath, LabelMethod, LabelAPIReturnCode}),
 
-		EndpointRegenerationTotal: metric.NewCounterVecWithLabels(metric.CounterOpts{
+		EndpointRegenerationTotal: metric.NewCounterVec(metric.CounterOpts{
 			ConfigName: Namespace + "_endpoint_regenerations_total",
 
 			Namespace: Namespace,
 			Name:      "endpoint_regenerations_total",
 			Help:      "Count of all endpoint regenerations that have completed, tagged by outcome",
-		}, metric.Labels{
-			{
-				Name:   LabelOutcome,
-				Values: metric.NewValues(LabelValueOutcomeSuccess, LabelValueOutcomeFailure),
-			},
-		}),
+		}, []string{"outcome"}),
 
 		EndpointStateCount: metric.NewGaugeVec(metric.GaugeOpts{
 			ConfigName: Namespace + "_endpoint_state",
@@ -796,18 +771,13 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:       "Highest policy revision number in the agent",
 		}),
 
-		PolicyChangeTotal: metric.NewCounterVecWithLabels(metric.CounterOpts{
+		PolicyChangeTotal: metric.NewCounterVec(metric.CounterOpts{
 			ConfigName: Namespace + "_policy_change_total",
 
 			Namespace: Namespace,
 			Name:      "policy_change_total",
 			Help:      "Number of policy changes by outcome",
-		}, metric.Labels{
-			{
-				Name:   LabelOutcome,
-				Values: metric.NewValues(LabelValueOutcomeSuccess, LabelValueOutcomeFailure),
-			},
-		}),
+		}, []string{"outcome"}),
 
 		PolicyEndpointStatus: metric.NewGaugeVec(metric.GaugeOpts{
 			ConfigName: Namespace + "_policy_endpoint_enforcement_status",
@@ -817,18 +787,13 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:      "Number of endpoints labeled by policy enforcement status",
 		}, []string{LabelPolicyEnforcement}),
 
-		PolicyImplementationDelay: metric.NewHistogramVecWithLabels(metric.HistogramOpts{
+		PolicyImplementationDelay: metric.NewHistogramVec(metric.HistogramOpts{
 			ConfigName: Namespace + "_policy_implementation_delay",
 
 			Namespace: Namespace,
 			Name:      "policy_implementation_delay",
 			Help:      "Time between a policy change and it being fully deployed into the datapath",
-		}, metric.Labels{
-			{
-				Name:   LabelPolicySource,
-				Values: metric.NewValues(string(source.Kubernetes), string(source.CustomResource), string(source.LocalAPI)),
-			},
-		}),
+		}, []string{LabelPolicySource}),
 
 		CIDRGroupsReferenced: metric.NewGauge(metric.GaugeOpts{
 			ConfigName: Namespace + "cidrgroups_referenced",
@@ -859,7 +824,7 @@ func NewLegacyMetrics() *LegacyMetrics {
 			ConfigName: Namespace + "_event_ts",
 			Namespace:  Namespace,
 			Name:       "event_ts",
-			Help:       "Last timestamp when Cilium received an event from a control plane source, per resource and per action",
+			Help:       "Last timestamp when we received an event",
 		}, []string{LabelEventSource, LabelScope, LabelAction}),
 
 		EventLagK8s: metric.NewGauge(metric.GaugeOpts{
@@ -879,21 +844,12 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:      "Number of redirects installed for endpoints, labeled by protocol",
 		}, []string{LabelProtocolL7}),
 
-		ProxyPolicyL7Total: metric.NewCounterVecWithLabels(metric.CounterOpts{
+		ProxyPolicyL7Total: metric.NewCounterVec(metric.CounterOpts{
 			ConfigName: Namespace + "_policy_l7_total",
 			Namespace:  Namespace,
 			Name:       "policy_l7_total",
 			Help:       "Number of total proxy requests handled",
-		}, metric.Labels{
-			{
-				Name:   LabelL7Rule,
-				Values: metric.NewValues("received", "forwarded", "denied", "parse_errors"),
-			},
-			{
-				Name:   LabelL7ProxyType,
-				Values: metric.NewValues("fqdn", "envoy"),
-			},
-		}),
+		}, []string{"rule", "proxy_type"}),
 
 		ProxyUpstreamTime: metric.NewHistogramVec(metric.HistogramOpts{
 			ConfigName: Namespace + "_proxy_upstream_reply_seconds",
@@ -1009,51 +965,19 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:       "Number of times that Cilium has started a subprocess, labeled by subsystem",
 		}, []string{LabelSubsystem}),
 
-		KubernetesEventProcessed: metric.NewCounterVecWithLabels(metric.CounterOpts{
+		KubernetesEventProcessed: metric.NewCounterVec(metric.CounterOpts{
 			ConfigName: Namespace + "_kubernetes_events_total",
 			Namespace:  Namespace,
 			Name:       "kubernetes_events_total",
 			Help:       "Number of Kubernetes events processed labeled by scope, action and execution result",
-		},
-			metric.Labels{
-				{
-					Name:   LabelScope,
-					Values: metric.NewValues("CiliumNetworkPolicy", "CiliumClusterwideNetworkPolicy", "NetworkPolicy"),
-				},
-				{
-					Name:   LabelAction,
-					Values: metric.NewValues("update", "delete"),
-				},
-				{
-					Name:   LabelStatus,
-					Values: metric.NewValues("success", "failed"),
-				},
-			},
-		),
+		}, []string{LabelScope, LabelAction, LabelStatus}),
 
-		KubernetesEventReceived: metric.NewCounterVecWithLabels(metric.CounterOpts{
+		KubernetesEventReceived: metric.NewCounterVec(metric.CounterOpts{
 			ConfigName: Namespace + "_kubernetes_events_received_total",
 			Namespace:  Namespace,
 			Name:       "kubernetes_events_received_total",
 			Help:       "Number of Kubernetes events received labeled by scope, action, valid data and equalness",
-		}, metric.Labels{
-			{
-				Name:   LabelScope,
-				Values: metric.NewValues("CiliumNetworkPolicy", "CiliumClusterwideNetworkPolicy", "NetworkPolicy"),
-			},
-			{
-				Name:   LabelAction,
-				Values: metric.NewValues("update", "delete"),
-			},
-			{
-				Name:   "valid",
-				Values: LabelValuesBool,
-			},
-			{
-				Name:   "equal",
-				Values: LabelValuesBool,
-			},
-		}),
+		}, []string{LabelScope, LabelAction, "valid", "equal"}),
 
 		KubernetesAPIInteractions: metric.NewHistogramVec(metric.HistogramOpts{
 			ConfigName: Namespace + "_" + SubsystemK8sClient + "_api_latency_time_seconds",

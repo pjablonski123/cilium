@@ -4,6 +4,11 @@
     Please use the official rendered version released here:
     https://docs.cilium.io
 
+.. note::
+
+   Make sure you have Helm 3 `installed <https://helm.sh/docs/intro/install/>`_.
+   Helm 2 is `no longer supported <https://helm.sh/blog/helm-v2-deprecation-timeline/>`_.
+
 .. only:: stable
 
    Setup Helm repository:

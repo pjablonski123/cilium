@@ -26,12 +26,13 @@ type EndpointKey struct {
 	IP        types.IPv6 `align:"$union0"`
 	Family    uint8      `align:"family"`
 	Key       uint8      `align:"key"`
-	ClusterID uint16     `align:"cluster_id"`
+	ClusterID uint8      `align:"cluster_id"`
+	Pad       uint8      `align:"pad"`
 }
 
 // NewEndpointKey returns an EndpointKey based on the provided IP address. The
 // address family is automatically detected.
-func NewEndpointKey(ip net.IP, clusterID uint16) EndpointKey {
+func NewEndpointKey(ip net.IP, clusterID uint8) EndpointKey {
 	result := EndpointKey{}
 
 	if ip4 := ip.To4(); ip4 != nil {

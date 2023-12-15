@@ -72,19 +72,6 @@ type RWTable[Obj any] interface {
 	// write transaction return the fresh uncommitted modifications if any.
 	Table[Obj]
 
-	// ToTable returns the Table[Obj] interface. Useful with cell.Provide
-	// to avoid the anonymous function:
-	//
-	//   cell.ProvidePrivate(NewMyTable), // RWTable
-	//   cell.Invoke(statedb.Register[statedb.RWTable[Foo])
-	//
-	//   // with anononymous function:
-	//   cell.Provide(func(t statedb.RWTable[Foo]) statedb.Table[Foo] { return t })
-	//
-	//   // with ToTable:
-	//   cell.Provide(statedb.RWTable[Foo].ToTable),
-	ToTable() Table[Obj]
-
 	// Insert an object into the table. Returns the object that was
 	// replaced if there was one.
 	//
@@ -143,7 +130,7 @@ type RWTable[Obj any] interface {
 // the object type (the 'Obj' constraint).
 type TableMeta interface {
 	Name() TableName                          // The name of the table
-	tableKey() []byte                         // The radix key for the table in the root tree
+	tableKey() index.Key                      // The radix key for the table in the root tree
 	primaryIndexer() anyIndexer               // The untyped primary indexer for the table
 	secondaryIndexers() map[string]anyIndexer // Secondary indexers (if any)
 	sortableMutex() lock.SortableMutex        // The sortable mutex for locking the table for writing
@@ -184,15 +171,17 @@ type WriteTxn interface {
 }
 
 type Query[Obj any] struct {
-	index IndexName
-	key   []byte
+	index  IndexName
+	unique bool
+	key    []byte
 }
 
 // ByRevision constructs a revision query. Applicable to any table.
 func ByRevision[Obj any](rev uint64) Query[Obj] {
 	return Query[Obj]{
-		index: RevisionIndex,
-		key:   index.Uint64(rev),
+		index:  RevisionIndex,
+		unique: false,
+		key:    index.Uint64(rev),
 	}
 }
 
@@ -200,7 +189,7 @@ func ByRevision[Obj any](rev uint64) Query[Obj] {
 type Index[Obj any, Key any] struct {
 	Name       string
 	FromObject func(obj Obj) index.KeySet
-	FromKey    func(key Key) index.Key
+	FromKey    func(key Key) []byte
 	Unique     bool
 }
 
@@ -227,8 +216,9 @@ func (i Index[Obj, Key]) isUnique() bool {
 // Query constructs a query against this index from a key.
 func (i Index[Obj, Key]) Query(key Key) Query[Obj] {
 	return Query[Obj]{
-		index: i.Name,
-		key:   i.FromKey(key),
+		index:  i.Name,
+		unique: i.isUnique(),
+		key:    i.FromKey(key),
 	}
 }
 
@@ -238,17 +228,6 @@ type Indexer[Obj any] interface {
 	indexName() string
 	isUnique() bool
 	fromObject(obj Obj) index.KeySet
-}
-
-// TableWritable is a constraint for objects that implement tabular
-// pretty-printing. Used in "cilium-dbg statedb" sub-commands.
-type TableWritable interface {
-	// TableHeader returns the header columns that are independent of the
-	// object.
-	TableHeader() []string
-
-	// TableRow returns the row columns for this object.
-	TableRow() []string
 }
 
 //
@@ -289,30 +268,27 @@ type deleteTracker interface {
 	getRevision() uint64
 }
 
-type indexEntry struct {
-	tree   *iradix.Tree[object]
-	unique bool
-}
+type indexTree = *iradix.Tree[object]
 
 type tableEntry struct {
 	meta           TableMeta
-	indexes        *iradix.Tree[indexEntry]
+	indexes        *iradix.Tree[indexTree]
 	deleteTrackers *iradix.Tree[deleteTracker]
 	revision       uint64
 }
 
 func (t *tableEntry) numObjects() int {
-	indexEntry, ok := t.indexes.Get([]byte(RevisionIndex))
+	indexTree, ok := t.indexes.Get([]byte(RevisionIndex))
 	if ok {
-		return indexEntry.tree.Len()
+		return indexTree.Len()
 	}
 	return 0
 }
 
 func (t *tableEntry) numDeletedObjects() int {
-	indexEntry, ok := t.indexes.Get([]byte(GraveyardIndex))
+	indexTree, ok := t.indexes.Get([]byte(GraveyardIndex))
 	if ok {
-		return indexEntry.tree.Len()
+		return indexTree.Len()
 	}
 	return 0
 }

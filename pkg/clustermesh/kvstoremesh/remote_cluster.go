@@ -47,7 +47,6 @@ func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperati
 
 	if srccfg != nil {
 		dstcfg.ID = srccfg.ID
-		dstcfg.Capabilities.MaxConnectedClusters = srccfg.Capabilities.MaxConnectedClusters
 	}
 
 	if err := cmutils.SetClusterConfig(ctx, rc.name, &dstcfg, rc.localBackend); err != nil {

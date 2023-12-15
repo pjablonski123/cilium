@@ -18,12 +18,12 @@ import (
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/datapath/linux/probes"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/nat"
-	"github.com/cilium/cilium/pkg/maps/timestamp"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/time"
@@ -78,6 +78,10 @@ const (
 
 	// MaxTime specifies the last possible time for GCFilter.Time
 	MaxTime = math.MaxUint32
+
+	// The BPF CT implementation stores jiffies right-shifted by this value. Must
+	// correspond to BPF_MONO_SCALER in the datapath.
+	bpfMonoScaler = 8
 
 	metricsAlive   = "alive"
 	metricsDeleted = "deleted"
@@ -183,6 +187,17 @@ type GCFilter struct {
 // EmitCTEntryCBFunc is the type used for the EmitCTEntryCB callback in GCFilter
 type EmitCTEntryCBFunc func(srcIP, dstIP netip.Addr, srcPort, dstPort uint16, nextHdr, flags uint8, entry *CtEntry)
 
+// scaledJiffies returns the kernel's current jiffies, right-shifted by a
+// monotonic scaler value.
+func scaledJiffies() (uint64, error) {
+	j, err := probes.Jiffies()
+	if err != nil {
+		return 0, err
+	}
+
+	return j >> bpfMonoScaler, nil
+}
+
 // DumpEntriesWithTimeDiff iterates through Map m and writes the values of the
 // ct entries in m to a string. If clockSource is not nil, it uses it to
 // compute the time difference of each entry from now and prints that too.
@@ -191,21 +206,32 @@ func DumpEntriesWithTimeDiff(m CtMap, clockSource *models.ClockSource) (string, 
 
 	if clockSource == nil {
 		toRemSecs = nil
-	} else {
-		now, err := timestamp.GetCTCurTime(clockSource)
+	} else if clockSource.Mode == models.ClockSourceModeKtime {
+		now, err := bpf.GetMtime()
 		if err != nil {
 			return "", err
 		}
-		tsConverter, err := timestamp.NewCTTimeToSecConverter(clockSource)
-		if err != nil {
-			return "", err
-		}
-		tsecNow := tsConverter(now)
+		now = now / 1000000000
 		toRemSecs = func(t uint32) string {
-			tsec := tsConverter(uint64(t))
-			diff := int64(tsec) - int64(tsecNow)
+			diff := int64(t) - int64(now)
 			return fmt.Sprintf("remaining: %d sec(s)", diff)
 		}
+	} else if clockSource.Mode == models.ClockSourceModeJiffies {
+		now, err := scaledJiffies()
+		if err != nil {
+			return "", err
+		}
+		if clockSource.Hertz == 0 {
+			return "", fmt.Errorf("invalid clock Hertz value (0)")
+		}
+		toRemSecs = func(t uint32) string {
+			diff := int64(t) - int64(now)
+			diff = diff << 8
+			diff = diff / int64(clockSource.Hertz)
+			return fmt.Sprintf("remaining: %d sec(s)", diff)
+		}
+	} else {
+		return "", fmt.Errorf("unknown clock source: %s", clockSource.Mode)
 	}
 
 	var sb strings.Builder
@@ -261,22 +287,18 @@ func purgeCtEntry6(m *Map, key CtKey, entry *CtEntry, natMap *nat.Map) error {
 	}
 
 	t := key.GetTupleKey()
-	tupleType := t.GetFlags()
 
-	if tupleType == tuple.TUPLE_F_IN && entry.isDsrEntry() {
-		// To delete NAT entries created by legacy DSR
-		nat.DeleteSwappedMapping6(natMap, t.(*tuple.TupleKey6Global))
-	}
-
-	if tupleType == tuple.TUPLE_F_OUT {
+	if t.GetFlags()&tuple.TUPLE_F_IN != 0 {
 		if entry.isDsrEntry() {
-			// To delete NAT entries created by DSR
+			// To delete NAT entries created by legacy DSR
 			nat.DeleteSwappedMapping6(natMap, t.(*tuple.TupleKey6Global))
-		} else {
-			// To delete NAT entries created for SNAT
-			nat.DeleteMapping6(natMap, t.(*tuple.TupleKey6Global))
-
 		}
+	} else if t.GetFlags()&tuple.TUPLE_F_OUT == tuple.TUPLE_F_OUT &&
+		entry.isDsrEntry() {
+		// To delete NAT entries created by DSR
+		nat.DeleteSwappedMapping6(natMap, t.(*tuple.TupleKey6Global))
+	} else {
+		nat.DeleteMapping6(natMap, t.(*tuple.TupleKey6Global))
 	}
 
 	return nil
@@ -380,21 +402,18 @@ func purgeCtEntry4(m *Map, key CtKey, entry *CtEntry, natMap *nat.Map) error {
 	}
 
 	t := key.GetTupleKey()
-	tupleType := t.GetFlags()
 
-	if tupleType == tuple.TUPLE_F_IN && entry.isDsrEntry() {
-		// To delete NAT entries created by legacy DSR
-		nat.DeleteSwappedMapping4(natMap, t.(*tuple.TupleKey4Global))
-	}
-
-	if tupleType == tuple.TUPLE_F_OUT {
+	if t.GetFlags()&tuple.TUPLE_F_IN != 0 {
 		if entry.isDsrEntry() {
-			// To delete NAT entries created by DSR
+			// To delete NAT entries created by legacy DSR
 			nat.DeleteSwappedMapping4(natMap, t.(*tuple.TupleKey4Global))
-		} else {
-			// To delete NAT entries created for SNAT
-			nat.DeleteMapping4(natMap, t.(*tuple.TupleKey4Global))
 		}
+	} else if t.GetFlags()&tuple.TUPLE_F_OUT == tuple.TUPLE_F_OUT &&
+		entry.isDsrEntry() {
+		// To delete NAT entries created by DSR
+		nat.DeleteSwappedMapping4(natMap, t.(*tuple.TupleKey4Global))
+	} else {
+		nat.DeleteMapping4(natMap, t.(*tuple.TupleKey4Global))
 	}
 
 	return nil
@@ -532,7 +551,13 @@ func doGC(m *Map, filter *GCFilter) int {
 // It returns how many items were deleted from m.
 func GC(m *Map, filter *GCFilter) int {
 	if filter.RemoveExpired {
-		t, _ := timestamp.GetCTCurTime(timestamp.GetClockSourceFromOptions())
+		var t uint64
+		if option.Config.ClockSource == option.ClockSourceKtime {
+			t, _ = bpf.GetMtime()
+			t = t / 1000000000
+		} else {
+			t, _ = scaledJiffies()
+		}
 		filter.Time = uint32(t)
 	}
 
@@ -597,7 +622,7 @@ func PurgeOrphanNATEntries(ctMapTCP, ctMapAny *Map) *NatGCStats {
 		if natKey.GetFlags()&tuple.TUPLE_F_IN == tuple.TUPLE_F_IN { // natKey is r(everse)tuple
 			ctKey := egressCTKeyFromIngressNatKeyAndVal(natKey, natVal)
 
-			if !ctEntryExist(ctMap, ctKey, nil) {
+			if !ctEntryExist(ctMap, ctKey) {
 				// No egress CT entry is found, delete the orphan ingress SNAT entry
 				if deleted, _ := natMap.Delete(natKey); deleted {
 					stats.IngressDeleted++
@@ -606,17 +631,13 @@ func PurgeOrphanNATEntries(ctMapTCP, ctMapAny *Map) *NatGCStats {
 				stats.IngressAlive++
 			}
 		} else if natKey.GetFlags()&tuple.TUPLE_F_OUT == tuple.TUPLE_F_OUT {
-			checkDsr := func(entry *CtEntry) bool {
-				return entry.isDsrEntry()
-			}
-
 			ingressCTKey := ingressCTKeyFromEgressNatKey(natKey)
 			egressCTKey := egressCTKeyFromEgressNatKey(natKey)
 			dsrCTKey := dsrCTKeyFromEgressNatKey(natKey)
 
-			if !ctEntryExist(ctMap, ingressCTKey, checkDsr) &&
-				!ctEntryExist(ctMap, egressCTKey, nil) &&
-				!ctEntryExist(ctMap, dsrCTKey, checkDsr) {
+			if !ctEntryExist(ctMap, ingressCTKey) &&
+				!ctEntryExist(ctMap, egressCTKey) &&
+				!ctEntryExist(ctMap, dsrCTKey) {
 				// No relevant CT entries were found, delete the orphan egress NAT entry
 				if deleted, _ := natMap.Delete(natKey); deleted {
 					stats.EgressDeleted++

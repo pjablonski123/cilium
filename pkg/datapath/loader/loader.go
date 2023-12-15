@@ -268,14 +268,14 @@ func removeObsoleteNetdevPrograms() error {
 	}
 
 	for _, dev := range ingressDevs {
-		err = removeTCFilters(dev.Attrs().Name, directionToParent(dirIngress))
+		err = RemoveTCFilters(dev.Attrs().Name, directionToParent(dirIngress))
 		if err != nil {
 			log.WithError(err).Errorf("couldn't remove ingress tc filters from %s", dev.Attrs().Name)
 		}
 	}
 
 	for _, dev := range egressDevs {
-		err = removeTCFilters(dev.Attrs().Name, directionToParent(dirEgress))
+		err = RemoveTCFilters(dev.Attrs().Name, directionToParent(dirEgress))
 		if err != nil {
 			log.WithError(err).Errorf("couldn't remove egress tc filters from %s", dev.Attrs().Name)
 		}
@@ -325,7 +325,7 @@ func (l *Loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, o
 	// Replace program on cilium_net.
 	if _, err := netlink.LinkByName(defaults.SecondHostDevice); err != nil {
 		log.WithError(err).WithField("device", defaults.SecondHostDevice).Error("Link does not exist")
-		return fmt.Errorf("device '%s' not found: %w", defaults.SecondHostDevice, err)
+		return err
 	}
 
 	secondDevObjPath := path.Join(ep.StateDir(), hostEndpointPrefix+"_"+defaults.SecondHostDevice+".o")
@@ -377,7 +377,7 @@ func (l *Loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, o
 		} else {
 			// Remove any previously attached device from egress path if BPF
 			// NodePort and host firewall are disabled.
-			err := removeTCFilters(device, netlink.HANDLE_MIN_EGRESS)
+			err := RemoveTCFilters(device, netlink.HANDLE_MIN_EGRESS)
 			if err != nil {
 				log.WithField("device", device).Error(err)
 			}
@@ -425,7 +425,7 @@ func (l *Loader) reloadDatapath(ctx context.Context, ep datapath.Endpoint, dirs 
 		if ep.RequireEgressProg() {
 			progs = append(progs, progDefinition{progName: symbolToEndpoint, direction: dirEgress})
 		} else {
-			err := removeTCFilters(ep.InterfaceName(), netlink.HANDLE_MIN_EGRESS)
+			err := RemoveTCFilters(ep.InterfaceName(), netlink.HANDLE_MIN_EGRESS)
 			if err != nil {
 				log.WithField("device", ep.InterfaceName()).Error(err)
 			}

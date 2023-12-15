@@ -21,7 +21,9 @@ import (
 //
 // For IPv6 addresses, it converts ":" into "-" as EndpointSelectors don't
 // support colons inside the name section of a label.
-func maskedIPToLabel(ipStr string, prefix int) Label {
+func maskedIPToLabel(ip netip.Addr, prefix int) Label {
+	ipStr := ip.String()
+
 	var str strings.Builder
 	str.Grow(
 		1 /* preZero */ +
@@ -68,13 +70,13 @@ func IPStringToLabel(ip string) (Label, error) {
 		if err != nil {
 			return Label{}, fmt.Errorf("%q is not an IP address: %w", ip, err)
 		}
-		return maskedIPToLabel(ip, parsedIP.BitLen()), nil
+		return maskedIPToLabel(parsedIP, parsedIP.BitLen()), nil
 	} else {
 		parsedPrefix, err := netip.ParsePrefix(ip)
 		if err != nil {
 			return Label{}, fmt.Errorf("%q is not a CIDR: %w", ip, err)
 		}
-		return maskedIPToLabel(parsedPrefix.Masked().Addr().String(), parsedPrefix.Bits()), nil
+		return maskedIPToLabel(parsedPrefix.Masked().Addr(), parsedPrefix.Bits()), nil
 	}
 }
 
@@ -174,7 +176,7 @@ func computeCIDRLabels(cache *simplelru.LRU[netip.Prefix, []Label], lbls Labels,
 	}
 
 	// Compute the label for this prefix (e.g. "cidr:10.0.0.0/8")
-	prefixLabel := maskedIPToLabel(prefix.Addr().String(), ones)
+	prefixLabel := maskedIPToLabel(prefix.Addr(), ones)
 	lbls[prefixLabel.Key] = prefixLabel
 
 	// Keep computing the rest (e.g. "cidr:10.0.0.0/7", ...).

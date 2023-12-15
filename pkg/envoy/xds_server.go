@@ -67,7 +67,7 @@ var (
 const (
 	CiliumXDSClusterName = "xds-grpc-cilium"
 
-	adminClusterName      = "/envoy-admin"
+	adminClusterName      = "envoy-admin"
 	egressClusterName     = "egress-cluster"
 	egressTLSClusterName  = "egress-cluster-tls"
 	ingressClusterName    = "ingress-cluster"
@@ -1304,11 +1304,6 @@ func getPortNetworkPolicyRule(sel policy.CachedSelector, wildcard bool, l7Parser
 	if l7Rules == nil {
 		// L3/L4 only rule, everything in L7 is allowed && no TLS
 		return r, true
-	}
-
-	if l7Rules.IsDeny {
-		r.Deny = true
-		return r, false
 	}
 
 	if l7Rules.TerminatingTLS != nil {

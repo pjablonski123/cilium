@@ -1214,30 +1214,31 @@ func (s *Service) restoreAndDeleteOrphanSourceRanges() error {
 //
 // The removal is based on an assumption that during the sync period
 // UpsertService() is going to be called for each alive service.
-//
-// Additionally, it returns a list of services which are associated with
-// stale backends, and which shall be refreshed. Stale services shall be
-// refreshed regardless of whether an error is also returned or not.
-//
-// The localOnly flag allows to perform a two pass removal, handling local
-// services first, and processing global ones only after full synchronization
-// with all remote clusters.
-func (s *Service) SyncWithK8sFinished(localOnly bool, localServices sets.Set[k8s.ServiceID]) (stale []k8s.ServiceID, err error) {
+func (s *Service) SyncWithK8sFinished(ensurer func(k8s.ServiceID, *lock.StoppableWaitGroup) bool) error {
+	servicesWithStaleBackends := sets.New[lb.ServiceName]()
+
+	// We need to trigger the stale services refresh while not holding the
+	// lock, to ensure that the generated events can be processed, and to
+	// prevent a possible deadlock in case the events channel is already full.
+	defer func() {
+		swg := lock.NewStoppableWaitGroup()
+
+		for svc := range servicesWithStaleBackends {
+			ensurer(k8s.ServiceID{
+				Cluster:   svc.Cluster,
+				Namespace: svc.Namespace,
+				Name:      svc.Name,
+			}, swg)
+		}
+
+		swg.Stop()
+		swg.Wait()
+	}()
+
 	s.Lock()
 	defer s.Unlock()
 
 	for _, svc := range s.svcByHash {
-		svcID := k8s.ServiceID{
-			Cluster:   svc.svcName.Cluster,
-			Namespace: svc.svcName.Namespace,
-			Name:      svc.svcName.Name,
-		}
-
-		// Skip processing global services when the localOnly flag is set.
-		if localOnly && !localServices.Has(svcID) {
-			continue
-		}
-
 		if svc.restoredFromDatapath {
 			log.WithFields(logrus.Fields{
 				logfields.ServiceID: svc.frontend.ID,
@@ -1245,11 +1246,11 @@ func (s *Service) SyncWithK8sFinished(localOnly bool, localServices sets.Set[k8s
 				Warn("Deleting no longer present service")
 
 			if err := s.deleteServiceLocked(svc); err != nil {
-				return stale, fmt.Errorf("Unable to remove service %+v: %s", svc, err)
+				return fmt.Errorf("Unable to remove service %+v: %s", svc, err)
 			}
 		} else if svc.restoredBackendHashes.Len() > 0 {
 			// The service is still associated with stale backends
-			stale = append(stale, svcID)
+			servicesWithStaleBackends.Insert(svc.svcName)
 			log.WithFields(logrus.Fields{
 				logfields.ServiceID:      svc.frontend.ID,
 				logfields.ServiceName:    svc.svcName.String(),
@@ -1261,16 +1262,10 @@ func (s *Service) SyncWithK8sFinished(localOnly bool, localServices sets.Set[k8s
 		svc.restoredBackendHashes = nil
 	}
 
-	if localOnly {
-		// Wait for full clustermesh synchronization before finalizing the
-		// removal of orphan backends and affinity matches.
-		return stale, nil
-	}
-
 	// Remove no longer existing affinity matches
 	if option.Config.EnableSessionAffinity {
 		if err := s.deleteOrphanAffinityMatchesLocked(); err != nil {
-			return stale, err
+			return err
 		}
 	}
 
@@ -1280,7 +1275,7 @@ func (s *Service) SyncWithK8sFinished(localOnly bool, localServices sets.Set[k8s
 
 	}
 
-	return stale, nil
+	return nil
 }
 
 func (s *Service) createSVCInfoIfNotExist(p *lb.SVC) (*svcInfo, bool, bool,

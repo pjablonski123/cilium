@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	fuzz "github.com/AdaLogics/go-fuzz-headers"
-	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/pkg/policy/api"
 )
@@ -15,7 +14,7 @@ import (
 func FuzzMapSelectorsToIPsLocked(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		ff := fuzz.NewConsumer(data)
-		fqdnSelectors := make(sets.Set[api.FQDNSelector])
+		fqdnSelectors := make(map[api.FQDNSelector]struct{})
 		ff.FuzzMap(&fqdnSelectors)
 		if len(fqdnSelectors) == 0 {
 			t.Skip()
@@ -24,6 +23,6 @@ func FuzzMapSelectorsToIPsLocked(f *testing.F) {
 			MinTTL: 1,
 			Cache:  NewDNSCache(0),
 		})
-		nameManager.mapSelectorsToIPsLocked(fqdnSelectors)
+		_, _ = nameManager.MapSelectorsToIPsLocked(fqdnSelectors)
 	})
 }

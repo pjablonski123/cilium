@@ -529,8 +529,6 @@ func (m *PortNetworkPolicyRule) validate(all bool) error {
 
 	var errors []error
 
-	// no validation rules for Deny
-
 	// no validation rules for Name
 
 	if all {

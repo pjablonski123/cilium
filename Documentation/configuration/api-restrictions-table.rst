@@ -31,7 +31,6 @@ DeleteServiceID       -
 GetBGPPeers           Retrieves current operational state of BGP peers created by
                       Cilium BGP virtual router. This includes session state,
                       uptime, information per address family, etc.
-GetBGPRoutePolicies   Retrieves route policies from BGP Control Plane.
 GetBGPRoutes          Retrieves routes from BGP Control Plane RIB filtered by
                       parameters you specify
 GetCgroupDumpMetadata -
@@ -84,7 +83,6 @@ GetRecorderMasks      -
 GetService            -
 GetServiceID          -
 GetStatedbDump        -
-GetStatedbQueryTable  -
 PatchConfig           Updates the daemon configuration by applying the provided
                       ConfigurationMap and regenerates & recompiles all required
                       datapath components.

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"time"
 	"unsafe"
 
@@ -191,32 +190,26 @@ func (ms *MapSpec) Compatible(m *Map) error {
 		return err
 	}
 
-	diffs := []string{}
-	if m.typ != ms.Type {
-		diffs = append(diffs, fmt.Sprintf("Type: %s changed to %s", m.typ, ms.Type))
-	}
-	if m.keySize != ms.KeySize {
-		diffs = append(diffs, fmt.Sprintf("KeySize: %d changed to %d", m.keySize, ms.KeySize))
-	}
-	if m.valueSize != ms.ValueSize {
-		diffs = append(diffs, fmt.Sprintf("ValueSize: %d changed to %d", m.valueSize, ms.ValueSize))
-	}
-	if m.maxEntries != ms.MaxEntries {
-		diffs = append(diffs, fmt.Sprintf("MaxEntries: %d changed to %d", m.maxEntries, ms.MaxEntries))
-	}
+	switch {
+	case m.typ != ms.Type:
+		return fmt.Errorf("expected type %v, got %v: %w", ms.Type, m.typ, ErrMapIncompatible)
 
-	// BPF_F_RDONLY_PROG is set unconditionally for devmaps. Explicitly allow this
-	// mismatch.
-	if !((ms.Type == DevMap || ms.Type == DevMapHash) && m.flags^ms.Flags == unix.BPF_F_RDONLY_PROG) &&
-		m.flags != ms.Flags {
-		diffs = append(diffs, fmt.Sprintf("Flags: %d changed to %d", m.flags, ms.Flags))
-	}
+	case m.keySize != ms.KeySize:
+		return fmt.Errorf("expected key size %v, got %v: %w", ms.KeySize, m.keySize, ErrMapIncompatible)
 
-	if len(diffs) == 0 {
-		return nil
-	}
+	case m.valueSize != ms.ValueSize:
+		return fmt.Errorf("expected value size %v, got %v: %w", ms.ValueSize, m.valueSize, ErrMapIncompatible)
 
-	return fmt.Errorf("%s: %w", strings.Join(diffs, ", "), ErrMapIncompatible)
+	case m.maxEntries != ms.MaxEntries:
+		return fmt.Errorf("expected max entries %v, got %v: %w", ms.MaxEntries, m.maxEntries, ErrMapIncompatible)
+
+	// BPF_F_RDONLY_PROG is set unconditionally for devmaps. Explicitly allow
+	// this mismatch.
+	case !((ms.Type == DevMap || ms.Type == DevMapHash) && m.flags^ms.Flags == unix.BPF_F_RDONLY_PROG) &&
+		m.flags != ms.Flags:
+		return fmt.Errorf("expected flags %v, got %v: %w", ms.Flags, m.flags, ErrMapIncompatible)
+	}
+	return nil
 }
 
 // Map represents a Map file descriptor.

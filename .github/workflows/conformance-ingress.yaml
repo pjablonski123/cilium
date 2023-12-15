@@ -55,6 +55,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # renovate: datasource=github-releases depName=cilium/cilium-cli
+  cilium_cli_version: v0.15.11
   cilium_cli_ci_version:
   CILIUM_CLI_MODE: helm
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind
@@ -65,7 +67,6 @@ env:
 
 jobs:
   commit-status-start:
-    if: ${{ github.event_name != 'push' }}
     name: Commit Status Start
     runs-on: ubuntu-latest
     steps:
@@ -124,10 +125,9 @@ jobs:
         uses: ./.github/actions/set-env-variables
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@c1fa8afda634f0457e9905d4f638e5164c4e0fc8 # v0.15.17
+        uses: cilium/cilium-cli@951eb9108277f4ffeb86d047bd492b6b96a52542 # v0.15.11
         with:
-          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
-          release-version: ${{ env.CILIUM_CLI_VERSION }}
+          release-version: ${{ env.cilium_cli_version }}
           ci-version: ${{ env.cilium_cli_ci_version }}
 
       - name: Get Cilium's default values
@@ -148,10 +148,7 @@ jobs:
             --helm-set=ingressController.enabled=true \
             --helm-set=ingressController.loadbalancerMode=${{ matrix.loadbalancer-mode }} \
             --helm-set=ingressController.default=${{ matrix.default-ingress-controller }} \
-            --helm-set=extraConfig.bpf-lb-acceleration=${{ matrix.bpf-lb-acceleration }} \
-            --helm-set=l2announcements.enabled=true \
-            --helm-set=devices='{eth0}'"
-
+            --helm-set=extraConfig.bpf-lb-acceleration=${{ matrix.bpf-lb-acceleration }}"
           echo cilium_install_defaults=${CILIUM_INSTALL_DEFAULTS} >> $GITHUB_OUTPUT
 
       # Warning: since this is a privileged workflow, subsequent workflow job
@@ -202,40 +199,31 @@ jobs:
           cilium status --wait
           kubectl get pods -n kube-system
 
-      - name: Install Cilium LB IPPool and L2 Announcement Policy
+      - name: Install metallb for LB service
         timeout-minutes: 10
         run: |
           KIND_NET_CIDR=$(docker network inspect kind -f '{{(index .IPAM.Config 0).Subnet}}')
-          LB_CIDR=$(echo ${KIND_NET_CIDR} | sed "s@0.0/16@255.200/28@")
-
-          echo "Deploying LB-IPAM Pool..."
-          cat << EOF > pool.yaml
-          apiVersion: "cilium.io/v2alpha1"
-          kind: CiliumLoadBalancerIPPool
-          metadata:
-            name: "pool"
-          spec:
-            cidrs:
-              - cidr: "$LB_CIDR"
-          EOF
-          kubectl apply -f pool.yaml
+          METALLB_IP_START=$(echo ${KIND_NET_CIDR} | sed "s@0.0/16@255.200@")
+          METALLB_IP_END=$(echo ${KIND_NET_CIDR} | sed "s@0.0/16@255.250@")
+          METALLB_IP_RANGE="${METALLB_IP_START}-${METALLB_IP_END}"
           
-          echo "Deploying L2-Announcement Policy..."
-          cat << 'EOF' > l2policy.yaml
-          apiVersion: "cilium.io/v2alpha1"
-          kind: CiliumL2AnnouncementPolicy
-          metadata:
-            name: l2policy
-          spec:
-            loadBalancerIPs: true
-            interfaces:
-              - eth0
-            nodeSelector:
-              matchExpressions:
-                - key: node-role.kubernetes.io/control-plane
-                  operator: DoesNotExist
+          cat << EOF > metallb_values.yaml
+          configInline:
+            address-pools:
+            - name: default
+              protocol: layer2
+              addresses:
+              - ${METALLB_IP_RANGE}
+          psp:
+            create: false
           EOF
-          kubectl apply -f l2policy.yaml
+          
+          helm install --namespace metallb-system \
+            --create-namespace \
+            --repo https://metallb.github.io/metallb metallb metallb \
+            --version ${{ env.metallb_version }} \
+            --values metallb_values.yaml \
+            --wait
 
       - name: Create sample workload
         timeout-minutes: 5
@@ -254,10 +242,8 @@ jobs:
       - name: Run Sanity check (external)
         timeout-minutes: 5
         run: |
-          lb=$(kubectl get ingress basic-ingress -o jsonpath='{.status.loadBalancer.ingress[0].ip}')     
-          curl -s -v --connect-timeout 5 --max-time 20 --retry 3 --retry-all-errors --retry-delay 5 --fail -- http://"$lb"
-
-          # By now the service should be up, no need to do the manual retries for the second request
+          lb=$(kubectl get ingress basic-ingress -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          curl -s -v --connect-timeout 5 --max-time 20 --retry 3 --fail -- http://"$lb"
           curl -s -v --connect-timeout 5 --max-time 20 --retry 3 --fail -- http://"$lb"/details/1
 
       - name: Run Sanity check (internal to NodePort)
@@ -302,7 +288,7 @@ jobs:
           retention-days: 5
 
   commit-status-final:
-    if: ${{ always() && github.event_name != 'push' }}
+    if: ${{ always() }}
     name: Commit Status Final
     needs: ingress-conformance-test
     runs-on: ubuntu-latest

@@ -21,24 +21,25 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - description: Security Identity
+    - description: Cilium endpoint id
+      jsonPath: .status.id
+      name: Endpoint ID
+      type: integer
+    - description: Cilium identity id
       jsonPath: .status.identity.id
-      name: Security Identity
+      name: Identity ID
       type: integer
     - description: Ingress enforcement in the endpoint
       jsonPath: .status.policy.ingress.state
       name: Ingress Enforcement
-      priority: 1
       type: string
     - description: Egress enforcement in the endpoint
       jsonPath: .status.policy.egress.state
       name: Egress Enforcement
-      priority: 1
       type: string
     - description: Status of visibility policy in the endpoint
       jsonPath: .status.visibility-policy-status
       name: Visibility Policy
-      priority: 1
       type: string
     - description: Endpoint current state
       jsonPath: .status.state

@@ -17,7 +17,6 @@ import (
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
-	controllerruntime "github.com/cilium/cilium/operator/pkg/controller-runtime"
 	"github.com/cilium/cilium/operator/pkg/gateway-api/routechecks"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
@@ -38,15 +37,15 @@ func (r *tlsRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	original := &gatewayv1alpha2.TLSRoute{}
 	if err := r.Client.Get(ctx, req.NamespacedName, original); err != nil {
 		if k8serrors.IsNotFound(err) {
-			return controllerruntime.Success()
+			return success()
 		}
 		scopedLog.WithError(err).Error("Unable to fetch TLSRoute")
-		return controllerruntime.Fail(err)
+		return fail(err)
 	}
 
 	// Ignore deleted TLSRoute, this can happen when foregroundDeletion is enabled
 	if original.GetDeletionTimestamp() != nil {
-		return controllerruntime.Success()
+		return success()
 	}
 
 	tr := original.DeepCopy()
@@ -59,7 +58,7 @@ func (r *tlsRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// check if this cert is allowed to be used by this gateway
 	grants := &gatewayv1beta1.ReferenceGrantList{}
 	if err := r.Client.List(ctx, grants); err != nil {
-		return controllerruntime.Fail(fmt.Errorf("failed to retrieve reference grants: %w", err))
+		return fail(fmt.Errorf("failed to retrieve reference grants: %w", err))
 	}
 
 	// input for the validators
@@ -76,9 +75,9 @@ func (r *tlsRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 		// set acceptance to okay, this wil be overwritten in checks if needed
 		i.SetParentCondition(parent, metav1.Condition{
-			Type:    string(gatewayv1.RouteConditionAccepted),
+			Type:    conditionStatusAccepted,
 			Status:  metav1.ConditionTrue,
-			Reason:  string(gatewayv1.RouteReasonAccepted),
+			Reason:  conditionReasonAccepted,
 			Message: "Accepted TLSRoute",
 		})
 
@@ -122,7 +121,7 @@ func (r *tlsRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	scopedLog.Info("Successfully reconciled TLSRoute")
-	return controllerruntime.Success()
+	return success()
 }
 
 func (r *tlsRouteReconciler) updateStatus(ctx context.Context, original *gatewayv1alpha2.TLSRoute, new *gatewayv1alpha2.TLSRoute) error {

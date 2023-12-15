@@ -4,6 +4,7 @@
 #include "common.h"
 #include <bpf/ctx/unspec.h>
 #include <bpf/api.h>
+#include "lib/common.h"
 #include "pktgen.h"
 
 #define ENABLE_IPV4 1
@@ -23,7 +24,6 @@
 #define HOST_NETNS_COOKIE 0
 
 #include "bpf_sock.c"
-#include "lib/common.h"
 
 #include "lib/ipcache.h"
 

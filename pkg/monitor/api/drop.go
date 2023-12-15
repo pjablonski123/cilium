@@ -93,7 +93,6 @@ var errors = map[uint8]string{
 	195: "Traffic is unencrypted",
 	196: "TTL exceeded",
 	197: "No node ID found",
-	198: "Rate limited",
 }
 
 func extendedReason(reason uint8, extError int8) string {

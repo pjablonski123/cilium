@@ -68,7 +68,6 @@ var ignoredELFPrefixes = []string{
 	"cilium_per_cluster_ct",      // Global
 	"cilium_world_cidrs4",        // Global
 	"cilium_l2_responder_v4",     // Global
-	"cilium_ratelimit",           // Global
 	"tc",                         // Program Section
 	"xdp",                        // Program Section
 	".BTF",                       // Debug
@@ -85,9 +84,6 @@ var ignoredELFPrefixes = []string{
 	// The default val (14) is used for all devices except for L2-less devices
 	// for which we set ETH_HLEN=0 during load time.
 	"ETH_HLEN",
-	// identity_length is global configuration value that is used to set the bit-length of identity
-	// in a numeric identity.
-	"identity_length",
 }
 
 var templateDirWatcherControllerGroup = controller.NewGroup("template-dir-watcher")

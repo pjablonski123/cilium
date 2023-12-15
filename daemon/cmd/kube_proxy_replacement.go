@@ -23,10 +23,10 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/probes"
 	"github.com/cilium/cilium/pkg/datapath/loader"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
-	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maglev"
 	"github.com/cilium/cilium/pkg/mountinfo"
+	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/safeio"
 	"github.com/cilium/cilium/pkg/sysctl"
@@ -42,7 +42,7 @@ import (
 //
 // if this function cannot determine the strictness an error is returned and the boolean
 // is false. If an error is returned the boolean is of no meaning.
-func initKubeProxyReplacementOptions(tunnelConfig tunnel.Config) error {
+func initKubeProxyReplacementOptions() error {
 	if option.Config.KubeProxyReplacement != option.KubeProxyReplacementStrict &&
 		option.Config.KubeProxyReplacement != option.KubeProxyReplacementPartial &&
 		option.Config.KubeProxyReplacement != option.KubeProxyReplacementDisabled &&
@@ -170,8 +170,7 @@ func initKubeProxyReplacementOptions(tunnelConfig tunnel.Config) error {
 
 		if option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled &&
 			option.Config.NodePortAcceleration != option.NodePortAccelerationGeneric &&
-			option.Config.NodePortAcceleration != option.NodePortAccelerationNative &&
-			option.Config.NodePortAcceleration != option.NodePortAccelerationBestEffort {
+			option.Config.NodePortAcceleration != option.NodePortAccelerationNative {
 			return fmt.Errorf("Invalid value for --%s: %s", option.NodePortAcceleration, option.Config.NodePortAcceleration)
 		}
 
@@ -214,22 +213,23 @@ func initKubeProxyReplacementOptions(tunnelConfig tunnel.Config) error {
 	}
 
 	if option.Config.EnableNodePort {
-		if option.Config.TunnelingEnabled() && tunnelConfig.Protocol() == tunnel.VXLAN &&
-			option.Config.LoadBalancerUsesDSR() {
-			return fmt.Errorf("Node Port %q mode cannot be used with %s tunneling.", option.Config.NodePortMode, tunnel.VXLAN)
+		if option.Config.TunnelingEnabled() && option.Config.TunnelProtocol == option.TunnelVXLAN &&
+			option.Config.NodePortMode != option.NodePortModeSNAT {
+			return fmt.Errorf("Node Port %q mode cannot be used with %s tunneling.", option.Config.NodePortMode, option.Config.TunnelProtocol)
 		}
 
-		if option.Config.TunnelingEnabled() && option.Config.LoadBalancerUsesDSR() &&
+		if option.Config.TunnelingEnabled() && option.Config.TunnelProtocol == option.TunnelGeneve &&
+			option.Config.NodePortMode != option.NodePortModeSNAT &&
 			option.Config.LoadBalancerDSRDispatch != option.DSRDispatchGeneve {
-			return fmt.Errorf("Tunnel routing with Node Port %q mode requires %s dispatch.",
-				option.Config.NodePortMode, option.DSRDispatchGeneve)
+			return fmt.Errorf("Node Port %q mode with %s dispatch cannot be used with %s tunneling.",
+				option.Config.NodePortMode, option.Config.LoadBalancerDSRDispatch, option.Config.TunnelProtocol)
 		}
 
-		if option.Config.LoadBalancerUsesDSR() &&
+		if option.Config.NodePortMode != option.NodePortModeSNAT &&
 			option.Config.LoadBalancerDSRDispatch == option.DSRDispatchGeneve &&
-			tunnelConfig.Protocol() != tunnel.Geneve {
-			return fmt.Errorf("Node Port %q mode with %s dispatch requires %s tunnel protocol.",
-				option.Config.NodePortMode, option.Config.LoadBalancerDSRDispatch, tunnel.Geneve)
+			option.Config.TunnelingEnabled() && option.Config.TunnelProtocol != option.TunnelGeneve {
+			return fmt.Errorf("Node Port %q mode with %s dispatch requires %s tunneling.",
+				option.Config.NodePortMode, option.Config.LoadBalancerDSRDispatch, option.TunnelGeneve)
 		}
 
 		if option.Config.NodePortMode == option.NodePortModeDSR &&
@@ -348,11 +348,12 @@ func probeKubeProxyReplacementOptions() error {
 			}
 		}
 
-		if option.Config.EnableSocketLBTracing {
-			if probes.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnPerfEventOutput) != nil {
-				option.Config.EnableSocketLBTracing = false
-				log.Warn("Disabling socket-LB tracing as it requires kernel 5.7 or newer")
-			}
+		if !option.Config.EnableSocketLB {
+			option.Config.EnableSocketLBTracing = false
+		}
+		if probes.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnPerfEventOutput) != nil {
+			option.Config.EnableSocketLBTracing = false
+			log.Warn("Disabling socket-LB tracing as it requires kernel 5.7 or newer")
 		}
 	} else {
 		option.Config.EnableSocketLBTracing = false
@@ -394,6 +395,11 @@ func finishKubeProxyReplacementInit() error {
 
 	if option.Config.DryMode {
 		return nil
+	}
+
+	if err := node.InitNodePortAddrs(option.Config.GetDevices(), option.Config.LBDevInheritIPAddr); err != nil {
+		msg := "failed to initialize NodePort addrs."
+		return fmt.Errorf(msg+" : %w", err)
 	}
 
 	// +-------------------------------------------------------+
@@ -468,7 +474,7 @@ func finishKubeProxyReplacementInit() error {
 
 	if option.Config.EnableIPv4 &&
 		!option.Config.TunnelingEnabled() &&
-		option.Config.LoadBalancerUsesDSR() &&
+		option.Config.NodePortMode != option.NodePortModeSNAT &&
 		len(option.Config.GetDevices()) > 1 {
 
 		// In the case of the multi-dev NodePort DSR, if a request from an

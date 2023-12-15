@@ -4,6 +4,7 @@
 package ciliumenvoyconfig
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -21,13 +22,58 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/cilium/cilium/pkg/envoy"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/k8s/client"
+	"github.com/cilium/cilium/pkg/k8s/informer"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	"github.com/cilium/cilium/pkg/k8s/utils"
 )
 
-func (r *ciliumEnvoyConfigReconciler) getEnvoyConfigForService(svc *corev1.Service) (*ciliumv2.CiliumEnvoyConfig, error) {
-	resources, err := r.getResources(svc)
+type envoyConfigManager struct {
+	informer cache.Controller
+	store    cache.Store
+}
+
+func newEnvoyConfigManager(ctx context.Context, client client.Clientset) (*envoyConfigManager, error) {
+	manager := &envoyConfigManager{}
+
+	manager.store, manager.informer = informer.NewInformer(
+		utils.ListerWatcherFromTyped[*ciliumv2.CiliumEnvoyConfigList](client.CiliumV2().CiliumEnvoyConfigs(corev1.NamespaceAll)),
+		&ciliumv2.CiliumEnvoyConfig{},
+		0,
+		cache.ResourceEventHandlerFuncs{},
+		nil,
+	)
+
+	go manager.informer.Run(ctx.Done())
+	if !cache.WaitForCacheSync(ctx.Done(), manager.informer.HasSynced) {
+		return manager, fmt.Errorf("unable to sync envoy configs")
+	}
+	return manager, nil
+}
+
+// getByKey is a wrapper of Store.GetByKey but with concrete CiliumEnvoyConfig object
+func (em *envoyConfigManager) getByKey(key string) (*ciliumv2.CiliumEnvoyConfig, bool, error) {
+	objFromCache, exists, err := em.store.GetByKey(key)
+	if objFromCache == nil || !exists || err != nil {
+		return nil, exists, err
+	}
+	envoyConfig, ok := objFromCache.(*ciliumv2.CiliumEnvoyConfig)
+	if !ok {
+		return nil, exists, fmt.Errorf("got invalid object from cache")
+	}
+	return envoyConfig, exists, err
+}
+
+func (em *envoyConfigManager) MarkSynced() {
+	em.informer.HasSynced()
+}
+
+func (m *Manager) getEnvoyConfigForService(svc *slim_corev1.Service) (*ciliumv2.CiliumEnvoyConfig, error) {
+	resources, err := m.getResources(svc)
 	if err != nil {
 		return nil, err
 	}
@@ -39,6 +85,14 @@ func (r *ciliumEnvoyConfigReconciler) getEnvoyConfigForService(svc *corev1.Servi
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", ciliumEnvoyLBPrefix, svc.GetName()),
 			Namespace: svc.GetNamespace(),
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: slim_corev1.SchemeGroupVersion.String(),
+					Kind:       "Service",
+					Name:       svc.GetName(),
+					UID:        svc.GetUID(),
+				},
+			},
 		},
 		Spec: ciliumv2.CiliumEnvoyConfigSpec{
 			Services: []*ciliumv2.ServiceListener{
@@ -52,21 +106,21 @@ func (r *ciliumEnvoyConfigReconciler) getEnvoyConfigForService(svc *corev1.Servi
 	}, nil
 }
 
-func (r *ciliumEnvoyConfigReconciler) getResources(svc *corev1.Service) ([]ciliumv2.XDSResource, error) {
+func (m *Manager) getResources(svc *slim_corev1.Service) ([]ciliumv2.XDSResource, error) {
 	var resources []ciliumv2.XDSResource
-	listener, err := r.getListenerResource(svc)
+	listener, err := m.getListenerResource(svc)
 	if err != nil {
 		return nil, err
 	}
 	resources = append(resources, listener)
 
-	routeConfig, err := r.getRouteConfigurationResource(svc)
+	routeConfig, err := m.getRouteConfigurationResource(svc)
 	if err != nil {
 		return nil, err
 	}
 	resources = append(resources, routeConfig)
 
-	clusters, err := r.getClusterResources(svc)
+	clusters, err := m.getClusterResources(svc)
 	if err != nil {
 		return nil, err
 	}
@@ -74,8 +128,8 @@ func (r *ciliumEnvoyConfigReconciler) getResources(svc *corev1.Service) ([]ciliu
 	return resources, nil
 }
 
-func (r *ciliumEnvoyConfigReconciler) getClusterResources(svc *corev1.Service) ([]ciliumv2.XDSResource, error) {
-	lbPolicy, ok := envoy_config_cluster_v3.Cluster_LbPolicy_value[strings.ToUpper(r.algorithm)]
+func (m *Manager) getClusterResources(svc *slim_corev1.Service) ([]ciliumv2.XDSResource, error) {
+	lbPolicy, ok := envoy_config_cluster_v3.Cluster_LbPolicy_value[strings.ToUpper(m.algorithm)]
 	if !ok {
 		lbPolicy = int32(envoy_config_cluster_v3.Cluster_ROUND_ROBIN)
 	}
@@ -84,9 +138,9 @@ func (r *ciliumEnvoyConfigReconciler) getClusterResources(svc *corev1.Service) (
 		ConnectTimeout: &durationpb.Duration{Seconds: 5},
 		LbPolicy:       envoy_config_cluster_v3.Cluster_LbPolicy(lbPolicy),
 		TypedExtensionProtocolOptions: map[string]*anypb.Any{
-			"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": r.toAny(&envoy_config_upstream.HttpProtocolOptions{
+			"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": toAny(&envoy_config_upstream.HttpProtocolOptions{
 				CommonHttpProtocolOptions: &envoy_config_core_v3.HttpProtocolOptions{
-					IdleTimeout: &durationpb.Duration{Seconds: int64(r.idleTimeoutSeconds)},
+					IdleTimeout: &durationpb.Duration{Seconds: int64(m.idleTimeoutSeconds)},
 				},
 				UpstreamProtocolOptions: &envoy_config_upstream.HttpProtocolOptions_UseDownstreamProtocolConfig{
 					UseDownstreamProtocolConfig: &envoy_config_upstream.HttpProtocolOptions_UseDownstreamHttpConfig{
@@ -126,10 +180,10 @@ func (r *ciliumEnvoyConfigReconciler) getClusterResources(svc *corev1.Service) (
 	}, nil
 }
 
-func (r *ciliumEnvoyConfigReconciler) getRouteConfigurationResource(svc *corev1.Service) (ciliumv2.XDSResource, error) {
+func (m *Manager) getRouteConfigurationResource(svc *slim_corev1.Service) (ciliumv2.XDSResource, error) {
 	routeConfig := &envoy_config_route_v3.RouteConfiguration{
 		Name:         getName(svc),
-		VirtualHosts: []*envoy_config_route_v3.VirtualHost{r.getVirtualHost(svc)},
+		VirtualHosts: []*envoy_config_route_v3.VirtualHost{m.getVirtualHost(svc)},
 	}
 
 	mutatorFuncs := []routeConfigMutator{}
@@ -149,8 +203,8 @@ func (r *ciliumEnvoyConfigReconciler) getRouteConfigurationResource(svc *corev1.
 	}, nil
 }
 
-func (r *ciliumEnvoyConfigReconciler) getListenerResource(svc *corev1.Service) (ciliumv2.XDSResource, error) {
-	defaultHttpConnectionManager, err := r.getConnectionManager(svc)
+func (m *Manager) getListenerResource(svc *slim_corev1.Service) (ciliumv2.XDSResource, error) {
+	defaultHttpConnectionManager, err := m.getConnectionManager(svc)
 	if err != nil {
 		return ciliumv2.XDSResource{}, nil
 	}
@@ -178,7 +232,7 @@ func (r *ciliumEnvoyConfigReconciler) getListenerResource(svc *corev1.Service) (
 			{
 				Name: "envoy.filters.listener.tls_inspector",
 				ConfigType: &envoy_config_listener.ListenerFilter_TypedConfig{
-					TypedConfig: r.toAny(&envoy_extensions_listener_tls_inspector_v3.TlsInspector{}),
+					TypedConfig: toAny(&envoy_extensions_listener_tls_inspector_v3.TlsInspector{}),
 				},
 			},
 		},
@@ -201,7 +255,7 @@ func (r *ciliumEnvoyConfigReconciler) getListenerResource(svc *corev1.Service) (
 	}, nil
 }
 
-func (r *ciliumEnvoyConfigReconciler) getConnectionManager(svc *corev1.Service) (ciliumv2.XDSResource, error) {
+func (m *Manager) getConnectionManager(svc *slim_corev1.Service) (ciliumv2.XDSResource, error) {
 	connectionManager := &envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager{
 		StatPrefix: getName(svc),
 		RouteSpecifier: &envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager_Rds{
@@ -215,7 +269,7 @@ func (r *ciliumEnvoyConfigReconciler) getConnectionManager(svc *corev1.Service) 
 			{
 				Name: "envoy.filters.http.router",
 				ConfigType: &envoy_extensions_filters_network_http_connection_manager_v3.HttpFilter_TypedConfig{
-					TypedConfig: r.toAny(&envoy_extensions_filters_http_router_v3.Router{}),
+					TypedConfig: toAny(&envoy_extensions_filters_http_router_v3.Router{}),
 				},
 			},
 		},
@@ -241,7 +295,7 @@ func (r *ciliumEnvoyConfigReconciler) getConnectionManager(svc *corev1.Service) 
 	}, nil
 }
 
-func (r *ciliumEnvoyConfigReconciler) getVirtualHost(svc *corev1.Service) *envoy_config_route_v3.VirtualHost {
+func (m *Manager) getVirtualHost(svc *slim_corev1.Service) *envoy_config_route_v3.VirtualHost {
 	route := &envoy_config_route_v3.Route{
 		Match: &envoy_config_route_v3.RouteMatch{
 			PathSpecifier: &envoy_config_route_v3.RouteMatch_Prefix{
@@ -285,10 +339,10 @@ func getName(obj metav1.Object) string {
 	return fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 }
 
-func (r *ciliumEnvoyConfigReconciler) toAny(message proto.Message) *anypb.Any {
+func toAny(message proto.Message) *anypb.Any {
 	a, err := anypb.New(message)
 	if err != nil {
-		r.logger.WithError(err).Errorf("invalid message %s", message)
+		log.WithError(err).Errorf("invalid message %s", message)
 		return nil
 	}
 	return a

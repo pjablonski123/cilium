@@ -107,42 +107,14 @@ func NewDefaultClientWithTimeout(timeout time.Duration) (*Client, error) {
 // If host is nil then use SockPath provided by CILIUM_SOCK
 // or the cilium default SockPath
 func NewClient(host string) (*Client, error) {
-	clientTrans, err := NewRuntime(WithHost(host))
+	clientTrans, err := NewRuntime(host)
 	return &Client{*clientapi.New(clientTrans, strfmt.Default)}, err
 }
 
-type runtimeOptions struct {
-	host     string
-	basePath string
-}
-
-func WithHost(host string) func(options *runtimeOptions) {
-	return func(options *runtimeOptions) {
-		options.host = host
-	}
-}
-
-func WithBasePath(basePath string) func(options *runtimeOptions) {
-	return func(options *runtimeOptions) {
-		options.basePath = basePath
-	}
-}
-
-func NewRuntime(opts ...func(options *runtimeOptions)) (*runtime_client.Runtime, error) {
-	r := runtimeOptions{}
-	for _, opt := range opts {
-		opt(&r)
-	}
-
-	host := r.host
+func NewRuntime(host string) (*runtime_client.Runtime, error) {
 	if host == "" {
 		host = DefaultSockPath()
 	}
-	basePath := r.basePath
-	if basePath == "" {
-		basePath = clientapi.DefaultBasePath
-	}
-
 	tmp := strings.SplitN(host, "://", 2)
 	if len(tmp) != 2 {
 		return nil, fmt.Errorf("invalid host format '%s'", host)
@@ -166,7 +138,7 @@ func NewRuntime(opts ...func(options *runtimeOptions)) (*runtime_client.Runtime,
 
 	transport := configureTransport(nil, tmp[0], host)
 	httpClient := &http.Client{Transport: transport}
-	clientTrans := runtime_client.NewWithClient(hostHeader, basePath,
+	clientTrans := runtime_client.NewWithClient(hostHeader, clientapi.DefaultBasePath,
 		clientapi.DefaultSchemes, httpClient)
 	return clientTrans, nil
 }
@@ -648,7 +620,7 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 	}
 
 	if sd.KubeProxyReplacementDetails && sr.Kubernetes != nil && sr.KubeProxyReplacement != nil {
-		var selection, mode, dsrMode, xdp string
+		var selection, mode, xdp string
 
 		lb := "Disabled"
 		cIP := "Enabled"
@@ -660,10 +632,6 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 			}
 			xdp = np.Acceleration
 			mode = np.Mode
-			if mode == models.KubeProxyReplacementFeaturesNodePortModeDSR ||
-				mode == models.KubeProxyReplacementFeaturesNodePortModeHybrid {
-				dsrMode = np.DsrMode
-			}
 			nPort = fmt.Sprintf("Enabled (Range: %d-%d)", np.PortMin, np.PortMax)
 			lb = "Enabled"
 		}
@@ -729,9 +697,6 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 		}
 		if mode != "" {
 			fmt.Fprintf(tab, "  Mode:\t%s\n", mode)
-		}
-		if dsrMode != "" {
-			fmt.Fprintf(tab, "    DSR Dispatch Mode:\t%s\n", dsrMode)
 		}
 		if selection != "" {
 			fmt.Fprintf(tab, "  Backend Selection:\t%s\n", selection)

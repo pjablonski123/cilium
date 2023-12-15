@@ -7,9 +7,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
 	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
-	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/testutils/mockmaps"
 )
@@ -25,13 +23,9 @@ type FakeDatapath struct {
 
 // NewDatapath returns a new fake datapath
 func NewDatapath() *FakeDatapath {
-	return newDatapath(NewNodeAddressing())
-}
-
-func newDatapath(na datapath.NodeAddressing) *FakeDatapath {
 	return &FakeDatapath{
 		node:           NewNodeHandler(),
-		nodeAddressing: na,
+		nodeAddressing: NewNodeAddressing(),
 		loader:         &fakeLoader{},
 		lbmap:          mockmaps.NewLBMockMap(),
 	}
@@ -124,10 +118,6 @@ func (f *FakeDatapath) LBMockMap() *mockmaps.LBMockMap {
 	return f.lbmap
 }
 
-func (f *FakeDatapath) BandwidthManager() bandwidth.Manager {
-	return &BandwidthManager{}
-}
-
 // Loader is an interface to abstract out loading of datapath programs.
 type fakeLoader struct {
 }
@@ -160,7 +150,7 @@ func (f *fakeLoader) CustomCallsMapPath(id uint16) string {
 }
 
 // Reinitialize does nothing.
-func (f *fakeLoader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, tunnelConfig tunnel.Config, deviceMTU int, iptMgr datapath.IptablesManager, p datapath.Proxy) error {
+func (f *fakeLoader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, deviceMTU int, iptMgr datapath.IptablesManager, p datapath.Proxy) error {
 	return nil
 }
 

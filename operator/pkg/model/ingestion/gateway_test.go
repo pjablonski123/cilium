@@ -9,15 +9,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	"github.com/cilium/cilium/operator/pkg/model"
 )
 
 var basicHTTP = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
-	Gateway: gatewayv1.Gateway{
+	GatewayClass: gatewayv1beta1.GatewayClass{},
+	Gateway: gatewayv1beta1.Gateway{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Gateway",
 			APIVersion: "gateway.networking.k8s.io/v1",
@@ -26,54 +26,46 @@ var basicHTTP = Input{
 			Name:      "my-gateway",
 			Namespace: "default",
 		},
-		Spec: gatewayv1.GatewaySpec{
-			Listeners: []gatewayv1.Listener{
+		Spec: gatewayv1beta1.GatewaySpec{
+			Listeners: []gatewayv1beta1.Listener{
 				{
 					Name:     "prod-web-gw",
 					Port:     80,
 					Protocol: "HTTP",
 				},
 			},
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				Labels: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
-					"internal-loadbalancer-label": "true",
-				},
-				Annotations: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
-					"internal-loadbalancer-annotation": "true",
-				},
-			},
 		},
 	},
-	HTTPRoutes: []gatewayv1.HTTPRoute{
+	HTTPRoutes: []gatewayv1beta1.HTTPRoute{
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "http-app-1",
 				Namespace: "default",
 			},
-			Spec: gatewayv1.HTTPRouteSpec{
-				CommonRouteSpec: gatewayv1.CommonRouteSpec{
-					ParentRefs: []gatewayv1.ParentReference{
+			Spec: gatewayv1beta1.HTTPRouteSpec{
+				CommonRouteSpec: gatewayv1beta1.CommonRouteSpec{
+					ParentRefs: []gatewayv1beta1.ParentReference{
 						{
 							Name: "my-gateway",
 						},
 					},
 				},
-				Rules: []gatewayv1.HTTPRouteRule{
+				Rules: []gatewayv1beta1.HTTPRouteRule{
 					{
-						Matches: []gatewayv1.HTTPRouteMatch{
+						Matches: []gatewayv1beta1.HTTPRouteMatch{
 							{
-								Path: &gatewayv1.HTTPPathMatch{
-									Type:  model.AddressOf[gatewayv1.PathMatchType]("PathPrefix"),
+								Path: &gatewayv1beta1.HTTPPathMatch{
+									Type:  model.AddressOf[gatewayv1beta1.PathMatchType]("PathPrefix"),
 									Value: model.AddressOf("/bar"),
 								},
 							},
 						},
-						BackendRefs: []gatewayv1.HTTPBackendRef{
+						BackendRefs: []gatewayv1beta1.HTTPBackendRef{
 							{
-								BackendRef: gatewayv1.BackendRef{
-									BackendObjectReference: gatewayv1.BackendObjectReference{
+								BackendRef: gatewayv1beta1.BackendRef{
+									BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 										Name: "my-service",
-										Port: model.AddressOf[gatewayv1.PortNumber](8080),
+										Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
 									},
 								},
 							},
@@ -123,20 +115,12 @@ var basicHTTPListeners = []model.HTTPListener{
 				},
 			},
 		},
-		Infrastructure: &model.Infrastructure{
-			Labels: map[string]string{
-				"internal-loadbalancer-label": "true",
-			},
-			Annotations: map[string]string{
-				"internal-loadbalancer-annotation": "true",
-			},
-		},
 	},
 }
 
 var basicTLS = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
-	Gateway: gatewayv1.Gateway{
+	GatewayClass: gatewayv1beta1.GatewayClass{},
+	Gateway: gatewayv1beta1.Gateway{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Gateway",
 			APIVersion: "gateway.networking.k8s.io/v1",
@@ -145,8 +129,8 @@ var basicTLS = Input{
 			Name:      "my-gateway",
 			Namespace: "default",
 		},
-		Spec: gatewayv1.GatewaySpec{
-			Listeners: []gatewayv1.Listener{
+		Spec: gatewayv1beta1.GatewaySpec{
+			Listeners: []gatewayv1beta1.Listener{
 				{
 					Name:     "prod-web-gw",
 					Port:     443,
@@ -162,8 +146,8 @@ var basicTLS = Input{
 				Namespace: "default",
 			},
 			Spec: gatewayv1alpha2.TLSRouteSpec{
-				CommonRouteSpec: gatewayv1.CommonRouteSpec{
-					ParentRefs: []gatewayv1.ParentReference{
+				CommonRouteSpec: gatewayv1beta1.CommonRouteSpec{
+					ParentRefs: []gatewayv1beta1.ParentReference{
 						{
 							Name: "my-gateway",
 						},
@@ -174,11 +158,11 @@ var basicTLS = Input{
 				},
 				Rules: []gatewayv1alpha2.TLSRouteRule{
 					{
-						BackendRefs: []gatewayv1.BackendRef{
+						BackendRefs: []gatewayv1beta1.BackendRef{
 							{
 								BackendObjectReference: gatewayv1alpha2.BackendObjectReference{
 									Name: "my-service",
-									Port: model.AddressOf[gatewayv1.PortNumber](443),
+									Port: model.AddressOf[gatewayv1beta1.PortNumber](443),
 								},
 							},
 						},
@@ -266,7 +250,7 @@ var basicTLSListeners = []model.TLSListener{
 }
 
 var simpleSameNamespaceTLS = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceTLSGateway,
 	TLSRoutes: []gatewayv1alpha2.TLSRoute{
 		sameNamespaceTLSRoute,
@@ -275,9 +259,9 @@ var simpleSameNamespaceTLS = Input{
 }
 
 var crossNamespaceHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      backendNamespaceGateway,
-	HTTPRoutes: []gatewayv1.HTTPRoute{
+	HTTPRoutes: []gatewayv1beta1.HTTPRoute{
 		crossNamespaceHTTPRoute,
 	},
 	Services: allServices,
@@ -310,9 +294,9 @@ var crossNamespaceHTTPListeners = []model.HTTPListener{
 }
 
 var exactPathMatchingHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
-	HTTPRoutes: []gatewayv1.HTTPRoute{
+	HTTPRoutes: []gatewayv1beta1.HTTPRoute{
 		exactPathMatchingHTTPRoute,
 	},
 	Services: allServices,
@@ -358,9 +342,9 @@ var exactPathMatchingHTTPListeners = []model.HTTPListener{
 }
 
 var headerMatchingHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
-	HTTPRoutes: []gatewayv1.HTTPRoute{
+	HTTPRoutes: []gatewayv1beta1.HTTPRoute{
 		headerMatchingHTTPRoute,
 	},
 	Services: allServices,
@@ -504,7 +488,7 @@ var headerMatchingHTTPListeners = []model.HTTPListener{
 }
 
 var hostnameIntersectionHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      *hostnameIntersectionGateway,
 	HTTPRoutes:   hostnameIntersectionHTTPRoutes,
 	Services:     allServices,
@@ -599,7 +583,7 @@ var hostnameIntersectionHTTPListeners = []model.HTTPListener{
 }
 
 var listenerHostnameMatchingHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      *listenerHostnameMatchingGateway,
 	HTTPRoutes:   listenerHostnameMatchingHTTPRoutes,
 	Services:     allServices,
@@ -707,7 +691,7 @@ var listenerHostnameMatchingHTTPListeners = []model.HTTPListener{
 }
 
 var matchingAcrossHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   matchingAcrossHTTPRoutes,
 	Services:     allServices,
@@ -762,7 +746,7 @@ var matchingAcrossHTTPListeners = []model.HTTPListener{
 }
 
 var matchingHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   matchingHTTPRoutes,
 	Services:     allServices,
@@ -819,7 +803,7 @@ var matchingHTTPListeners = []model.HTTPListener{
 }
 
 var queryParamMatchingHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   queryParamMatchingHTTPRoutes,
 	Services:     allServices,
@@ -913,7 +897,7 @@ var queryParamMatchingHTTPListeners = []model.HTTPListener{
 }
 
 var requestHeaderModifierHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   requestHeaderModifierHTTPRoutes,
 	Services:     allServices,
@@ -1060,7 +1044,7 @@ var requestHeaderModifierHTTPListeners = []model.HTTPListener{
 }
 
 var simpleSameNamespaceHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   simpleSameNamespaceHTTPRoutes,
 	Services:     allServices,
@@ -1094,7 +1078,7 @@ var simpleSameNamespaceHTTPListeners = []model.HTTPListener{
 }
 
 var methodMatchingHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   methodMatchingHTTPRoutes,
 	Services:     allServices,
@@ -1141,7 +1125,7 @@ var methodMatchingHTTPListeners = []model.HTTPListener{
 }
 
 var requestRedirectHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   requestRedirectHTTPRoutes,
 	Services:     allServices,
@@ -1204,7 +1188,7 @@ var requestRedirectHTTPListeners = []model.HTTPListener{
 }
 
 var responseHeaderModifierHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   responseHeaderModifierHTTPRoutes,
 	Services:     allServices,
@@ -1367,7 +1351,7 @@ var responseHeaderModifierHTTPListeners = []model.HTTPListener{
 }
 
 var rewriteHostHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   rewriteHostHTTPRoutes,
 	Services:     allServices,
@@ -1421,7 +1405,7 @@ var rewriteHostHTTPListeners = []model.HTTPListener{
 }
 
 var rewritePathHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   rewritePathHTTPRoutes,
 	Services:     allServices,
@@ -1550,7 +1534,7 @@ var rewritePathHTTPListeners = []model.HTTPListener{
 }
 
 var mirrorHTTPInput = Input{
-	GatewayClass: gatewayv1.GatewayClass{},
+	GatewayClass: gatewayv1beta1.GatewayClass{},
 	Gateway:      sameNamespaceGateway,
 	HTTPRoutes:   mirrorPathHTTPRoutes,
 	Services:     allServices,
@@ -1597,8 +1581,8 @@ var mirrorHTTPListeners = []model.HTTPListener{
 
 var (
 	basicGRPC = Input{
-		GatewayClass: gatewayv1.GatewayClass{},
-		Gateway: gatewayv1.Gateway{
+		GatewayClass: gatewayv1beta1.GatewayClass{},
+		Gateway: gatewayv1beta1.Gateway{
 			TypeMeta: metav1.TypeMeta{
 				Kind:       "Gateway",
 				APIVersion: "gateway.networking.k8s.io/v1beta1",
@@ -1607,12 +1591,12 @@ var (
 				Name:      "my-gateway",
 				Namespace: "default",
 			},
-			Spec: gatewayv1.GatewaySpec{
-				Listeners: []gatewayv1.Listener{
+			Spec: gatewayv1beta1.GatewaySpec{
+				Listeners: []gatewayv1beta1.Listener{
 					{
 						Name:     "prod-web-gw",
 						Port:     80,
-						Protocol: gatewayv1.HTTPProtocolType,
+						Protocol: gatewayv1beta1.HTTPProtocolType,
 					},
 				},
 			},
@@ -1624,8 +1608,8 @@ var (
 					Namespace: "default",
 				},
 				Spec: gatewayv1alpha2.GRPCRouteSpec{
-					CommonRouteSpec: gatewayv1.CommonRouteSpec{
-						ParentRefs: []gatewayv1.ParentReference{
+					CommonRouteSpec: gatewayv1beta1.CommonRouteSpec{
+						ParentRefs: []gatewayv1beta1.ParentReference{
 							{
 								Name: "my-gateway",
 							},
@@ -1647,10 +1631,10 @@ var (
 							},
 							BackendRefs: []gatewayv1alpha2.GRPCBackendRef{
 								{
-									BackendRef: gatewayv1.BackendRef{
-										BackendObjectReference: gatewayv1.BackendObjectReference{
+									BackendRef: gatewayv1beta1.BackendRef{
+										BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 											Name: "grp-service",
-											Port: model.AddressOf[gatewayv1.PortNumber](8080),
+											Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
 										},
 									},
 								},

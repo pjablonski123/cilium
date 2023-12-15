@@ -10,19 +10,15 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/datapath/agentliveness"
 	"github.com/cilium/cilium/pkg/datapath/garp"
-	"github.com/cilium/cilium/pkg/datapath/ipcache"
 	"github.com/cilium/cilium/pkg/datapath/iptables"
 	"github.com/cilium/cilium/pkg/datapath/l2responder"
 	"github.com/cilium/cilium/pkg/datapath/link"
 	linuxdatapath "github.com/cilium/cilium/pkg/datapath/linux"
-	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
 	"github.com/cilium/cilium/pkg/datapath/linux/bigtcp"
 	dpcfg "github.com/cilium/cilium/pkg/datapath/linux/config"
-	"github.com/cilium/cilium/pkg/datapath/linux/ipsec"
 	"github.com/cilium/cilium/pkg/datapath/linux/modules"
 	"github.com/cilium/cilium/pkg/datapath/linux/utime"
 	"github.com/cilium/cilium/pkg/datapath/tables"
-	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/hive"
@@ -31,7 +27,6 @@ import (
 	"github.com/cilium/cilium/pkg/maps/eventsmap"
 	"github.com/cilium/cilium/pkg/maps/nodemap"
 	monitorAgent "github.com/cilium/cilium/pkg/monitor/agent"
-	"github.com/cilium/cilium/pkg/mtu"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	wg "github.com/cilium/cilium/pkg/wireguard/agent"
@@ -62,19 +57,10 @@ var Cell = cell.Module(
 	// The modules manager to search and load kernel modules.
 	modules.Cell,
 
-	// Manages Cilium-specific iptables rules.
-	iptables.Cell,
-
 	cell.Provide(
 		newWireguardAgent,
 		newDatapath,
 	),
-
-	// Provides the Table[NodeAddress] and the controller that populates it from Table[*Device]
-	tables.NodeAddressCell,
-
-	// Provides the legacy accessor for the above, the NodeAddressing interface.
-	tables.NodeAddressingCell,
 
 	// This cell periodically updates the agent liveness value in configmap.Map to inform
 	// the datapath of the liveness of the agent.
@@ -84,6 +70,10 @@ var Cell = cell.Module(
 	// it to the BPF L2 responder map.
 	l2responder.Cell,
 
+	// This cell defines StateDB tables and their schemas for tables which are used to transfer information
+	// between datapath components and more high-level components.
+	tables.Cell,
+
 	// Gratuitous ARP event processor emits GARP packets on k8s pod creation events.
 	garp.Cell,
 
@@ -92,18 +82,6 @@ var Cell = cell.Module(
 
 	// BIG TCP increases GSO/GRO limits when enabled.
 	bigtcp.Cell,
-
-	// Tunnel protocol configuration and alike.
-	tunnel.Cell,
-
-	// The bandwidth manager provides efficient EDT-based rate-limiting (on Linux).
-	bandwidth.Cell,
-
-	// IPsec cell provides the IPsecKeyCustodian.
-	ipsec.Cell,
-
-	// MTU provides the MTU configuration of the node.
-	mtu.Cell,
 
 	cell.Provide(func(dp types.Datapath) types.NodeIDHandler {
 		return dp.NodeIDs()
@@ -115,13 +93,8 @@ var Cell = cell.Module(
 		// Provide the configured devices to the devices controller.
 		// This is temporary until DevicesController takes ownership of the
 		// device-related configuration options.
-		return linuxdatapath.DevicesConfig{
-			Devices: cfg.GetDevices(),
-		}
+		return linuxdatapath.DevicesConfig{Devices: cfg.GetDevices()}
 	}),
-
-	// Synchronizes the userspace ipcache with the corresponding BPF map.
-	ipcache.Cell,
 )
 
 func newWireguardAgent(lc hive.Lifecycle, localNodeStore *node.LocalNodeStore) *wg.Agent {
@@ -154,19 +127,24 @@ func newWireguardAgent(lc hive.Lifecycle, localNodeStore *node.LocalNodeStore) *
 
 func newDatapath(params datapathParams) types.Datapath {
 	datapathConfig := linuxdatapath.DatapathConfiguration{
-		HostDevice:   defaults.HostDevice,
-		TunnelDevice: params.TunnelConfig.DeviceName(),
-		ProcFs:       option.Config.ProcFs,
+		HostDevice: defaults.HostDevice,
+		ProcFs:     option.Config.ProcFs,
 	}
 
-	datapath := linuxdatapath.NewDatapath(linuxdatapath.DatapathParams{
-		ConfigWriter:   params.ConfigWriter,
-		RuleManager:    params.IptablesManager,
-		WGAgent:        params.WgAgent,
-		NodeMap:        params.NodeMap,
-		NodeAddressing: params.NodeAddressing,
-		BWManager:      params.BandwidthManager,
-	}, datapathConfig)
+	iptablesManager := &iptables.IptablesManager{}
+
+	params.LC.Append(hive.Hook{
+		OnStart: func(hive.HookContext) error {
+			// FIXME enableIPForwarding should not live here
+			if err := enableIPForwarding(); err != nil {
+				log.Fatalf("enabling IP forwarding via sysctl failed: %s", err)
+			}
+
+			iptablesManager.Init(params.ModulesManager)
+			return nil
+		}})
+
+	datapath := linuxdatapath.NewDatapath(datapathConfig, iptablesManager, params.WgAgent, params.NodeMap, params.ConfigWriter)
 
 	params.LC.Append(hive.Hook{
 		OnStart: func(hive.HookContext) error {
@@ -190,20 +168,12 @@ type datapathParams struct {
 
 	NodeMap nodemap.Map
 
-	NodeAddressing types.NodeAddressing
-
 	// Depend on DeviceManager to ensure devices have been resolved.
 	// This is required until option.Config.GetDevices() has been removed and
 	// uses of it converted to Table[Device].
 	DeviceManager *linuxdatapath.DeviceManager
 
-	BandwidthManager bandwidth.Manager
-
 	ModulesManager *modules.Manager
 
-	IptablesManager *iptables.Manager
-
 	ConfigWriter types.ConfigWriter
-
-	TunnelConfig tunnel.Config
 }

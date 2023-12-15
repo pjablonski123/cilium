@@ -23,7 +23,6 @@ import (
 	"github.com/cilium/cilium/pkg/maps/callsmap"
 	"github.com/cilium/cilium/pkg/maps/policymap"
 	"github.com/cilium/cilium/pkg/node"
-	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/testutils"
 )
 
@@ -37,9 +36,10 @@ var (
 	contextTimeout = 10 * time.Second
 	benchTimeout   = 5*time.Minute + 5*time.Second
 
-	ep     = testutils.NewTestEndpoint()
-	hostEp = testutils.NewTestHostEndpoint()
-	bpfDir = filepath.Join("..", "..", "..", "bpf")
+	dirInfo *directoryInfo
+	ep      = testutils.NewTestEndpoint()
+	hostEp  = testutils.NewTestHostEndpoint()
+	bpfDir  = filepath.Join("..", "..", "..", "bpf")
 )
 
 // SetTestIncludes allows test files to configure additional include flags.
@@ -56,13 +56,25 @@ func (s *LoaderTestSuite) SetUpSuite(c *C) {
 
 	node.SetTestLocalNodeStore()
 
+	tmpDir, err := os.MkdirTemp("/tmp/", "cilium_")
+	if err != nil {
+		c.Fatalf("Failed to create temporary directory: %s", err)
+	}
+	dirInfo = getDirs(tmpDir)
+
 	cleanup, err := prepareEnv(&ep)
 	if err != nil {
 		SetTestIncludes(nil)
+		os.RemoveAll(tmpDir)
 		c.Fatalf("Failed to prepare environment: %s", err)
 	}
 
-	s.teardown = cleanup
+	s.teardown = func() error {
+		if err := cleanup(); err != nil {
+			return err
+		}
+		return os.RemoveAll(tmpDir)
+	}
 
 	SetTestIncludes([]string{
 		fmt.Sprintf("-I%s", bpfDir),
@@ -123,12 +135,12 @@ func prepareEnv(ep *testutils.TestEndpoint) (func() error, error) {
 	return cleanupFn, nil
 }
 
-func getDirs(tb testing.TB) *directoryInfo {
+func getDirs(tmpDir string) *directoryInfo {
 	return &directoryInfo{
 		Library: bpfDir,
 		Runtime: bpfDir,
 		State:   bpfDir,
-		Output:  tb.TempDir(),
+		Output:  tmpDir,
 	}
 }
 
@@ -138,7 +150,7 @@ func (s *LoaderTestSuite) testCompileAndLoad(c *C, ep *testutils.TestEndpoint) {
 	stats := &metrics.SpanStat{}
 
 	l := NewLoader()
-	err := l.compileAndLoad(ctx, ep, getDirs(c), stats)
+	err := l.compileAndLoad(ctx, ep, dirInfo, stats)
 	c.Assert(err, IsNil)
 }
 
@@ -172,7 +184,6 @@ func (s *LoaderTestSuite) TestReload(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
-	dirInfo := getDirs(c)
 	err := compileDatapath(ctx, dirInfo, false, log)
 	c.Assert(err, IsNil)
 
@@ -210,7 +221,7 @@ func (s *LoaderTestSuite) testCompileFailure(c *C, ep *testutils.TestEndpoint) {
 	var err error
 	stats := &metrics.SpanStat{}
 	for err == nil && time.Now().Before(timeout) {
-		err = l.compileAndLoad(ctx, ep, getDirs(c), stats)
+		err = l.compileAndLoad(ctx, ep, dirInfo, stats)
 	}
 	c.Assert(err, NotNil)
 }
@@ -232,9 +243,6 @@ func BenchmarkCompileOnly(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), benchTimeout)
 	defer cancel()
 
-	dirInfo := getDirs(b)
-	option.Config.Debug = true
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := compileDatapath(ctx, dirInfo, false, log); err != nil {
@@ -250,7 +258,6 @@ func BenchmarkCompileAndLoad(b *testing.B) {
 	defer cancel()
 
 	l := NewLoader()
-	dirInfo := getDirs(b)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -265,8 +272,6 @@ func BenchmarkCompileAndLoad(b *testing.B) {
 func BenchmarkReplaceDatapath(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), benchTimeout)
 	defer cancel()
-
-	dirInfo := getDirs(b)
 
 	if err := compileDatapath(ctx, dirInfo, false, log); err != nil {
 		b.Fatal(err)

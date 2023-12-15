@@ -5,7 +5,6 @@
 #include <bpf/api.h>
 
 #include "lib/utils.h"
-#include <node_config.h>
 #include "lib/common.h"
 #include "lib/eth.h"
 

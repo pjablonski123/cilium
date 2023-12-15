@@ -9,7 +9,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
+	"github.com/cilium/cilium/pkg/bandwidth"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/bwmap"
@@ -260,7 +260,6 @@ func (ev *EndpointPolicyVisibilityEvent) Handle(res chan interface{}) {
 // EndpointPolicyBandwidthEvent contains all fields necessary to update
 // the Pod's bandwidth policy.
 type EndpointPolicyBandwidthEvent struct {
-	bwm    bandwidth.Manager
 	ep     *Endpoint
 	annoCB AnnotationsResolverCB
 }
@@ -268,13 +267,6 @@ type EndpointPolicyBandwidthEvent struct {
 // Handle handles the policy bandwidth update.
 func (ev *EndpointPolicyBandwidthEvent) Handle(res chan interface{}) {
 	var bps uint64
-
-	if !ev.bwm.Enabled() {
-		res <- &EndpointRegenerationResult{
-			err: nil,
-		}
-		return
-	}
 
 	e := ev.ep
 	if err := e.lockAlive(); err != nil {
@@ -290,7 +282,7 @@ func (ev *EndpointPolicyBandwidthEvent) Handle(res chan interface{}) {
 	}()
 
 	bandwidthEgress, err := ev.annoCB(e.K8sNamespace, e.K8sPodName)
-	if err != nil {
+	if err != nil || !option.Config.EnableBandwidthManager {
 		res <- &EndpointRegenerationResult{
 			err: err,
 		}

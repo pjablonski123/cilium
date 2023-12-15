@@ -27,7 +27,6 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -54,10 +53,9 @@ func newFixture() *fixture {
 
 	hive.New(
 		statedb.Cell,
+		tables.Cell,
 		job.Cell,
-		cell.Provide(tables.NewL2AnnounceTable),
 		cell.Module("test", "test", cell.Invoke(func(d *statedb.DB, t statedb.RWTable[*tables.L2AnnounceEntry], s cell.Scope, j job.Registry) {
-			d.RegisterTable(t)
 			db = d
 			tbl = t
 			jr = j
@@ -128,7 +126,6 @@ func (fs *fakeStore[T]) ByIndex(indexName, indexedValue string) ([]T, error) {
 	return nil, nil
 }
 func (fs *fakeStore[T]) CacheStore() cache.Store { return nil }
-func (fs *fakeStore[T]) Release()                {}
 
 var _ resource.Resource[runtime.Object] = (*fakeResource[runtime.Object])(nil)
 
@@ -380,7 +377,7 @@ func TestHappyPathPermutations(t *testing.T) {
 	generate(len(funcs), funcs)
 }
 
-// Test that when two policies select the same service, and one goes away, the service still stays selected
+// Test that when two policies select the same service, an one goes away, the service still stays selected
 func TestPolicyRedundancy(t *testing.T) {
 	fix := newFixture()
 
@@ -496,14 +493,11 @@ func baseUpdateSetup(t *testing.T) *fixture {
 
 	fix.announcer.DevicesChanged([]string{"eno01"})
 	err := fix.announcer.processDevicesChanged(context.Background())
-	require.NoError(t, err)
-	require.Len(t, fix.announcer.devices, 1)
-	require.Contains(t, fix.announcer.devices, "eno01")
+	assert.NoError(t, err)
 
 	localNode := blueNode()
 	err = fix.announcer.upsertLocalNode(context.Background(), localNode)
-	require.NoError(t, err)
-	require.Equal(t, localNode, fix.announcer.localNode)
+	assert.NoError(t, err)
 
 	policy := bluePolicy()
 	fix.fakePolicyStore.slice = append(fix.fakePolicyStore.slice, policy)
@@ -513,10 +507,7 @@ func baseUpdateSetup(t *testing.T) *fixture {
 		Object: policy,
 		Done:   func(err error) {},
 	})
-	require.NoError(t, err)
-
-	require.Len(t, fix.announcer.selectedPolicies, 1)
-	require.Len(t, fix.announcer.selectedServices, 0)
+	assert.NoError(t, err)
 
 	svc := blueService()
 	fix.fakeSvcStore.slice = append(fix.fakeSvcStore.slice, svc)
@@ -526,22 +517,13 @@ func baseUpdateSetup(t *testing.T) *fixture {
 		Object: svc,
 		Done:   func(err error) {},
 	})
-	require.NoError(t, err)
-
-	require.Len(t, fix.announcer.selectedPolicies, 1)
-	require.Len(t, fix.announcer.selectedServices, 1)
+	assert.NoError(t, err)
 
 	err = fix.announcer.processLeaderEvent(leaderElectionEvent{
 		typ:             leaderElectionLeading,
 		selectedService: fix.announcer.selectedServices[serviceKey(svc)],
 	})
-	require.NoError(t, err)
-
-	rtx := fix.stateDB.ReadTxn()
-	iter, _ := fix.proxyNeighborTable.All(rtx)
-	entries := statedb.Collect[*tables.L2AnnounceEntry](iter)
-
-	require.Len(t, entries, 1)
+	assert.NoError(t, err)
 
 	return fix
 }
@@ -749,144 +731,10 @@ func TestUpdatePolicy_AdditionalMatch(t *testing.T) {
 	cancel()
 }
 
-// Test service selection under various conditions
-func TestPolicySelection(t *testing.T) {
-	fix := baseUpdateSetup(t)
-
-	// Setting external and LB IP to true should select a service from the baseUpdateSetup
-	policy := bluePolicy()
-	policy.Spec.ExternalIPs = true
-	policy.Spec.LoadBalancerIPs = true
-	fix.fakePolicyStore.slice[0] = policy
-	err := fix.announcer.processPolicyEvent(context.Background(), resource.Event[*v2alpha1.CiliumL2AnnouncementPolicy]{
-		Kind:   resource.Upsert,
-		Key:    resource.NewKey(policy),
-		Object: policy,
-		Done:   func(err error) {},
-	})
-	assert.NoError(t, err)
-
-	assert.Len(t, fix.announcer.selectedPolicies, 1)
-	assert.Len(t, fix.announcer.selectedServices, 1)
-
-	// A service with no externalIP and no LB IP should never be selected
-	svc := blueService()
-	svc.Spec.ExternalIPs = nil
-	svc.Status.LoadBalancer.Ingress = nil
-	fix.fakeSvcStore.slice[0] = svc
-	err = fix.announcer.processSvcEvent(resource.Event[*slim_corev1.Service]{
-		Kind:   resource.Upsert,
-		Key:    resource.NewKey(svc),
-		Object: svc,
-		Done:   func(err error) {},
-	})
-	assert.NoError(t, err)
-
-	assert.Len(t, fix.announcer.selectedPolicies, 1)
-	assert.Len(t, fix.announcer.selectedServices, 0)
-
-	// Setting external and LB IP to false should not select any services anymore
-	policy.Spec.ExternalIPs = false
-	policy.Spec.LoadBalancerIPs = false
-	fix.fakePolicyStore.slice[0] = policy
-	err = fix.announcer.processPolicyEvent(context.Background(), resource.Event[*v2alpha1.CiliumL2AnnouncementPolicy]{
-		Kind:   resource.Upsert,
-		Key:    resource.NewKey(policy),
-		Object: policy,
-		Done:   func(err error) {},
-	})
-	assert.NoError(t, err)
-
-	assert.Len(t, fix.announcer.selectedPolicies, 1)
-	assert.Len(t, fix.announcer.selectedServices, 0)
-
-	// Updating an existing non-selected service should not select it
-	svc.Spec = slim_corev1.ServiceSpec{
-		ExternalIPs: []string{"192.168.2.2"},
-	}
-	fix.fakeSvcStore.slice[0] = svc
-	err = fix.announcer.processSvcEvent(resource.Event[*slim_corev1.Service]{
-		Kind:   resource.Upsert,
-		Key:    resource.NewKey(svc),
-		Object: svc,
-		Done:   func(err error) {},
-	})
-	assert.NoError(t, err)
-
-	assert.Len(t, fix.announcer.selectedPolicies, 1)
-	assert.Len(t, fix.announcer.selectedServices, 0)
-
-	// Adding an LB IP to an existing non-selected service should not select it
-	svc.Status.LoadBalancer.Ingress = []slim_corev1.LoadBalancerIngress{
-		{IP: "192.168.2.7"},
-	}
-	fix.fakeSvcStore.slice[0] = svc
-	err = fix.announcer.processSvcEvent(resource.Event[*slim_corev1.Service]{
-		Kind:   resource.Upsert,
-		Key:    resource.NewKey(svc),
-		Object: svc,
-		Done:   func(err error) {},
-	})
-	assert.NoError(t, err)
-
-	assert.Len(t, fix.announcer.selectedPolicies, 1)
-	assert.Len(t, fix.announcer.selectedServices, 0)
-
-	// Altering the policy to select services with LB IPs should only have an entry for LB IPs
-	policy.Spec.ExternalIPs = false
-	policy.Spec.LoadBalancerIPs = true
-	fix.fakePolicyStore.slice[0] = policy
-	err = fix.announcer.processPolicyEvent(context.Background(), resource.Event[*v2alpha1.CiliumL2AnnouncementPolicy]{
-		Kind:   resource.Upsert,
-		Key:    resource.NewKey(policy),
-		Object: policy,
-		Done:   func(err error) {},
-	})
-	assert.NoError(t, err)
-	assert.Len(t, fix.announcer.selectedPolicies, 1)
-	assert.Len(t, fix.announcer.selectedServices, 1)
-
-	err = fix.announcer.processLeaderEvent(leaderElectionEvent{
-		typ:             leaderElectionLeading,
-		selectedService: fix.announcer.selectedServices[serviceKey(svc)],
-	})
-	assert.NoError(t, err)
-
-	rtx := fix.stateDB.ReadTxn()
-	iter, _ := fix.proxyNeighborTable.All(rtx)
-	entries := statedb.Collect[*tables.L2AnnounceEntry](iter)
-	assert.Len(t, entries, 1)
-	assert.Contains(t, entries, &tables.L2AnnounceEntry{
-		L2AnnounceKey: tables.L2AnnounceKey{
-			IP:               netip.MustParseAddr("192.168.2.7"),
-			NetworkInterface: bluePolicy().Spec.Interfaces[0],
-		},
-		Origins: []resource.Key{resource.NewKey(svc)},
-	})
-
-	// A service with an LB hostname but not an LB IP should not be selected
-	svc.Status.LoadBalancer.Ingress = []slim_corev1.LoadBalancerIngress{
-		{Hostname: "example.com"},
-	}
-	fix.fakeSvcStore.slice[0] = svc
-	err = fix.announcer.processSvcEvent(resource.Event[*slim_corev1.Service]{
-		Kind:   resource.Upsert,
-		Key:    resource.NewKey(svc),
-		Object: svc,
-		Done:   func(err error) {},
-	})
-	assert.NoError(t, err)
-
-	assert.Len(t, fix.announcer.selectedPolicies, 1)
-	assert.Len(t, fix.announcer.selectedServices, 0)
-
-}
-
 // Test that when the selected IP types in the policy changes, that proxy neighbor table is updated properly.
 func TestUpdatePolicy_ChangeIPType(t *testing.T) {
 	fix := baseUpdateSetup(t)
 
-	// Service has no LB IP so it should not be selected
 	policy := bluePolicy()
 	policy.Spec.ExternalIPs = false
 	policy.Spec.LoadBalancerIPs = true
@@ -900,14 +748,14 @@ func TestUpdatePolicy_ChangeIPType(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Len(t, fix.announcer.selectedPolicies, 1)
-	assert.Len(t, fix.announcer.selectedServices, 0)
+	assert.Len(t, fix.announcer.selectedServices, 1)
 
+	// Selected service has no LB ips, so all entries should be deleted
 	rtx := fix.stateDB.ReadTxn()
 	iter, _ := fix.proxyNeighborTable.All(rtx)
 	entries := statedb.Collect[*tables.L2AnnounceEntry](iter)
 	assert.Len(t, entries, 0)
 
-	// Adding an LB IP should select the service and create an entry
 	svc := blueService()
 	svc.Spec.ExternalIPs = nil
 	svc.Status.LoadBalancer.Ingress = []slim_corev1.LoadBalancerIngress{
@@ -922,15 +770,7 @@ func TestUpdatePolicy_ChangeIPType(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	assert.Len(t, fix.announcer.selectedPolicies, 1)
-	assert.Len(t, fix.announcer.selectedServices, 1)
-
-	err = fix.announcer.processLeaderEvent(leaderElectionEvent{
-		typ:             leaderElectionLeading,
-		selectedService: fix.announcer.selectedServices[serviceKey(svc)],
-	})
-	assert.NoError(t, err)
-
+	// Adding a LB IP, check that we have an entry for that
 	rtx = fix.stateDB.ReadTxn()
 	iter, _ = fix.proxyNeighborTable.All(rtx)
 	entries = statedb.Collect[*tables.L2AnnounceEntry](iter)
@@ -942,27 +782,6 @@ func TestUpdatePolicy_ChangeIPType(t *testing.T) {
 		},
 		Origins: []resource.Key{resource.NewKey(svc)},
 	})
-
-	// Setting an empty LB IP should unselect the service
-	svc.Status.LoadBalancer.Ingress = []slim_corev1.LoadBalancerIngress{
-		{IP: ""},
-	}
-	fix.fakeSvcStore.slice[0] = svc
-	err = fix.announcer.processSvcEvent(resource.Event[*slim_corev1.Service]{
-		Kind:   resource.Upsert,
-		Key:    resource.NewKey(svc),
-		Object: svc,
-		Done:   func(err error) {},
-	})
-	assert.NoError(t, err)
-
-	assert.Len(t, fix.announcer.selectedPolicies, 1)
-	assert.Len(t, fix.announcer.selectedServices, 0)
-
-	rtx = fix.stateDB.ReadTxn()
-	iter, _ = fix.proxyNeighborTable.All(rtx)
-	entries = statedb.Collect[*tables.L2AnnounceEntry](iter)
-	assert.Len(t, entries, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	fix.announcer.jobgroup.Stop(ctx)
@@ -1175,10 +994,9 @@ func TestL2AnnouncerLifecycle(t *testing.T) {
 
 	h := hive.New(
 		statedb.Cell,
+		tables.Cell,
 		job.Cell,
 		Cell,
-		cell.Provide(tables.NewL2AnnounceTable),
-		cell.Invoke(statedb.RegisterTable[*tables.L2AnnounceEntry]),
 		cell.Provide(func() *option.DaemonConfig {
 			return &option.DaemonConfig{
 				EnableL2Announcements: true,

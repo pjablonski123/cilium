@@ -47,7 +47,6 @@ import (
 var Cell = cell.Module(
 	"l2-announcer",
 	"L2 Announcer",
-
 	cell.Provide(NewL2Announcer),
 	cell.Provide(l2AnnouncementPolicyResource),
 )
@@ -311,22 +310,8 @@ func (l2a *L2Announcer) processPolicyEvent(ctx context.Context, event resource.E
 }
 
 func (l2a *L2Announcer) upsertSvc(svc *slim_corev1.Service) error {
-	key := serviceKey(svc)
-
-	// Ignore services if there is no noExternal or LB IP assigned.
-	noExternal := svc.Spec.ExternalIPs == nil
-	noLB := true
-	for _, v := range svc.Status.LoadBalancer.Ingress {
-		if v.IP != "" {
-			noLB = false
-			break
-		}
-	}
-	if noExternal && noLB {
-		return l2a.delSvc(key)
-	}
-
 	// Ignore services managed by an unsupported load balancer class.
+	key := serviceKey(svc)
 	if svc.Spec.LoadBalancerClass != nil &&
 		*svc.Spec.LoadBalancerClass != cilium_api_v2alpha1.L2AnnounceLoadBalancerClass {
 		return l2a.delSvc(key)
@@ -341,11 +326,7 @@ func (l2a *L2Announcer) upsertSvc(svc *slim_corev1.Service) error {
 		ss.byPolicies = nil
 		for policyKey, selectedPolicy := range l2a.selectedPolicies {
 			if selectedPolicy.serviceSelector.Matches(svcAndMetaLabels(svc)) {
-				// Policy IP type and Service IP type must match
-				if (selectedPolicy.policy.Spec.ExternalIPs && !noExternal) ||
-					(selectedPolicy.policy.Spec.LoadBalancerIPs && !noLB) {
-					ss.byPolicies = append(ss.byPolicies, policyKey)
-				}
+				ss.byPolicies = append(ss.byPolicies, policyKey)
 			}
 		}
 
@@ -370,11 +351,7 @@ func (l2a *L2Announcer) upsertSvc(svc *slim_corev1.Service) error {
 	var matchingPolicies []resource.Key
 	for policyKey, selectedPolicy := range l2a.selectedPolicies {
 		if selectedPolicy.serviceSelector.Matches(svcAndMetaLabels(svc)) {
-			// Policy IP type and Service IP type must match
-			if (selectedPolicy.policy.Spec.ExternalIPs && !noExternal) ||
-				(selectedPolicy.policy.Spec.LoadBalancerIPs && !noLB) {
-				matchingPolicies = append(matchingPolicies, policyKey)
-			}
+			matchingPolicies = append(matchingPolicies, policyKey)
 		}
 	}
 
@@ -533,24 +510,6 @@ func (l2a *L2Announcer) upsertPolicy(ctx context.Context, policy *cilium_api_v2a
 	// Or add to the selected services if it was not there already.
 	for _, svc := range l2a.svcStore.List() {
 		if !serviceSelector.Matches(svcAndMetaLabels(svc)) {
-			continue
-		}
-
-		// Ignore services if there is no external or LB IP assigned.
-		noExternal := svc.Spec.ExternalIPs == nil
-		noLB := true
-		for _, v := range svc.Status.LoadBalancer.Ingress {
-			if v.IP != "" {
-				noLB = false
-				break
-			}
-		}
-		if noExternal && noLB {
-			continue
-		}
-
-		if !((policy.Spec.ExternalIPs && !noExternal) ||
-			(policy.Spec.LoadBalancerIPs && !noLB)) {
 			continue
 		}
 

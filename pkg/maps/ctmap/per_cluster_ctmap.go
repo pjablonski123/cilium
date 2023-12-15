@@ -18,6 +18,8 @@ import (
 )
 
 const (
+	perClusterCTMapMaxEntries = cmtypes.ClusterIDMax + 1
+
 	perClusterCTOuterMapPrefix = "cilium_per_cluster_ct_"
 )
 
@@ -269,7 +271,7 @@ func newPerClusterCTMap(m mapType) *PerClusterCTMap {
 		ebpf.ArrayOfMaps,
 		&PerClusterCTMapKey{},
 		&PerClusterCTMapVal{},
-		int(cmtypes.ClusterIDMax+1),
+		perClusterCTMapMaxEntries,
 		0,
 		inner,
 	)

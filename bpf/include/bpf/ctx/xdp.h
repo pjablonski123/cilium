@@ -33,7 +33,6 @@
 /* This must be a mask and all offsets guaranteed to be less than that. */
 #define __CTX_OFF_MAX			0xff
 
-#ifndef HAVE_XDP_LOAD_BYTES
 static __always_inline __maybe_unused int
 xdp_load_bytes(const struct xdp_md *ctx, __u64 off, void *to, const __u64 len)
 {
@@ -61,9 +60,7 @@ xdp_load_bytes(const struct xdp_md *ctx, __u64 off, void *to, const __u64 len)
 		memcpy(to, from, len);
 	return ret;
 }
-#endif
 
-#ifndef HAVE_XDP_STORE_BYTES
 static __always_inline __maybe_unused int
 xdp_store_bytes(const struct xdp_md *ctx, __u64 off, const void *from,
 		const __u64 len, __u64 flags __maybe_unused)
@@ -89,7 +86,6 @@ xdp_store_bytes(const struct xdp_md *ctx, __u64 off, const void *from,
 		memcpy(to, from, len);
 	return ret;
 }
-#endif
 
 #define ctx_load_bytes			xdp_load_bytes
 #define ctx_store_bytes			xdp_store_bytes

@@ -18,7 +18,6 @@ import (
 
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/controller"
-	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/eventqueue"
@@ -89,25 +88,24 @@ func (e *Endpoint) getNamedPortEgress(npMap types.NamedPortMultiMap, name string
 	return port
 }
 
-// proxyID returns a unique string to identify a proxy mapping,
-// and the resolved destination port number, if any.
+// proxyID returns a unique string to identify a proxy mapping.
 // Must be called with e.mutex held.
-func (e *Endpoint) proxyID(l4 *policy.L4Filter) (string, uint16) {
+func (e *Endpoint) proxyID(l4 *policy.L4Filter) string {
 	port := uint16(l4.Port)
 	if port == 0 && l4.PortName != "" {
 		port = e.GetNamedPort(l4.Ingress, l4.PortName, uint8(l4.U8Proto))
 		if port == 0 {
-			return "", 0
+			return ""
 		}
 	}
-	return policy.ProxyID(e.ID, l4.Ingress, string(l4.Protocol), port), port
+	return policy.ProxyID(e.ID, l4.Ingress, string(l4.Protocol), port)
 }
 
-// LookupRedirectPortBuildLocked returns the redirect L4 proxy port for the given L4
+// lookupRedirectPort returns the redirect L4 proxy port for the given L4
 // policy map key, in host byte order. Returns 0 if not found or the
 // filter doesn't require a redirect.
 // Must be called with either Endpoint.mutex or Endpoint.buildMutex held for reading.
-func (e *Endpoint) LookupRedirectPortBuildLocked(ingress bool, protocol string, port uint16) uint16 {
+func (e *Endpoint) LookupRedirectPortLocked(ingress bool, protocol string, port uint16) uint16 {
 	return e.realizedRedirects[policy.ProxyID(e.ID, ingress, protocol, port)]
 }
 
@@ -712,7 +710,7 @@ func (e *Endpoint) Regenerate(regenMetadata *regeneration.ExternalRegenerationMe
 				e.getLogger().WithError(regenError).Error("endpoint regeneration failed")
 				hr.Degraded("Endpoint regeneration failed", regenError)
 			}
-			hr.OK("Endpoint regeneration successful")
+			hr.OK(("Endpoint regeneration successful"))
 		} else {
 			// This may be unnecessary(?) since 'closing' of the results
 			// channel means that event has been cancelled?
@@ -885,7 +883,7 @@ func (e *Endpoint) SetIdentity(identity *identityPkg.Identity, newEndpoint bool)
 		identitymanager.RemoveOldAddNew(e.SecurityIdentity, identity)
 	}
 	e.SecurityIdentity = identity
-	e.replaceIdentityLabels(labels.LabelSourceAny, identity.Labels)
+	e.replaceIdentityLabels(identity.Labels)
 
 	// Clear selectorPolicy. It will be determined at next regeneration.
 	e.selectorPolicy = nil
@@ -960,9 +958,8 @@ func (e *Endpoint) UpdateVisibilityPolicy(annoCB AnnotationsResolverCB) {
 
 // UpdateBandwidthPolicy updates the egress bandwidth of this endpoint to
 // progagate the throttle rate to the BPF data path.
-func (e *Endpoint) UpdateBandwidthPolicy(bwm bandwidth.Manager, annoCB AnnotationsResolverCB) {
+func (e *Endpoint) UpdateBandwidthPolicy(annoCB AnnotationsResolverCB) {
 	ch, err := e.eventQueue.Enqueue(eventqueue.NewEvent(&EndpointPolicyBandwidthEvent{
-		bwm:    bwm,
 		ep:     e,
 		annoCB: annoCB,
 	}))

@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"reflect"
 	"regexp"
@@ -42,9 +41,6 @@ import (
 	"github.com/osrg/gobgp/v3/pkg/log"
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 )
-
-// Unlimited batch size by default
-const defaultListPathBatchSize = math.MaxUint64
 
 type server struct {
 	bgpServer  *BgpServer
@@ -229,38 +225,19 @@ func getValidation(v map[*table.Path]*table.Validation, p *table.Path) *table.Va
 func (s *server) ListPath(r *api.ListPathRequest, stream api.GobgpApi_ListPathServer) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	batchSize := r.BatchSize
-	if batchSize == 0 {
-		batchSize = defaultListPathBatchSize
-	}
 	l := make([]*api.Destination, 0)
-	send := func() error {
-		for _, d := range l {
-			if err := stream.Send(&api.ListPathResponse{Destination: d}); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	var sendErr error
 	err := s.bgpServer.ListPath(ctx, r, func(d *api.Destination) {
-		if uint64(len(l)) < batchSize {
-			l = append(l, d)
-			return
-		}
-		if sendErr = send(); sendErr != nil {
-			cancel()
-			return
-		}
-		l = l[:0]
+		l = append(l, d)
 	})
-	if sendErr != nil {
-		return sendErr
-	}
 	if err != nil {
 		return err
 	}
-	return send()
+	for _, d := range l {
+		if err := stream.Send(&api.ListPathResponse{Destination: d}); err != nil {
+			break
+		}
+	}
+	return err
 }
 
 func (s *server) WatchEvent(r *api.WatchEventRequest, stream api.GobgpApi_WatchEventServer) error {

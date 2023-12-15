@@ -55,10 +55,7 @@ func (cache *PolicyCache) lookupOrCreate(identity *identityPkg.Identity, create 
 	cache.Lock()
 	defer cache.Unlock()
 	cip, ok := cache.policies[identity.ID]
-	if !ok {
-		if !create {
-			return nil
-		}
+	if create && !ok {
 		cip = newCachedSelectorPolicy(identity, cache.repo.GetSelectorCache())
 		cache.policies[identity.ID] = cip
 	}

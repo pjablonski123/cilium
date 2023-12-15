@@ -52,6 +52,21 @@ __encap_and_redirect_with_nodeid(struct __ctx_buff *ctx, __u32 src_ip __maybe_un
 	int ifindex;
 	int ret = 0;
 
+#if defined(ENABLE_WIREGUARD) && __ctx_is == __ctx_skb
+	/* Redirect the packet to the WireGuard tunnel device for encryption
+	 * if needed.
+	 *
+	 * A packet which previously was a subject to VXLAN/Geneve
+	 * encapsulation (e.g., pod2pod) is going to be encapsulated only once,
+	 * i.e., by the WireGuard tunnel netdev. This is so just to be
+	 * compatible with < the v1.13 behavior in which the pod2pod bypassed
+	 * VXLAN/Geneve encapsulation when the WG feature was on.
+	 */
+	ret = wg_maybe_redirect_to_encrypt(ctx);
+	if (IS_ERR(ret) || ret == CTX_ACT_REDIRECT)
+		return ret;
+#endif /* defined(ENABLE_WIREGUARD) && __ctx_is == __ctx_skb */
+
 	ret = __encap_with_nodeid(ctx, src_ip, 0, tunnel_endpoint, seclabel, dstid,
 				  vni, trace->reason, trace->monitor,
 				  &ifindex);
@@ -68,16 +83,9 @@ __encap_and_redirect_with_nodeid(struct __ctx_buff *ctx, __u32 src_ip __maybe_un
  */
 static __always_inline int
 encap_and_redirect_with_nodeid(struct __ctx_buff *ctx, __be32 tunnel_endpoint,
-			       __u8 encrypt_key __maybe_unused,
 			       __u32 seclabel, __u32 dstid,
 			       const struct trace_ctx *trace)
 {
-#ifdef ENABLE_IPSEC
-	if (encrypt_key)
-		return set_ipsec_encrypt(ctx, encrypt_key, tunnel_endpoint,
-					 seclabel, true);
-#endif
-
 	return __encap_and_redirect_with_nodeid(ctx, 0, tunnel_endpoint,
 						seclabel, dstid, NOT_VTEP_DST,
 						trace);
@@ -97,7 +105,7 @@ __encap_and_redirect_lxc(struct __ctx_buff *ctx, __be32 tunnel_endpoint,
 #ifdef ENABLE_IPSEC
 	if (encrypt_key)
 		return set_ipsec_encrypt(ctx, encrypt_key, tunnel_endpoint,
-					 seclabel, false);
+					 seclabel);
 #endif
 
 #if !defined(ENABLE_NODEPORT) && defined(ENABLE_HOST_FIREWALL)
@@ -117,7 +125,7 @@ __encap_and_redirect_lxc(struct __ctx_buff *ctx, __be32 tunnel_endpoint,
 	/* tell caller that this packet needs to go through the stack: */
 	return CTX_ACT_OK;
 #else
-	return encap_and_redirect_with_nodeid(ctx, tunnel_endpoint, 0, seclabel,
+	return encap_and_redirect_with_nodeid(ctx, tunnel_endpoint, seclabel,
 					      dstid, trace);
 #endif /* !ENABLE_NODEPORT && ENABLE_HOST_FIREWALL */
 }
@@ -165,17 +173,16 @@ encap_and_redirect_lxc(struct __ctx_buff *ctx,
 		__u8 min_encrypt_key = get_min_encrypt_key(tunnel->key);
 
 		return set_ipsec_encrypt(ctx, min_encrypt_key, tunnel->ip4,
-					 seclabel, false);
+					 seclabel);
 	}
 # endif
-	return encap_and_redirect_with_nodeid(ctx, tunnel->ip4, 0, seclabel, dstid,
+	return encap_and_redirect_with_nodeid(ctx, tunnel->ip4, seclabel, dstid,
 					      trace);
 #endif /* ENABLE_HIGH_SCALE_IPCACHE */
 }
 
 static __always_inline int
 encap_and_redirect_netdev(struct __ctx_buff *ctx, struct tunnel_key *k,
-			  __u8 encrypt_key __maybe_unused,
 			  __u32 seclabel, const struct trace_ctx *trace)
 {
 	struct tunnel_value *tunnel;
@@ -184,13 +191,7 @@ encap_and_redirect_netdev(struct __ctx_buff *ctx, struct tunnel_key *k,
 	if (!tunnel)
 		return DROP_NO_TUNNEL_ENDPOINT;
 
-#ifdef ENABLE_IPSEC
-	if (encrypt_key)
-		return set_ipsec_encrypt(ctx, encrypt_key, tunnel->ip4,
-					 seclabel, true);
-#endif
-
-	return encap_and_redirect_with_nodeid(ctx, tunnel->ip4, 0, seclabel, 0,
+	return encap_and_redirect_with_nodeid(ctx, tunnel->ip4, seclabel, 0,
 					      trace);
 }
 #endif /* TUNNEL_MODE || ENABLE_HIGH_SCALE_IPCACHE */

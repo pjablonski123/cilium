@@ -7,8 +7,6 @@ import (
 	"io"
 	"math"
 
-	"golang.org/x/exp/slices"
-
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/internal"
@@ -59,33 +57,21 @@ func splitSymbols(insns asm.Instructions) (map[string]asm.Instructions, error) {
 		return nil, errors.New("insns is empty")
 	}
 
-	currentSym := insns[0].Symbol()
-	if currentSym == "" {
+	if insns[0].Symbol() == "" {
 		return nil, errors.New("insns must start with a Symbol")
 	}
 
-	start := 0
+	var name string
 	progs := make(map[string]asm.Instructions)
-	for i, ins := range insns[1:] {
-		i := i + 1
-
-		sym := ins.Symbol()
-		if sym == "" {
-			continue
+	for _, ins := range insns {
+		if sym := ins.Symbol(); sym != "" {
+			if progs[sym] != nil {
+				return nil, fmt.Errorf("insns contains duplicate Symbol %s", sym)
+			}
+			name = sym
 		}
 
-		// New symbol, flush the old one out.
-		progs[currentSym] = slices.Clone(insns[start:i])
-
-		if progs[sym] != nil {
-			return nil, fmt.Errorf("insns contains duplicate Symbol %s", sym)
-		}
-		currentSym = sym
-		start = i
-	}
-
-	if tail := insns[start:]; len(tail) > 0 {
-		progs[currentSym] = slices.Clone(tail)
+		progs[name] = append(progs[name], ins)
 	}
 
 	return progs, nil

@@ -14,6 +14,8 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"github.com/cilium/cilium/pkg/cidr"
+	datapathIpcache "github.com/cilium/cilium/pkg/datapath/ipcache"
+	"github.com/cilium/cilium/pkg/datapath/linux/ipsec"
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
@@ -21,6 +23,7 @@ import (
 	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/identity"
 	ippkg "github.com/cilium/cilium/pkg/ip"
+	"github.com/cilium/cilium/pkg/ipcache"
 	ipcachetypes "github.com/cilium/cilium/pkg/ipcache/types"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -49,6 +52,18 @@ import (
 func (d *Daemon) LocalConfig() *datapath.LocalNodeConfiguration {
 	d.nodeDiscovery.WaitForLocalNodeInit()
 	return &d.nodeDiscovery.LocalConfig
+}
+
+func deleteHostDevice() {
+	link, err := netlink.LinkByName(defaults.HostDevice)
+	if err != nil {
+		log.WithError(err).Warningf("Unable to lookup host device %s. No old cilium_host interface exists", defaults.HostDevice)
+		return
+	}
+
+	if err := netlink.LinkDel(link); err != nil {
+		log.WithError(err).Errorf("Unable to delete host device %s to change allocation CIDR", defaults.HostDevice)
+	}
 }
 
 // listFilterIfs returns a map of interfaces based on the given filter.
@@ -412,6 +427,13 @@ func (d *Daemon) initMaps() error {
 		}
 	}
 
+	// Set up the list of IPCache listeners in the daemon, to be
+	// used by syncEndpointsAndHostIPs()
+	// xDS cache will be added later by calling AddListener(), but only if necessary.
+	d.ipcache.SetListeners([]ipcache.IPIdentityMappingListener{
+		datapathIpcache.NewListener(d, d, d.ipcache),
+	})
+
 	if option.Config.EnableIPMasqAgent {
 		if option.Config.EnableIPv4Masquerade {
 			if err := ipmasq.IPMasq4Map().OpenOrCreate(); err != nil {
@@ -467,6 +489,26 @@ func (d *Daemon) initMaps() error {
 	}
 
 	return nil
+}
+
+func setupIPSec() (int, uint8, error) {
+	if !option.Config.EncryptNode {
+		ipsec.DeleteIPsecEncryptRoute()
+	}
+
+	if !option.Config.EnableIPSec {
+		return 0, 0, nil
+	}
+
+	authKeySize, spi, err := ipsec.LoadIPSecKeysFile(option.Config.IPSecKeyFile)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := ipsec.SetIPSecSPI(spi); err != nil {
+		return 0, 0, err
+	}
+	node.SetIPsecKeyIdentity(spi)
+	return authKeySize, spi, nil
 }
 
 func setupVTEPMapping() error {

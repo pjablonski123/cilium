@@ -71,9 +71,7 @@ func (o *observer) Observe(val float64) {
 	}
 }
 
-// NewHistogramVec creates a new Vec[Observer] (i.e. Histogram Vec) based on the provided HistogramOpts and
-// partitioned by the given label names.
-func NewHistogramVec(opts HistogramOpts, labelNames []string) *histogramVec {
+func NewHistogramVec(opts HistogramOpts, labelNames []string) Vec[Observer] {
 	return &histogramVec{
 		ObserverVec: prometheus.NewHistogramVec(opts.toPrometheus(), labelNames),
 		metric: metric{
@@ -83,28 +81,12 @@ func NewHistogramVec(opts HistogramOpts, labelNames []string) *histogramVec {
 	}
 }
 
-// NewHistogramVec creates a new Vec[Observer] based on the provided CounterOpts and
-// partitioned by the given labels.
-// This will also initialize the labels with the provided values so that metrics with known label value
-// ranges can be pre-initialized to zero upon init.
-//
-// This should only be used when all label values are known at init, otherwise use of the
-// metric vector with uninitialized labels will result in warnings.
-//
-// Note: Disabled metrics will not have their label values initialized.
-func NewHistogramVecWithLabels(opts HistogramOpts, labels Labels) *histogramVec {
-	hv := NewHistogramVec(opts, labels.labelNames())
-	initLabels(&hv.metric, labels, hv, opts.Disabled)
-	return hv
-}
-
 type histogramVec struct {
 	prometheus.ObserverVec
 	metric
 }
 
 func (cv *histogramVec) CurryWith(labels prometheus.Labels) (Vec[Observer], error) {
-	cv.checkLabels(labels)
 	vec, err := cv.ObserverVec.CurryWith(labels)
 	if err == nil {
 		return &histogramVec{ObserverVec: vec, metric: cv.metric}, nil
@@ -152,7 +134,6 @@ func (cv *histogramVec) With(labels prometheus.Labels) Observer {
 			metric: metric{enabled: false},
 		}
 	}
-	cv.checkLabels(labels)
 
 	promObserver := cv.ObserverVec.With(labels)
 	return &observer{
@@ -167,7 +148,6 @@ func (cv *histogramVec) WithLabelValues(lvs ...string) Observer {
 			metric: metric{enabled: false},
 		}
 	}
-	cv.checkLabelValues(lvs...)
 
 	promObserver := cv.ObserverVec.WithLabelValues(lvs...)
 	return &observer{

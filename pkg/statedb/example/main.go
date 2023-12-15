@@ -24,7 +24,7 @@ var Hive = hive.New(
 	statedb.Cell,
 
 	// The backends table stores the desired state of the backends.
-	cell.Provide(NewBackendTable),
+	BackendTableCell,
 
 	// Control-plane simulation for the backends table to provide the
 	// desired state.

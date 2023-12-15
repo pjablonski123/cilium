@@ -32,7 +32,6 @@
 #include "lib/nodeport.h"
 #include "lib/clustermesh.h"
 #include "lib/wireguard.h"
-#include "lib/egress_gateway.h"
 
 #ifdef ENABLE_VTEP
 #include "lib/arp.h"
@@ -51,21 +50,14 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 	struct ipv6hdr *ip6;
 	struct endpoint_info *ep;
 	bool decrypted;
-	bool __maybe_unused is_dsr = false;
 
 	/* verifier workaround (dereference of modified ctx ptr) */
 	if (!revalidate_data_pull(ctx, &data, &data_end, &ip6))
 		return DROP_INVALID;
 #ifdef ENABLE_NODEPORT
 	if (!ctx_skip_nodeport(ctx)) {
-		ret = nodeport_lb6(ctx, ip6, *identity, ext_err, &is_dsr);
-		/* nodeport_lb6() returns with TC_ACT_REDIRECT for
-		 * traffic to L7 LB. Policy enforcement needs to take
-		 * place after L7 LB has processed the packet, so we
-		 * return to stack immediately here with
-		 * TC_ACT_REDIRECT.
-		 */
-		if (ret < 0 || ret == TC_ACT_REDIRECT)
+		ret = nodeport_lb6(ctx, ip6, *identity, ext_err);
+		if (ret < 0)
 			return ret;
 	}
 #endif
@@ -88,13 +80,9 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 	} else {
 		/* Maybe overwrite the REMOTE_NODE_ID with
 		 * KUBE_APISERVER_NODE_ID to support upgrade. After v1.12,
-		 * identity_is_remote_node() should be removed.
-		 *
-		 * A packet that has DSR info and comes from `world` may have specific identity when
-		 * a CNP that is using CIDR rules is applied.
+		 * this should be removed.
 		 */
-		if (info && (identity_is_remote_node(*identity) ||
-			     (is_dsr && identity_is_world_ipv6(*identity))))
+		if (info && identity_is_remote_node(*identity))
 			*identity = info->sec_identity;
 	}
 
@@ -132,8 +120,8 @@ not_esp:
 	/* Deliver to local (non-host) endpoint: */
 	ep = lookup_ip6_endpoint(ip6);
 	if (ep && !(ep->flags & ENDPOINT_F_HOST))
-		return ipv6_local_delivery(ctx, l3_off, *identity, MARK_MAGIC_IDENTITY,
-					   ep, METRIC_INGRESS, false, true);
+		return ipv6_local_delivery(ctx, l3_off, *identity, ep,
+					   METRIC_INGRESS, false);
 
 	/* A packet entering the node from the tunnel and not going to a local
 	 * endpoint has to be going to the local host.
@@ -243,8 +231,7 @@ static __always_inline int handle_inter_cluster_revsnat(struct __ctx_buff *ctx,
 		if (ep->flags & ENDPOINT_F_HOST)
 			return ipv4_host_delivery(ctx, ip4);
 
-		return ipv4_local_delivery(ctx, ETH_HLEN, src_sec_identity,
-					   MARK_MAGIC_IDENTITY, ip4, ep,
+		return ipv4_local_delivery(ctx, ETH_HLEN, src_sec_identity, ip4, ep,
 					   METRIC_INGRESS, false, false, true,
 					   cluster_id);
 	}
@@ -278,7 +265,6 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 	struct iphdr *ip4;
 	struct endpoint_info *ep;
 	bool decrypted;
-	bool __maybe_unused is_dsr = false;
 
 	/* verifier workaround (dereference of modified ctx ptr) */
 	if (!revalidate_data_pull(ctx, &data, &data_end, &ip4))
@@ -295,14 +281,9 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 
 #ifdef ENABLE_NODEPORT
 	if (!ctx_skip_nodeport(ctx)) {
-		int ret = nodeport_lb4(ctx, ip4, ETH_HLEN, *identity, ext_err, &is_dsr);
-		/* nodeport_lb4() returns with TC_ACT_REDIRECT for
-		 * traffic to L7 LB. Policy enforcement needs to take
-		 * place after L7 LB has processed the packet, so we
-		 * return to stack immediately here with
-		 * TC_ACT_REDIRECT.
-		 */
-		if (ret < 0 || ret == TC_ACT_REDIRECT)
+		int ret = nodeport_lb4(ctx, ip4, ETH_HLEN, *identity, ext_err);
+
+		if (ret < 0)
 			return ret;
 	}
 #endif
@@ -361,8 +342,7 @@ skip_vtep:
 		}
 #endif
 		/* See comment at equivalent code in handle_ipv6() */
-		if (info && (identity_is_remote_node(*identity) ||
-			     (is_dsr && identity_is_world_ipv4(*identity))))
+		if (info && identity_is_remote_node(*identity))
 			*identity = info->sec_identity;
 	}
 
@@ -396,29 +376,11 @@ skip_vtep:
 not_esp:
 #endif
 
-#if defined(ENABLE_EGRESS_GATEWAY_COMMON)
-	{
-		__be32 snat_addr, daddr;
-		int ret;
-
-		daddr = ip4->daddr;
-		if (egress_gw_snat_needed_hook(ip4->saddr, daddr, &snat_addr)) {
-			ret = ipv4_l3(ctx, ETH_HLEN, NULL, NULL, ip4);
-			if (unlikely(ret != CTX_ACT_OK))
-				return ret;
-
-			/* to-netdev@bpf_host handles SNAT, so no need to do it here. */
-			return egress_gw_fib_lookup_and_redirect(ctx, snat_addr,
-								 daddr, ext_err);
-		}
-	}
-#endif /* ENABLE_EGRESS_GATEWAY_COMMON */
-
 	/* Deliver to local (non-host) endpoint: */
 	ep = lookup_ip4_endpoint(ip4);
 	if (ep && !(ep->flags & ENDPOINT_F_HOST))
-		return ipv4_local_delivery(ctx, ETH_HLEN, *identity, MARK_MAGIC_IDENTITY,
-					   ip4, ep, METRIC_INGRESS, false, false, true,
+		return ipv4_local_delivery(ctx, ETH_HLEN, *identity, ip4, ep,
+					   METRIC_INGRESS, false, false, true,
 					   0);
 
 	/* A packet entering the node from the tunnel and not going to a local
@@ -709,6 +671,17 @@ int cil_to_overlay(struct __ctx_buff *ctx)
 	int ret = TC_ACT_OK;
 	__u32 cluster_id __maybe_unused = 0;
 	__s8 ext_err = 0;
+
+	/* When WireGuard strict mode is enabled, we have additional information
+	 * regarding to which CIDRs packets must encrypted. We have to check the
+	 * packets against the CIDRs before encapsulation. If the packet is not
+	 * encrypted, we drop it.
+	 */
+	#if defined(TUNNEL_MODE) && defined(ENCRYPTION_STRICT_MODE)
+	if (!strict_allow(ctx))
+		return send_drop_notify_error(ctx, 0, DROP_UNENCRYPTED_TRAFFIC,
+					      CTX_ACT_DROP, METRIC_EGRESS);
+	#endif
 
 #ifdef ENABLE_BANDWIDTH_MANAGER
 	/* In tunneling mode, we should do this as close as possible to the
