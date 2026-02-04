@@ -6,13 +6,13 @@
 package v2
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	ciliumiov2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	apisciliumiov2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	versioned "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
 	internalinterfaces "github.com/cilium/cilium/pkg/k8s/client/informers/externalversions/internalinterfaces"
-	v2 "github.com/cilium/cilium/pkg/k8s/client/listers/cilium.io/v2"
+	ciliumiov2 "github.com/cilium/cilium/pkg/k8s/client/listers/cilium.io/v2"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
@@ -23,7 +23,7 @@ import (
 // CiliumClusterwideNetworkPolicies.
 type CiliumClusterwideNetworkPolicyInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v2.CiliumClusterwideNetworkPolicyLister
+	Lister() ciliumiov2.CiliumClusterwideNetworkPolicyLister
 }
 
 type ciliumClusterwideNetworkPolicyInformer struct {
@@ -43,21 +43,33 @@ func NewCiliumClusterwideNetworkPolicyInformer(client versioned.Interface, resyn
 // one. This reduces memory footprint and number of connections to the server.
 func NewFilteredCiliumClusterwideNetworkPolicyInformer(client versioned.Interface, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
 	return cache.NewSharedIndexInformer(
-		&cache.ListWatch{
+		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
 			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CiliumV2().CiliumClusterwideNetworkPolicies().List(context.TODO(), options)
+				return client.CiliumV2().CiliumClusterwideNetworkPolicies().List(context.Background(), options)
 			},
 			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CiliumV2().CiliumClusterwideNetworkPolicies().Watch(context.TODO(), options)
+				return client.CiliumV2().CiliumClusterwideNetworkPolicies().Watch(context.Background(), options)
 			},
-		},
-		&ciliumiov2.CiliumClusterwideNetworkPolicy{},
+			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+				if tweakListOptions != nil {
+					tweakListOptions(&options)
+				}
+				return client.CiliumV2().CiliumClusterwideNetworkPolicies().List(ctx, options)
+			},
+			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+				if tweakListOptions != nil {
+					tweakListOptions(&options)
+				}
+				return client.CiliumV2().CiliumClusterwideNetworkPolicies().Watch(ctx, options)
+			},
+		}, client),
+		&apisciliumiov2.CiliumClusterwideNetworkPolicy{},
 		resyncPeriod,
 		indexers,
 	)
@@ -68,9 +80,9 @@ func (f *ciliumClusterwideNetworkPolicyInformer) defaultInformer(client versione
 }
 
 func (f *ciliumClusterwideNetworkPolicyInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&ciliumiov2.CiliumClusterwideNetworkPolicy{}, f.defaultInformer)
+	return f.factory.InformerFor(&apisciliumiov2.CiliumClusterwideNetworkPolicy{}, f.defaultInformer)
 }
 
-func (f *ciliumClusterwideNetworkPolicyInformer) Lister() v2.CiliumClusterwideNetworkPolicyLister {
-	return v2.NewCiliumClusterwideNetworkPolicyLister(f.Informer().GetIndexer())
+func (f *ciliumClusterwideNetworkPolicyInformer) Lister() ciliumiov2.CiliumClusterwideNetworkPolicyLister {
+	return ciliumiov2.NewCiliumClusterwideNetworkPolicyLister(f.Informer().GetIndexer())
 }

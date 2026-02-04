@@ -5,77 +5,74 @@ package endpoint
 
 import (
 	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"testing"
 
-	. "github.com/cilium/checkmate"
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/require"
 
-	"github.com/cilium/cilium/pkg/logging"
+	fakeTypes "github.com/cilium/cilium/pkg/datapath/fake/types"
+	"github.com/cilium/cilium/pkg/identity/identitymanager"
+	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 	testipcache "github.com/cilium/cilium/pkg/testutils/ipcache"
+	testpolicy "github.com/cilium/cilium/pkg/testutils/policy"
 )
 
-func (s *EndpointSuite) TestEndpointLogFormat(c *C) {
-	// Default log format is text
-	do := &DummyOwner{repo: policy.NewPolicyRepository(nil, nil, nil, nil)}
-	ep := NewEndpointWithState(do, do, testipcache.NewMockIPCache(), nil, testidentity.NewMockIdentityAllocator(nil), 12345, StateReady)
+func TestPolicyLog(t *testing.T) {
+	setupEndpointSuite(t)
+	logger := hivetest.Logger(t)
+	logPath := filepath.Join(option.Config.StateDir, "endpoint-policy.log")
+	f, err := os.Create(logPath)
+	require.NoError(t, err)
 
-	_, ok := ep.getLogger().Logger.Formatter.(*logrus.TextFormatter)
-	c.Assert(ok, Equals, true)
+	do := &DummyOwner{repo: policy.NewPolicyRepository(logger, nil, nil, nil, nil, testpolicy.NewPolicyMetricsNoop())}
 
-	// Log format is JSON when configured
-	logging.SetLogFormat(logging.LogFormatJSON)
-	defer func() {
-		logging.SetLogFormat(logging.LogFormatText)
-	}()
-	do = &DummyOwner{repo: policy.NewPolicyRepository(nil, nil, nil, nil)}
-	ep = NewEndpointWithState(do, do, testipcache.NewMockIPCache(), nil, testidentity.NewMockIdentityAllocator(nil), 12345, StateReady)
+	model := newTestEndpointModel(12345, StateReady)
+	ep, err := NewEndpointFromChangeModel(t.Context(), logger, nil, &MockEndpointBuildQueue{}, nil, nil, nil, nil, nil, identitymanager.NewIDManager(logger), nil, nil, do.repo, testipcache.NewMockIPCache(), nil, testidentity.NewMockIdentityAllocator(nil), ctmap.NewFakeGCRunner(), nil, model, fakeTypes.WireguardConfig{}, fakeTypes.IPsecConfig{}, f, nil, nil)
+	require.NoError(t, err)
 
-	_, ok = ep.getLogger().Logger.Formatter.(*logrus.JSONFormatter)
-	c.Assert(ok, Equals, true)
-}
-
-func (s *EndpointSuite) TestPolicyLog(c *C) {
-	do := &DummyOwner{repo: policy.NewPolicyRepository(nil, nil, nil, nil)}
-	ep := NewEndpointWithState(do, do, testipcache.NewMockIPCache(), nil, testidentity.NewMockIdentityAllocator(nil), 12345, StateReady)
+	ep.Start(uint16(model.ID))
+	t.Cleanup(ep.Stop)
 
 	// Initially nil
 	policyLogger := ep.getPolicyLogger()
-	c.Assert(policyLogger, IsNil)
+	require.Nil(t, policyLogger)
 
 	// Enable DebugPolicy option
 	ep.Options.SetValidated(option.DebugPolicy, option.OptionEnabled)
-	c.Assert(ep.Options.IsEnabled(option.DebugPolicy), Equals, true)
+	require.True(t, ep.Options.IsEnabled(option.DebugPolicy))
 	ep.UpdateLogger(nil)
 	policyLogger = ep.getPolicyLogger()
-	c.Assert(policyLogger, Not(IsNil))
+	require.NotNil(t, policyLogger)
 	defer func() {
 		// remote created log file when we are done.
-		err := os.Remove(filepath.Join(option.Config.StateDir, "endpoint-policy.log"))
-		c.Assert(err, IsNil)
+		err := os.Remove(logPath)
+		require.NoError(t, err)
 	}()
 
 	// Test logging, policyLogger must not be nil
 	policyLogger.Info("testing policy logging")
 
 	// Test logging with integrated nil check, no fields
-	ep.PolicyDebug(nil, "testing PolicyDebug")
-	ep.PolicyDebug(logrus.Fields{"testField": "Test Value"}, "PolicyDebug with fields")
+	ep.PolicyDebug("testing PolicyDebug")
+	ep.PolicyDebug("PolicyDebug with fields", slog.String("testField", "Test Value"))
 
 	// Disable option
 	ep.Options.SetValidated(option.DebugPolicy, option.OptionDisabled)
-	c.Assert(ep.Options.IsEnabled(option.DebugPolicy), Equals, false)
+	require.False(t, ep.Options.IsEnabled(option.DebugPolicy))
 	ep.UpdateLogger(nil)
 	policyLogger = ep.getPolicyLogger()
-	c.Assert(policyLogger, IsNil)
+	require.Nil(t, policyLogger)
 
 	// Verify file exists and contains the logged message
-	buf, err := os.ReadFile(filepath.Join(option.Config.StateDir, "endpoint-policy.log"))
-	c.Assert(err, IsNil)
-	c.Assert(bytes.Contains(buf, []byte("testing policy logging")), Equals, true)
-	c.Assert(bytes.Contains(buf, []byte("testing PolicyDebug")), Equals, true)
-	c.Assert(bytes.Contains(buf, []byte("Test Value")), Equals, true)
+	buf, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	require.True(t, bytes.Contains(buf, []byte("testing policy logging")))
+	require.True(t, bytes.Contains(buf, []byte("testing PolicyDebug")))
+	require.True(t, bytes.Contains(buf, []byte("Test Value")))
 }

@@ -1,6 +1,6 @@
 # Maintainers
 
-See [Governance](Documentation/community/governance/commit_access.rst) for
+See [Governance](https://github.com/cilium/community/blob/main/GOVERNANCE.md) for
 governance, commit, and vote guidelines as well as committer responsibilities.
 Everybody listed is a committer as per governance definition. See the 
 [Contributor Ladder](https://github.com/cilium/community/blob/main/CONTRIBUTOR-LADDER.md)
@@ -11,20 +11,19 @@ to learn how to level up through the project.
  * [Aditi Ghag] (Isovalent)
  * [Alexandre Perrin] (Isovalent)
  * [André Martins] (Isovalent)
- * [Beatriz Martínez] (Isovalent)
+ * [Arthur Outhenin-Chalandre] (Ledger)
  * [Bill Mulligan] (Isovalent)
- * [Bruno M. Custódio] (Isovalent)
  * [Casey Callendrello] (Isovalent)
  * [Chance Zibolski] (Isovalent)
  * [Chris Tarazi] (Isovalent)
  * [Daniel Borkmann] (Isovalent)
- * [Dan Wendlandt] (Isovalent)
- * [Deepesh Pathak]
+ * [David Bimmler] (Isovalent)
+ * [Deepesh Pathak] (Isovalent)
+ * [Dorde Lapcevic] (Google)
  * [Dylan Reimerink] (Isovalent)
- * [Gilberto Bertin] (Isovalent)
+ * [Fabio Falzoi] (Isovalent)
  * [Glib Smaga] (Isovalent)
- * [Hemanth Malla] (Datadog)
- * [Ian Vernon]
+ * [Hemanth Malla] (Microsoft)
  * [Jarno Rajahalme] (Isovalent)
  * [Joe Stringer] (Isovalent)
  * [John Fastabend] (Isovalent)
@@ -33,40 +32,48 @@ to learn how to level up through the project.
  * [Kornilios Kourtis] (Isovalent)
  * [Laurent Bernaille] (Datadog)
  * [Liz Rice] (Isovalent)
- * [Lorenz Bauer] (Isovalent)
  * [Louis DeLosSantos] (Isovalent)
  * [Maciej Kwiek] (Isovalent)
+ * [Marcel Zięba] (Isovalent)
+ * [Marco Hofstetter] (Isovalent)
+ * [Marco Iorio] (Isovalent)
  * [Martynas Pumputis] (Isovalent)
- * [Michal Rostecki] (Deepfence)
  * [Michi Mutsuzaki] (Isovalent)
- * [Natália Réka Ivánkó] (Isovalent)
  * [Nathan Sweet] (Isovalent)
  * [Nick Young] (Isovalent)
  * [Nicolas Busseneau] (Isovalent)
  * [Nirmoy Das] (AMD)
  * [Paul Chaignon] (Isovalent)
- * [Quentin Monnet] (Isovalent)
+ * [Quentin Monnet] (Hedgehog)
  * [Robin Hahling] (Isovalent)
  * [Sebastian Wicki] (Isovalent)
  * [Tam Mach] (Isovalent)
- * [Thomas Graf] (Isovalent)
  * [Timo Beckers] (Isovalent)
  * [Tobias Klauser] (Isovalent)
  * [Tom Hadlaw] (Isovalent)
  * [Vlad Ungureanu] (Palantir)
- * [Weilong Cui] (Google)
- * [Yongkun Gui] (Google)
+ * [Yutaro Hayakawa] (Isovalent)
 
 ## Cilium & Hubble Emeritus Committers
 
 We would like to acknowledge previous committers and their huge contributions to our collective success:
 
- * [Eloy Coto] (Red Hat)
- * [Ilya Dmitrichenko] (Docker)
+ * [Beatriz Martínez]
+ * [Bruno M. Custódio]
+ * [Dan Wendlandt]
+ * [Eloy Coto]
+ * [Gilberto Bertin]
+ * [Ian Vernon]
+ * [Ilya Dmitrichenko]
+ * [Lorenz Bauer]
+ * [Michal Rostecki]
+ * [Natália Réka Ivánkó]
  * [Ray Bejjani]
+ * [Thomas Graf]
  * [Tom Payne]
- * [Zang Li] (Google)
-
+ * [Weilong Cui]
+ * [Yongkun Gui]
+ * [Zang Li]
 
 Please see the AUTHORS file for the full list of contributors to the Cilium
 project.
@@ -74,6 +81,7 @@ project.
 [Aditi Ghag]: https://github.com/aditighag
 [Alexandre Perrin]: https://github.com/kaworu
 [André Martins]: https://github.com/aanm
+[Arthur Outhenin-Chalandre]: https://github.com/MrFreezeex
 [Beatriz Martínez]: https://github.com/b3a-dev
 [Bill Mulligan]: https://github.com/xmulligan
 [Bruno M. Custódio]: https://github.com/bmcustodio
@@ -82,9 +90,12 @@ project.
 [Chris Tarazi]: https://github.com/christarazi
 [Daniel Borkmann]: https://github.com/borkmann
 [Dan Wendlandt]: https://github.com/danwent
+[David Bimmler]: https://github.com/bimmlerd
 [Deepesh Pathak]: https://github.com/fristonio
+[Dorde Lapcevic]: https://github.com/dlapcevic
 [Dylan Reimerink]: https://github.com/dylandreimerink
 [Eloy Coto]: https://github.com/eloycoto
+[Fabio Falzoi]: https://github.com/pippolo84
 [Gilberto Bertin]: https://github.com/jibi
 [Glib Smaga]: https://github.com/glibsm
 [Hemanth Malla]: https://github.com/hemanthmalla
@@ -101,6 +112,9 @@ project.
 [Lorenz Bauer]: https://github.com/lmb
 [Louis DeLosSantos]: https://github.com/ldelossa
 [Maciej Kwiek]: https://github.com/nebril
+[Marcel Zięba]: https://github.com/marseel
+[Marco Hofstetter]: https://github.com/mhofstetter
+[Marco Iorio]: https://github.com/giorio94
 [Martynas Pumputis]: https://github.com/brb
 [Michal Rostecki]: https://github.com/vadorovsky
 [Michi Mutsuzaki]: https://github.com/michi-covalent
@@ -123,4 +137,5 @@ project.
 [Vlad Ungureanu]: https://github.com/ungureanuvladvictor
 [Weilong Cui]: https://github.com/Weil0ng
 [Yongkun Gui]: https://github.com/anfernee
+[Yutaro Hayakawa]: https://github.com/YutaroHayakawa
 [Zang Li]: https://github.com/lzang

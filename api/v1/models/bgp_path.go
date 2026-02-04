@@ -10,6 +10,7 @@ package models
 
 import (
 	"context"
+	stderrors "errors"
 	"strconv"
 
 	"github.com/go-openapi/errors"
@@ -70,11 +71,15 @@ func (m *BgpPath) validateFamily(formats strfmt.Registry) error {
 
 	if m.Family != nil {
 		if err := m.Family.Validate(formats); err != nil {
-			if ve, ok := err.(*errors.Validation); ok {
+			ve := new(errors.Validation)
+			if stderrors.As(err, &ve) {
 				return ve.ValidateName("family")
-			} else if ce, ok := err.(*errors.CompositeError); ok {
+			}
+			ce := new(errors.CompositeError)
+			if stderrors.As(err, &ce) {
 				return ce.ValidateName("family")
 			}
+
 			return err
 		}
 	}
@@ -89,11 +94,15 @@ func (m *BgpPath) validateNlri(formats strfmt.Registry) error {
 
 	if m.Nlri != nil {
 		if err := m.Nlri.Validate(formats); err != nil {
-			if ve, ok := err.(*errors.Validation); ok {
+			ve := new(errors.Validation)
+			if stderrors.As(err, &ve) {
 				return ve.ValidateName("nlri")
-			} else if ce, ok := err.(*errors.CompositeError); ok {
+			}
+			ce := new(errors.CompositeError)
+			if stderrors.As(err, &ce) {
 				return ce.ValidateName("nlri")
 			}
+
 			return err
 		}
 	}
@@ -113,11 +122,15 @@ func (m *BgpPath) validatePathAttributes(formats strfmt.Registry) error {
 
 		if m.PathAttributes[i] != nil {
 			if err := m.PathAttributes[i].Validate(formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
+				ve := new(errors.Validation)
+				if stderrors.As(err, &ve) {
 					return ve.ValidateName("path-attributes" + "." + strconv.Itoa(i))
-				} else if ce, ok := err.(*errors.CompositeError); ok {
+				}
+				ce := new(errors.CompositeError)
+				if stderrors.As(err, &ce) {
 					return ce.ValidateName("path-attributes" + "." + strconv.Itoa(i))
 				}
+
 				return err
 			}
 		}
@@ -152,12 +165,21 @@ func (m *BgpPath) ContextValidate(ctx context.Context, formats strfmt.Registry) 
 func (m *BgpPath) contextValidateFamily(ctx context.Context, formats strfmt.Registry) error {
 
 	if m.Family != nil {
+
+		if swag.IsZero(m.Family) { // not required
+			return nil
+		}
+
 		if err := m.Family.ContextValidate(ctx, formats); err != nil {
-			if ve, ok := err.(*errors.Validation); ok {
+			ve := new(errors.Validation)
+			if stderrors.As(err, &ve) {
 				return ve.ValidateName("family")
-			} else if ce, ok := err.(*errors.CompositeError); ok {
+			}
+			ce := new(errors.CompositeError)
+			if stderrors.As(err, &ce) {
 				return ce.ValidateName("family")
 			}
+
 			return err
 		}
 	}
@@ -168,12 +190,21 @@ func (m *BgpPath) contextValidateFamily(ctx context.Context, formats strfmt.Regi
 func (m *BgpPath) contextValidateNlri(ctx context.Context, formats strfmt.Registry) error {
 
 	if m.Nlri != nil {
+
+		if swag.IsZero(m.Nlri) { // not required
+			return nil
+		}
+
 		if err := m.Nlri.ContextValidate(ctx, formats); err != nil {
-			if ve, ok := err.(*errors.Validation); ok {
+			ve := new(errors.Validation)
+			if stderrors.As(err, &ve) {
 				return ve.ValidateName("nlri")
-			} else if ce, ok := err.(*errors.CompositeError); ok {
+			}
+			ce := new(errors.CompositeError)
+			if stderrors.As(err, &ce) {
 				return ce.ValidateName("nlri")
 			}
+
 			return err
 		}
 	}
@@ -186,12 +217,21 @@ func (m *BgpPath) contextValidatePathAttributes(ctx context.Context, formats str
 	for i := 0; i < len(m.PathAttributes); i++ {
 
 		if m.PathAttributes[i] != nil {
+
+			if swag.IsZero(m.PathAttributes[i]) { // not required
+				return nil
+			}
+
 			if err := m.PathAttributes[i].ContextValidate(ctx, formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
+				ve := new(errors.Validation)
+				if stderrors.As(err, &ve) {
 					return ve.ValidateName("path-attributes" + "." + strconv.Itoa(i))
-				} else if ce, ok := err.(*errors.CompositeError); ok {
+				}
+				ce := new(errors.CompositeError)
+				if stderrors.As(err, &ce) {
 					return ce.ValidateName("path-attributes" + "." + strconv.Itoa(i))
 				}
+
 				return err
 			}
 		}

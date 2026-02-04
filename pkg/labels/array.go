@@ -4,6 +4,8 @@
 package labels
 
 import (
+	"bytes"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -73,8 +75,8 @@ func ParseSelectLabelArrayFromArray(base []string) LabelArray {
 // Labels returns the LabelArray as Labels
 func (ls LabelArray) Labels() Labels {
 	lbls := Labels{}
-	for _, l := range ls {
-		lbls[l.Key] = l
+	for i := range ls {
+		lbls[ls[i].Key] = ls[i]
 	}
 	return lbls
 }
@@ -85,7 +87,7 @@ func (ls LabelArray) Contains(needed LabelArray) bool {
 nextLabel:
 	for i := range needed {
 		for l := range ls {
-			if needed[i].matches(&ls[l]) {
+			if ls[l].Has(&needed[i]) {
 				continue nextLabel
 			}
 		}
@@ -96,13 +98,30 @@ nextLabel:
 	return true
 }
 
+// Intersects returns true if ls contains at least one label in needed.
+//
+// This has the same matching semantics as Has, namely,
+// ["k8s:foo=bar"].Intersects(["any:foo=bar"]) == true
+// ["any:foo=bar"].Intersects(["k8s:foo=bar"]) == false
+func (ls LabelArray) Intersects(needed LabelArray) bool {
+	return slices.ContainsFunc(needed, func(lbl Label) bool {
+		return ls.IntersectsLabel(lbl)
+	})
+}
+
+func (ls LabelArray) IntersectsLabel(target Label) bool {
+	return slices.ContainsFunc(ls, func(lbl Label) bool {
+		return lbl.Has(&target)
+	})
+}
+
 // Lacks is identical to Contains but returns all missing labels
 func (ls LabelArray) Lacks(needed LabelArray) LabelArray {
 	missing := LabelArray{}
 nextLabel:
 	for i := range needed {
 		for l := range ls {
-			if needed[i].matches(&ls[l]) {
+			if ls[l].Has(&needed[l]) {
 				continue nextLabel
 			}
 		}
@@ -113,48 +132,57 @@ nextLabel:
 	return missing
 }
 
-// Has returns whether the provided key exists.
+// Has returns whether the provided key exists in the label array.
 // Implementation of the
 // github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels.Labels interface.
+//
+// The key can be of source "any", in which case the source is
+// ignored. The inverse, however, is not true.
+// ["k8s.foo=bar"].Has("any.foo") => true
+// ["any.foo=bar"].Has("k8s.foo") => false
+//
+// If the key is of source "cidr", this will also match
+// broader keys.
+// ["cidr:1.1.1.1/32"].Has("cidr.1.0.0.0/8") => true
+// ["cidr:1.0.0.0/8"].Has("cidr.1.1.1.1/32") => false
 func (ls LabelArray) Has(key string) bool {
 	// The key is submitted in the form of `source.key=value`
-	keyLabel := parseSelectLabel(key, '.')
-	if keyLabel.IsAnySource() {
-		for l := range ls {
-			if ls[l].Key == keyLabel.Key {
-				return true
-			}
-		}
-	} else {
-		for _, lsl := range ls {
-			// Note that if '=value' is part of 'key' it is ignored here
-			if lsl.Source == keyLabel.Source && lsl.Key == keyLabel.Key {
-				return true
-			}
-		}
-	}
-	return false
+	keyLabel := ParseSelectDotLabel(key)
+	_, exists := ls.LookupLabel(&keyLabel)
+	return exists
 }
 
 // Get returns the value for the provided key.
 // Implementation of the
 // github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels.Labels interface.
+//
+// The key can be of source "any", in which case the source is
+// ignored. The inverse, however, is not true.
+// ["k8s.foo=bar"].Get("any.foo") => "bar"
+// ["any.foo=bar"].Get("k8s.foo") => ""
+//
+// Note that Get is not useful for labels that have no values,
+// as then Get will return an empty string whether or not key
+// matches any label in the array.
 func (ls LabelArray) Get(key string) string {
-	keyLabel := parseSelectLabel(key, '.')
-	if keyLabel.IsAnySource() {
-		for l := range ls {
-			if ls[l].Key == keyLabel.Key {
-				return ls[l].Value
-			}
-		}
-	} else {
-		for _, lsl := range ls {
-			if lsl.Source == keyLabel.Source && lsl.Key == keyLabel.Key {
-				return lsl.Value
-			}
+	keyLabel := ParseSelectDotLabel(key)
+	value, _ := ls.LookupLabel(&keyLabel)
+	return value
+}
+
+func (ls LabelArray) Lookup(label string) (value string, exists bool) {
+	// The label is submitted in the form of `source.key=value`
+	keyLabel := ParseSelectDotLabel(label)
+	return ls.LookupLabel(&keyLabel)
+}
+
+func (ls LabelArray) LookupLabel(keyLabel *Label) (value string, exists bool) {
+	for i := range ls {
+		if ls[i].HasKey(keyLabel) {
+			return ls[i].Value, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // DeepCopy returns a deep copy of the labels.
@@ -178,17 +206,64 @@ func (ls LabelArray) GetModel() []string {
 	return res
 }
 
-func (ls LabelArray) String() string {
-	var sb strings.Builder
+func LabelArrayFromString(str string) LabelArray {
+	// each LabelArray starts with '[' and ends with ']'
+	if len(str) > 2 && str[0] == '[' && str[len(str)-1] == ']' {
+		str = str[1 : len(str)-1] // remove brackets
+		labels := strings.Split(str, " ")
+		la := make(LabelArray, 0, len(labels))
+		for j := range labels {
+			la = append(la, ParseLabel(labels[j]))
+		}
+		if len(la) > 0 {
+			return la
+		}
+	}
+	return nil
+}
+
+func (ls LabelArray) BuildString(sb *strings.Builder) {
 	sb.WriteString("[")
 	for l := range ls {
 		if l > 0 {
 			sb.WriteString(" ")
 		}
-		sb.WriteString(ls[l].String())
+		ls[l].BuildString(sb)
 	}
 	sb.WriteString("]")
+}
+
+func (ls LabelArray) String() string {
+	var sb strings.Builder
+	ls.BuildString(&sb)
 	return sb.String()
+}
+
+func (ls LabelArray) BuildBytes(buf *bytes.Buffer) {
+	buf.WriteString("[")
+	for l := range ls {
+		if l > 0 {
+			buf.WriteString(" ")
+		}
+		ls[l].BuildBytes(buf)
+	}
+	buf.WriteString("]")
+}
+
+// Map2LabelArray transforms in the form: map[key(string)]value(string) into LabelArray. The
+// source argument will overwrite the source written in the key of the given map.
+// Example:
+// l := Map2LabelArray(map[string]string{"k8s:foo": "bar"}, "cilium")
+// fmt.Printf("%+v\n", l)
+//
+//	[]Label{Label{Key:"foo", Value:"bar", Source:"cilium"}}
+func Map2LabelArray(m map[string]string, source string) LabelArray {
+	o := make(LabelArray, 0, len(m))
+	for k, v := range m {
+		l := NewLabel(k, v, source)
+		o = append(o, l)
+	}
+	return o
 }
 
 // StringMap converts LabelArray into map[string]string
@@ -198,9 +273,22 @@ func (ls LabelArray) String() string {
 // repeated in a LabelArray, as that is the key of the output. This scenario is
 // not expected.
 func (ls LabelArray) StringMap() map[string]string {
-	o := map[string]string{}
-	for _, v := range ls {
-		o[v.Source+":"+v.Key] = v.Value
+	o := make(map[string]string, len(ls))
+	for i := range ls {
+		o[ls[i].Source+":"+ls[i].Key] = ls[i].Value
+	}
+	return o
+}
+
+// StringMap converts Labels into map[string]string
+func (ls LabelArray) K8sStringMap() map[string]string {
+	o := make(map[string]string, len(ls))
+	for i := range ls {
+		if ls[i].Source == LabelSourceK8s || ls[i].Source == LabelSourceAny || ls[i].Source == LabelSourceUnspec {
+			o[ls[i].Key] = ls[i].Value
+		} else {
+			o[ls[i].Source+"."+ls[i].Key] = ls[i].Value
+		}
 	}
 	return o
 }
@@ -223,12 +311,9 @@ func (ls LabelArray) Equals(b LabelArray) bool {
 func (ls LabelArray) Less(b LabelArray) bool {
 	lsLen, bLen := len(ls), len(b)
 
-	minLen := lsLen
-	if bLen < minLen {
-		minLen = bLen
-	}
+	minLen := min(bLen, lsLen)
 
-	for i := 0; i < minLen; i++ {
+	for i := range minLen {
 		switch {
 		// Key
 		case ls[i].Key < b[i].Key:

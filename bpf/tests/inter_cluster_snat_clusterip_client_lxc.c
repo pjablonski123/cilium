@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
-
 #include <bpf/ctx/skb.h>
+#include "common.h"
 #include "pktgen.h"
 
 /*
@@ -29,9 +28,6 @@
 /* Set dummy ifindex for tunnel device */
 #define ENCAP_IFINDEX 1
 
-/* Set the LXC source address to be the address of pod one */
-#define LXC_IPV4 CLIENT_IP
-
 /* Overlapping PodCIDR is only supported for IPv4 for now */
 #define ENABLE_IPV4
 
@@ -45,14 +41,9 @@
 #define ENABLE_CLUSTER_AWARE_ADDRESSING
 
 /* Import some default values */
-#include "config_replacement.h"
 
 /* Import map definitions and some default values */
-#include "node_config.h"
-
-/* Overwrite (local) CLUSTER_ID defined in node_config.h */
-#undef CLUSTER_ID
-#define CLUSTER_ID 1
+#include <bpf/config/node.h>
 
 /* Need to undef EVENT_SOURCE here since it is defined in
  * both of common.h and bpf_lxc.c.
@@ -60,7 +51,16 @@
 #undef EVENT_SOURCE
 
 /* Include an actual datapath code */
-#include <bpf_lxc.c>
+#include "lib/bpf_lxc.h"
+
+/* Overwrite (local) cluster_id defined in clustermesh.h */
+ASSIGN_CONFIG(__u32, cluster_id, 1)
+
+/* Set the LXC source address to be the address of pod one */
+ASSIGN_CONFIG(union v4addr, endpoint_ipv4, { .be32 = CLIENT_IP})
+
+ASSIGN_CONFIG(__u32, security_label, 0x10042)
+ASSIGN_CONFIG(bool, enable_conntrack_accounting, true)
 
 #include "lib/ipcache.h"
 #include "lib/lb.h"
@@ -69,21 +69,6 @@
 /*
  * Tests
  */
-
-#define FROM_CONTAINER 0
-#define HANDLE_POLICY 1
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 2);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[FROM_CONTAINER] = &cil_from_container,
-		[HANDLE_POLICY] = &handle_policy,
-	},
-};
 
 static __always_inline int
 pktgen_from_lxc(struct __ctx_buff *ctx, bool syn, bool ack)
@@ -152,7 +137,7 @@ SETUP("tc", "01_lxc_to_overlay_syn")
 int lxc_to_overlay_syn_setup(struct __ctx_buff *ctx)
 {
 
-	lb_v4_add_service(FRONTEND_IP, FRONTEND_PORT, 1, 1);
+	lb_v4_add_service(FRONTEND_IP, FRONTEND_PORT, IPPROTO_TCP, 1, 1);
 	lb_v4_add_backend(FRONTEND_IP, FRONTEND_PORT, 1, 1,
 			  BACKEND_IP, BACKEND_PORT, IPPROTO_TCP,
 			  BACKEND_CLUSTER_ID);
@@ -160,11 +145,10 @@ int lxc_to_overlay_syn_setup(struct __ctx_buff *ctx)
 	ipcache_v4_add_entry(BACKEND_IP, BACKEND_CLUSTER_ID, BACKEND_IDENTITY,
 			     BACKEND_NODE_IP, 0);
 
-	policy_add_egress_allow_entry(BACKEND_IDENTITY, IPPROTO_TCP, BACKEND_PORT);
+	policy_add_egress_allow_l3_l4_entry(BACKEND_IDENTITY, IPPROTO_TCP,
+					    BACKEND_PORT, 0);
 
-	tail_call_static(ctx, &entry_call_map, FROM_CONTAINER);
-
-	return TEST_ERROR;
+	return pod_send_packet(ctx);
 }
 
 CHECK("tc", "01_lxc_to_overlay_syn")
@@ -177,6 +161,7 @@ int lxc_to_overlay_syn_check(struct __ctx_buff *ctx)
 	struct iphdr *l3;
 	struct ipv4_ct_tuple tuple;
 	struct ct_entry *entry;
+	__u32 cluster_id;
 
 	test_init();
 
@@ -215,11 +200,17 @@ int lxc_to_overlay_syn_check(struct __ctx_buff *ctx)
 	if (l3->daddr != BACKEND_IP)
 		test_fatal("dst IP hasn't been NATed to remote backend IP");
 
+	if (l3->check != bpf_htons(0xf968))
+		test_fatal("L3 checksum is invalid: %x", bpf_htons(l3->check));
+
 	if (l4->source != CLIENT_PORT)
 		test_fatal("src port has changed");
 
 	if (l4->dest != BACKEND_PORT)
 		test_fatal("dst port hasn't been NATed to backend port");
+
+	if (l4->check != bpf_htons(0xd64b))
+		test_fatal("L4 checksum is invalid: %x", bpf_htons(l4->check));
 
 	/* Check service conntrack state is in the default CT */
 	tuple.daddr = FRONTEND_IP;
@@ -229,7 +220,7 @@ int lxc_to_overlay_syn_check(struct __ctx_buff *ctx)
 	tuple.nexthdr = IPPROTO_TCP;
 	tuple.flags = TUPLE_F_SERVICE;
 
-	entry = map_lookup_elem(&CT_MAP_TCP4, &tuple);
+	entry = map_lookup_elem(&cilium_ct4_global, &tuple);
 	if (!entry)
 		test_fatal("couldn't find service conntrack entry");
 
@@ -245,6 +236,11 @@ int lxc_to_overlay_syn_check(struct __ctx_buff *ctx)
 	if (!entry)
 		test_fatal("couldn't find egress conntrack entry");
 
+	cluster_id = ctx_get_cluster_id_mark(ctx);
+	if (cluster_id != BACKEND_CLUSTER_ID)
+		test_fatal("ctx->mark cluster_id should be %u, got %u",
+			   BACKEND_CLUSTER_ID, cluster_id);
+
 	test_finish();
 }
 
@@ -258,17 +254,9 @@ SETUP("tc", "02_overlay_to_lxc_synack")
 int overlay_to_lxc_synack_setup(struct __ctx_buff *ctx)
 {
 	/* Emulate metadata filled by ipv4_local_delivery on bpf_overlay */
-	ctx_store_meta(ctx, CB_SRC_LABEL, BACKEND_IDENTITY);
-	ctx_store_meta(ctx, CB_IFINDEX, 1);
-	ctx_store_meta(ctx, CB_CLUSTER_ID_INGRESS, 2);
-	ctx_store_meta(ctx, CB_FROM_HOST, 0);
-	ctx_store_meta(ctx, CB_FROM_TUNNEL, 1);
+	local_delivery_fill_meta(ctx, BACKEND_IDENTITY, true, false, true, 2);
 
-	/* Jump into the entrypoint */
-	tail_call_static(ctx, &entry_call_map, HANDLE_POLICY);
-
-	/* Fail if we didn't jump */
-	return TEST_ERROR;
+	return pod_receive_packet_by_tailcall(ctx);
 }
 
 CHECK("tc", "02_overlay_to_lxc_synack")
@@ -319,11 +307,17 @@ int overlay_to_lxc_synack_check(struct __ctx_buff *ctx)
 	if (l3->daddr != CLIENT_IP)
 		test_fatal("dst IP is not client IP");
 
+	if (l3->check != bpf_htons(0x402))
+		test_fatal("L3 checksum is invalid: %x", bpf_htons(l3->check));
+
 	if (l4->source != FRONTEND_PORT)
 		test_fatal("src port is not service frontend port");
 
 	if (l4->dest != CLIENT_PORT)
 		test_fatal("dst port is not client port");
+
+	if (l4->check != bpf_htons(0x6325))
+		test_fatal("L4 checksum is invalid: %x", bpf_htons(l4->check));
 
 	/* Make sure we hit the conntrack entry */
 	tuple.daddr   = CLIENT_IP;
@@ -337,7 +331,7 @@ int overlay_to_lxc_synack_check(struct __ctx_buff *ctx)
 	if (!entry)
 		test_fatal("couldn't find egress conntrack entry");
 
-	if (entry->rx_packets != 1)
+	if (entry->packets != 2)
 		test_fatal("rx packet didn't hit ingress conntrack entry");
 
 	test_finish();
@@ -352,8 +346,7 @@ int lxc_to_overlay_ack_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "03_lxc_to_overlay_ack")
 int lxc_to_overlay_ack_setup(struct __ctx_buff *ctx)
 {
-	tail_call_static(ctx, &entry_call_map, FROM_CONTAINER);
-	return TEST_ERROR;
+	return pod_send_packet(ctx);
 }
 
 CHECK("tc", "03_lxc_to_overlay_ack")
@@ -404,11 +397,17 @@ int lxc_to_overlay_ack_check(struct __ctx_buff *ctx)
 	if (l3->daddr != BACKEND_IP)
 		test_fatal("dst IP hasn't been NATed to remote backend IP");
 
+	if (l3->check != bpf_htons(0xf968))
+		test_fatal("L3 checksum is invalid: %x", bpf_htons(l3->check));
+
 	if (l4->source != CLIENT_PORT)
 		test_fatal("src port has changed");
 
 	if (l4->dest != BACKEND_PORT)
 		test_fatal("dst port hasn't been NATed to backend port");
+
+	if (l4->check != bpf_htons(0xd63d))
+		test_fatal("L4 checksum is invalid: %x", bpf_htons(l4->check));
 
 	/* Make sure we hit the conntrack entry */
 	tuple.daddr   = CLIENT_IP;
@@ -422,7 +421,7 @@ int lxc_to_overlay_ack_check(struct __ctx_buff *ctx)
 	if (!entry)
 		test_fatal("couldn't find egress conntrack entry");
 
-	if (entry->tx_packets != 2)
+	if (entry->packets != 3)
 		test_fatal("tx packet didn't hit egress conntrack entry");
 
 	test_finish();

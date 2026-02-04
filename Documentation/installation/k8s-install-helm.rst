@@ -15,6 +15,110 @@ This guide will show you how to install Cilium using `Helm
 the :ref:`k8s_quick_install` and requires you to manually select the best
 datapath and IPAM mode for your particular environment.
 
+Helm Installation Methods
+==========================
+
+Cilium can be installed using Helm in two ways:
+
+1. **OCI Registry (Recommended)** — Install directly from OCI registries without adding a Helm repository
+2. **Traditional Repository** — Use the classic ``https://helm.cilium.io/`` repository
+
+Using OCI Registries (Recommended)
+-----------------------------------
+
+Cilium Helm charts are available directly from OCI container registries,
+eliminating the need for a separate Helm repository.
+
+.. tip::
+
+   No ``helm repo add`` required! Just reference the chart directly with
+   ``oci://quay.io/cilium/charts/cilium``.
+
+**Why OCI Registries?**
+
+Storing Helm charts in OCI registries alongside container images offers
+several advantages:
+
+* **Signed charts** — All charts are signed with cosign for verification
+* **Simpler setup** — No repository configuration needed
+* **Digest pinning** — Reference exact chart versions by SHA for reproducibility
+* **Unified tooling** — Use the same registry infrastructure for images and charts
+
+**Quick Start with OCI:**
+
+.. only:: stable
+
+   .. parsed-literal::
+
+      helm install cilium oci://quay.io/cilium/charts/cilium \
+        --version |CHART_VERSION| \
+        --namespace kube-system
+
+.. only:: not stable
+
+   .. code-block:: shell-session
+
+      helm install cilium oci://quay.io/cilium/charts/cilium \
+        --version <VERSION> \
+        --namespace kube-system
+
+   Replace ``<VERSION>`` with the desired version (e.g., ``1.15.0``).
+
+**Finding Available Versions:**
+
+OCI registries don't support ``helm search``. Here's how to find available
+versions:
+
+.. important::
+
+   **Version format matters**: Helm chart versions follow SemVer 2.0 *without*
+   the "v" prefix (e.g., ``1.15.0``). Container image tags *include* the "v"
+   (e.g., ``v1.15.0``). Use versions without the "v" for Helm commands.
+
+* **Browse the registry:** `Quay.io tags <https://quay.io/repository/cilium/cilium?tab=tags>`_
+* **Query via CLI:**
+
+  .. code-block:: shell-session
+
+     # Using crane
+     crane ls quay.io/cilium/charts/cilium
+
+* **Check releases:** https://github.com/cilium/cilium/releases
+
+**Verifying Chart Signatures:**
+
+All charts are signed with cosign. Verify before installing:
+
+.. code-block:: shell-session
+
+   cosign verify \
+     --certificate-identity-regexp='https://github.com/cilium/cilium/.*' \
+     --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+     quay.io/cilium/charts/cilium:<VERSION>
+
+See https://docs.sigstore.dev/cosign/installation/ for cosign installation.
+
+**Pinning by Digest:**
+
+For reproducible deployments, pin charts by digest instead of tag:
+
+.. code-block:: shell-session
+
+   # Get the digest
+   helm pull oci://quay.io/cilium/charts/cilium --version <VERSION>
+
+   # Install with digest
+   helm install cilium oci://quay.io/cilium/charts/cilium@sha256:<DIGEST> \
+     --namespace kube-system
+
+This guarantees the exact same chart every time.
+
+Using Traditional Helm Repository
+----------------------------------
+
+You can also install Cilium using the traditional Helm repository method.
+Both installation methods are fully supported.
+
 Install Cilium
 ==============
 
@@ -43,10 +147,8 @@ Install Cilium
 
        Deploy Cilium release via Helm:
 
-       .. parsed-literal::
-
-          helm install cilium |CHART_RELEASE| \\
-            --namespace kube-system
+       .. cilium-helm-install::
+          :namespace: kube-system
 
     .. group-tab:: GKE
 
@@ -63,17 +165,15 @@ Install Cilium
 
        Deploy Cilium release via Helm:
 
-       .. parsed-literal::
-
-          helm install cilium |CHART_RELEASE| \\
-            --namespace kube-system \\
-            --set nodeinit.enabled=true \\
-            --set nodeinit.reconfigureKubelet=true \\
-            --set nodeinit.removeCbrBridge=true \\
-            --set cni.binPath=/home/kubernetes/bin \\
-            --set gke.enabled=true \\
-            --set ipam.mode=kubernetes \\
-            --set ipv4NativeRoutingCIDR=$NATIVE_CIDR
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: nodeinit.enabled=true
+                nodeinit.reconfigureKubelet=true
+                nodeinit.removeCbrBridge=true
+                cni.binPath=/home/kubernetes/bin
+                gke.enabled=true
+                ipam.mode=kubernetes
+                ipv4NativeRoutingCIDR=$NATIVE_CIDR
 
        The NodeInit DaemonSet is required to prepare the GKE nodes as nodes are added
        to the cluster. The NodeInit DaemonSet will perform the following actions:
@@ -85,75 +185,18 @@ Install Cilium
 
        .. include:: ../installation/requirements-aks.rst
 
-       .. tabs::
+       **Install Cilium:**
 
-          .. tab:: BYOCNI
+       Deploy Cilium release via Helm:
 
-             .. include:: ../installation/requirements-aks-byocni.rst
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: aksbyocni.enabled=true
 
-             **Install Cilium:**
+       .. note::
 
-             Deploy Cilium release via Helm:
-
-             .. parsed-literal::
-
-                helm install cilium |CHART_RELEASE| \\
-                  --namespace kube-system \\
-                  --set aksbyocni.enabled=true \\
-                  --set nodeinit.enabled=true
-
-          .. tab:: Legacy Azure IPAM
-
-             .. include:: ../installation/requirements-aks-azure-ipam.rst
-
-             **Create a Service Principal:**
-
-             In order to allow cilium-operator to interact with the Azure API, a
-             Service Principal with ``Contributor`` privileges over the AKS cluster is
-             required (see :ref:`Azure IPAM required privileges <ipam_azure_required_privileges>`
-             for more details). It is recommended to create a dedicated Service
-             Principal for each Cilium installation with minimal privileges over the
-             AKS node resource group:
-
-             .. code-block:: shell-session
-
-                AZURE_SUBSCRIPTION_ID=$(az account show --query "id" --output tsv)
-                AZURE_NODE_RESOURCE_GROUP=$(az aks show --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME} --query "nodeResourceGroup" --output tsv)
-                AZURE_SERVICE_PRINCIPAL=$(az ad sp create-for-rbac --scopes /subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${AZURE_NODE_RESOURCE_GROUP} --role Contributor --output json --only-show-errors)
-                AZURE_TENANT_ID=$(echo ${AZURE_SERVICE_PRINCIPAL} | jq -r '.tenant')
-                AZURE_CLIENT_ID=$(echo ${AZURE_SERVICE_PRINCIPAL} | jq -r '.appId')
-                AZURE_CLIENT_SECRET=$(echo ${AZURE_SERVICE_PRINCIPAL} | jq -r '.password')
-
-             .. note::
-
-                The ``AZURE_NODE_RESOURCE_GROUP`` node resource group is *not* the
-                resource group of the AKS cluster. A single resource group may hold
-                multiple AKS clusters, but each AKS cluster regroups all resources in
-                an automatically managed secondary resource group. See `Why are two
-                resource groups created with AKS? <https://docs.microsoft.com/en-us/azure/aks/faq#why-are-two-resource-groups-created-with-aks>`__
-                for more details.
-
-                This ensures the Service Principal only has privileges over the AKS
-                cluster itself and not any other resources within the resource group.
-
-             **Install Cilium:**
-
-             Deploy Cilium release via Helm:
-
-             .. parsed-literal::
-
-                helm install cilium |CHART_RELEASE| \\
-                  --namespace kube-system \\
-                  --set azure.enabled=true \\
-                  --set azure.resourceGroup=$AZURE_NODE_RESOURCE_GROUP \\
-                  --set azure.subscriptionID=$AZURE_SUBSCRIPTION_ID \\
-                  --set azure.tenantID=$AZURE_TENANT_ID \\
-                  --set azure.clientID=$AZURE_CLIENT_ID \\
-                  --set azure.clientSecret=$AZURE_CLIENT_SECRET \\
-                  --set routingMode=native \\
-                  --set ipam.mode=azure \\
-                  --set enableIPv4Masquerade=false \\
-                  --set nodeinit.enabled=true
+          Installing Cilium via helm is supported only for AKS BYOCNI cluster and
+          not for Azure CNI Powered by Cilium clusters.
 
     .. group-tab:: EKS
 
@@ -172,18 +215,13 @@ Install Cilium
 
        Deploy Cilium release via Helm:
 
-       .. parsed-literal::
-
-          helm install cilium |CHART_RELEASE| \\
-            --namespace kube-system \\
-            --set eni.enabled=true \\
-            --set ipam.mode=eni \\
-            --set egressMasqueradeInterfaces=eth0 \\
-            --set routingMode=native
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: eni.enabled=true
 
        .. note::
 
-          This helm command sets ``eni.enabled=true`` and ``routingMode=native``,
+          This helm command sets ``eni.enabled=true``,
           meaning that Cilium will allocate a fully-routable AWS ENI IP address
           for each pod, similar to the behavior of the `Amazon VPC CNI plugin
           <https://docs.aws.amazon.com/eks/latest/userguide/pod-networking.html>`_.
@@ -204,21 +242,16 @@ Install Cilium
 
           To set up Cilium overlay mode, follow the steps below:
 
-            1. Excluding the lines for ``eni.enabled=true``, ``ipam.mode=eni`` and 
-               ``routingMode=native`` from the helm command will configure Cilium to use
+            1. Excluding the line ``eni.enabled=true`` from the helm command will configure Cilium to use
                overlay routing mode (which is the helm default).
             2. Flush iptables rules added by VPC CNI
 
                .. code-block:: shell-session
-               
-                  iptables -t nat -F AWS-SNAT-CHAIN-0 \\
-                     && iptables -t nat -F AWS-SNAT-CHAIN-1 \\
-                     && iptables -t nat -F AWS-CONNMARK-CHAIN-0 \\
-                     && iptables -t nat -F AWS-CONNMARK-CHAIN-1
 
-         Some Linux distributions use a different interface naming convention.
-         If you use masquerading with the option ``egressMasqueradeInterfaces=eth0``,
-         remember to replace ``eth0`` with the proper interface name.
+                  iptables -t nat -F AWS-SNAT-CHAIN-0 \
+                     && iptables -t nat -F AWS-SNAT-CHAIN-1 \
+                     && iptables -t nat -F AWS-CONNMARK-CHAIN-0 \
+                     && iptables -t nat -F AWS-CONNMARK-CHAIN-1
 
     .. group-tab:: OpenShift
 
@@ -234,26 +267,15 @@ Install Cilium
 
        .. include:: requirements-rke.rst
 
-       **Install Cilium:**
-
-       Install Cilium via ``helm install``:
-
-       .. parsed-literal::
-
-          helm install cilium |CHART_RELEASE| \\
-             --namespace $CILIUM_NAMESPACE
-
     .. group-tab:: k3s
 
        .. include:: requirements-k3s.rst
 
        **Install Cilium:**
 
-       .. parsed-literal::
-
-          helm install cilium |CHART_RELEASE| \\
-             --namespace $CILIUM_NAMESPACE \\
-             --set operator.replicas=1
+       .. cilium-helm-install::
+          :namespace: $CILIUM_NAMESPACE
+          :set: operator.replicas=1
 
     .. group-tab:: Rancher Desktop
 
@@ -266,16 +288,108 @@ Install Cilium
 
        **Install Cilium:**
 
-       .. parsed-literal::
+       .. cilium-helm-install::
+          :namespace: $CILIUM_NAMESPACE
+          :set: operator.replicas=1
+                cni.binPath=/usr/libexec/cni
 
-          helm install cilium |CHART_RELEASE| \\
-             --namespace $CILIUM_NAMESPACE \\
-             --set operator.replicas=1 \\
-             --set cni.binPath=/usr/libexec/cni
+    .. group-tab:: Talos Linux
+
+       To install Cilium on `Talos Linux <https://www.talos.dev/>`_,
+       perform the following steps.
+
+       .. include:: k8s-install-talos-linux.rst
 
     .. group-tab:: Alibaba ACK
 
         .. include:: ../installation/alibabacloud-eni.rst
+
+.. admonition:: Video
+  :class: attention
+
+  If you'd like to learn more about Cilium Helm values, check out `eCHO episode 117: A Tour of the Cilium Helm Values <https://www.youtube.com/watch?v=ni0Uw4WLHYo>`__.
+
+Upgrading
+=========
+
+Using OCI Registry
+------------------
+
+.. only:: stable
+
+   .. parsed-literal::
+
+      helm upgrade cilium oci://quay.io/cilium/charts/cilium \
+        --version |CHART_VERSION| \
+        --namespace kube-system
+
+.. only:: not stable
+
+   .. code-block:: shell-session
+
+      helm upgrade cilium oci://quay.io/cilium/charts/cilium \
+        --version <NEW_VERSION> \
+        --namespace kube-system
+
+Migrating from Traditional Repository to OCI
+---------------------------------------------
+
+If you're using the traditional repository (``https://helm.cilium.io/``),
+switching to OCI is straightforward as the charts are identical:
+
+.. only:: stable
+
+   .. parsed-literal::
+
+      helm upgrade cilium oci://quay.io/cilium/charts/cilium \
+        --version |CHART_VERSION| \
+        --namespace kube-system \
+        --reuse-values
+
+.. only:: not stable
+
+   .. code-block:: shell-session
+
+      helm upgrade cilium oci://quay.io/cilium/charts/cilium \
+        --version <VERSION> \
+        --namespace kube-system \
+        --reuse-values
+
+The ``--reuse-values`` flag preserves your existing configuration.
+
+OCI vs Traditional Repository
+==============================
+
++---------------------+---------------------------+---------------------------+
+| Feature             | OCI Registry              | Traditional Repository    |
++=====================+===========================+===========================+
+| Setup               | None                      | ``helm repo add``         |
++---------------------+---------------------------+---------------------------+
+| Chart signing       | Yes (cosign)              | No                        |
++---------------------+---------------------------+---------------------------+
+| Digest pinning      | Yes                       | Limited                   |
++---------------------+---------------------------+---------------------------+
+| Air-gapped install  | Standard OCI mirror tools | Separate chart mirror     |
++---------------------+---------------------------+---------------------------+
+
+Both methods remain fully supported.
+
+Troubleshooting
+===============
+
+"failed to authorize: failed to fetch anonymous token"
+------------------------------------------------------
+
+This usually means network or registry connectivity issues. Test access:
+
+.. code-block:: shell-session
+
+   curl https://quay.io/v2/
+
+"chart not found"
+-----------------
+
+Double-check your version number. Remember: no "v" prefix for Helm versions.
 
 .. include:: k8s-install-restart-pods.rst
 

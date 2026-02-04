@@ -5,9 +5,10 @@ package utils
 
 import (
 	"context"
-	"reflect"
+	"sort"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,7 +19,39 @@ import (
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 )
 
-func TestServiceProxyName(t *testing.T) {
+func TestServiceAndEndpoints(t *testing.T) {
+	tests := []struct {
+		name                    string
+		includeHeadlessServices bool
+		k8sServiceProxy         string
+		want                    []string
+	}{
+		{
+			name:                    "Headless services are included, proxy is foo",
+			includeHeadlessServices: true,
+			k8sServiceProxy:         "foo",
+			want:                    []string{"test-svc-1", "test-svc-4"},
+		},
+		{
+			name:                    "Headless services are included, no proxy",
+			includeHeadlessServices: true,
+			k8sServiceProxy:         "",
+			want:                    []string{"test-svc-3", "test-svc-5"},
+		},
+		{
+			name:                    "Headless services are excluded, proxy is foo",
+			includeHeadlessServices: false,
+			k8sServiceProxy:         "foo",
+			want:                    []string{"test-svc-1"},
+		},
+		{
+			name:                    "Headless services are excluded, no proxy",
+			includeHeadlessServices: false,
+			k8sServiceProxy:         "",
+			want:                    []string{"test-svc-3"},
+		},
+	}
+
 	client := fake.NewSimpleClientset()
 
 	svc1 := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
@@ -36,40 +69,67 @@ func TestServiceProxyName(t *testing.T) {
 	svc3 := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
 		Name: "test-svc-3",
 	}}
+	svc4 := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+		Name: "test-svc-4",
+		Labels: map[string]string{
+			serviceProxyNameLabel:    "foo",
+			corev1.IsHeadlessService: "",
+		},
+	}}
+	svc5 := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+		Name: "test-svc-5",
+		Labels: map[string]string{
+			corev1.IsHeadlessService: "",
+		},
+	}}
 
-	for _, svc := range []*corev1.Service{svc1, svc2, svc3} {
+	for _, svc := range []*corev1.Service{svc1, svc2, svc3, svc4, svc5} {
 		_, err := client.CoreV1().Services("test-ns").Create(context.TODO(), svc, metav1.CreateOptions{})
 		if err != nil {
 			t.Fatalf("Failed to create svc %v: %s", svc, err)
 		}
 	}
 
-	// Should return only test-svc-1 which has the service-proxy-name=foo
-	optMod, _ := GetServiceAndEndpointListOptionsModifier("foo")
-	options := metav1.ListOptions{}
-	optMod(&options)
-	svcs, err := client.CoreV1().Services("test-ns").List(context.TODO(), options)
-	if err != nil {
-		t.Fatalf("Failed to list services: %s", err)
-	}
-	if len(svcs.Items) != 1 || svcs.Items[0].ObjectMeta.Name != "test-svc-1" {
-		t.Fatalf("Expected test-svc-1, retrieved: %v", svcs)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			optMod, _ := GetServiceAndEndpointListOptionsModifier(tt.k8sServiceProxy, tt.includeHeadlessServices)
+			options := metav1.ListOptions{}
+			optMod(&options)
+			svcs, err := client.CoreV1().Services("test-ns").List(context.TODO(), options)
+			if err != nil {
+				t.Fatalf("Failed to list services: %s", err)
+			}
 
-	// Should return only test-svc-3 which doesn't have any service-proxy-name
-	optMod, _ = GetServiceAndEndpointListOptionsModifier("")
-	options = metav1.ListOptions{}
-	optMod(&options)
-	svcs, err = client.CoreV1().Services("test-ns").List(context.TODO(), options)
-	if err != nil {
-		t.Fatalf("Failed to list services: %s", err)
-	}
-	if len(svcs.Items) != 1 || svcs.Items[0].ObjectMeta.Name != "test-svc-3" {
-		t.Fatalf("Expected test-svc-3, retrieved: %v", svcs)
+			got := make([]string, len(svcs.Items))
+			for i, svc := range svcs.Items {
+				got[i] = svc.ObjectMeta.Name
+			}
+			sort.Strings(got)
+			sort.Strings(tt.want)
+
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }
 
-func TestServiceEndpointsAndSlices(t *testing.T) {
+func TestEndpointSlices(t *testing.T) {
+	tests := []struct {
+		name                    string
+		includeHeadlessServices bool
+		want                    []string
+	}{
+		{
+			name:                    "Headless services are included",
+			includeHeadlessServices: true,
+			want:                    []string{"test-svc-1", "test-svc-3"},
+		},
+		{
+			name:                    "Headless services are excluded",
+			includeHeadlessServices: false,
+			want:                    []string{"test-svc-1"},
+		},
+	}
+
 	client := fake.NewSimpleClientset()
 	meta1 := &metav1.ObjectMeta{
 		Name:   "test-svc-1",
@@ -78,10 +138,24 @@ func TestServiceEndpointsAndSlices(t *testing.T) {
 	meta2 := &metav1.ObjectMeta{
 		Name: "test-svc-2",
 		Labels: map[string]string{
+			discoveryv1.LabelManagedBy: EndpointSliceMeshControllerName,
+		},
+	}
+	meta3 := &metav1.ObjectMeta{
+		Name: "test-svc-3",
+		Labels: map[string]string{
 			corev1.IsHeadlessService: "",
 		},
 	}
-	for _, meta := range []*metav1.ObjectMeta{meta1, meta2} {
+	meta4 := &metav1.ObjectMeta{
+		Name: "test-svc-4",
+		Labels: map[string]string{
+			corev1.IsHeadlessService:   "",
+			discoveryv1.LabelManagedBy: EndpointSliceMeshControllerName,
+		},
+	}
+
+	for _, meta := range []*metav1.ObjectMeta{meta1, meta2, meta3, meta4} {
 		ep := &corev1.Endpoints{ObjectMeta: *meta}
 		_, err := client.CoreV1().Endpoints("test-ns").Create(context.TODO(), ep, metav1.CreateOptions{})
 		if err != nil {
@@ -94,27 +168,25 @@ func TestServiceEndpointsAndSlices(t *testing.T) {
 		}
 	}
 
-	// Should return only test-svc-1, since test-svc-2 is headless
-	optMod, _ := GetServiceAndEndpointListOptionsModifier("")
-	options := metav1.ListOptions{}
-	optMod(&options)
-	eps, err := client.CoreV1().Endpoints("test-ns").List(context.TODO(), options)
-	if err != nil {
-		t.Fatalf("Failed to list services: %s", err)
-	}
-	if len(eps.Items) != 1 || eps.Items[0].ObjectMeta.Name != "test-svc-1" {
-		t.Fatalf("Expected test-svc-1, retrieved: %v", eps)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			optMod, _ := GetEndpointSliceListOptionsModifier(tt.includeHeadlessServices)
+			options := metav1.ListOptions{}
+			optMod(&options)
+			epSlices, err := client.DiscoveryV1().EndpointSlices("test-ns").List(context.TODO(), options)
+			if err != nil {
+				t.Fatalf("Failed to list services: %s", err)
+			}
 
-	optMod, _ = GetEndpointSliceListOptionsModifier()
-	options = metav1.ListOptions{}
-	optMod(&options)
-	epSlices, err := client.DiscoveryV1().EndpointSlices("test-ns").List(context.TODO(), options)
-	if err != nil {
-		t.Fatalf("Failed to list services: %s", err)
-	}
-	if len(epSlices.Items) != 1 || epSlices.Items[0].ObjectMeta.Name != "test-svc-1" {
-		t.Fatalf("Expected test-svc-1, retrieved: %v", epSlices)
+			got := make([]string, len(epSlices.Items))
+			for i, epSlice := range epSlices.Items {
+				got[i] = epSlice.ObjectMeta.Name
+			}
+			sort.Strings(got)
+			sort.Strings(tt.want)
+
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }
 
@@ -179,6 +251,24 @@ func TestValidIPs(t *testing.T) {
 			want: []string{"10.0.0.1", "127.0.0.2", "127.0.0.3"},
 		},
 		{
+			name: "multiple pod ip sorted",
+			args: slim_corev1.PodStatus{
+				HostIP: "127.0.0.1",
+				PodIPs: []slim_corev1.PodIP{
+					{
+						IP: "10.0.0.1",
+					},
+					{
+						IP: "127.0.0.3",
+					},
+					{
+						IP: "127.0.0.2",
+					},
+				},
+			},
+			want: []string{"10.0.0.1", "127.0.0.2", "127.0.0.3"},
+		},
+		{
 			name: "have empty pod ip",
 			args: slim_corev1.PodStatus{
 				HostIP: "127.0.0.1",
@@ -197,9 +287,8 @@ func TestValidIPs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ValidIPs(tt.args); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ValidIPs() = %v, want %v", got, tt.want)
-			}
+			got := ValidIPs(tt.args)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -230,9 +319,8 @@ func TestIsPodRunning(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsPodRunning(tt.args); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("TestIsPodRunning() = %v, want %v", got, tt.want)
-			}
+			got := IsPodRunning(tt.args)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -319,11 +407,23 @@ func TestGetLatestPodReadiness(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := GetLatestPodReadiness(tt.args); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("GetLatestPodReadiness() = %v, want %v", got, tt.want)
-			}
+			got := GetLatestPodReadiness(tt.args)
+			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+type FakeNamespace struct {
+	Name   string
+	Labels map[string]string
+}
+
+func (fn *FakeNamespace) GetName() string {
+	return fn.Name
+}
+
+func (fn *FakeNamespace) GetLabels() map[string]string {
+	return fn.Labels
 }
 
 func TestSanitizePodLabels(t *testing.T) {
@@ -341,19 +441,20 @@ func TestSanitizePodLabels(t *testing.T) {
 	trueClusterName := "true-cluster-name"
 	trueNamespaceLabelValue := "true-value-for-key"
 
-	namespace := &slim_corev1.Namespace{
-		ObjectMeta: slim_metav1.ObjectMeta{Name: trueNamespace,
-			Labels: map[string]string{
-				namespaceLabelKey: trueNamespaceLabelValue,
-			}}}
-	labels := SanitizePodLabels(testedLabels, namespace, trueSA, trueClusterName)
+	fakeNs := &FakeNamespace{
+		Name: trueNamespace,
+		Labels: map[string]string{
+			namespaceLabelKey: trueNamespaceLabelValue,
+		},
+	}
+	labels := SanitizePodLabels(testedLabels, fakeNs, trueSA, trueClusterName)
 
 	ns, ok := labels[k8sconst.PodNamespaceLabel]
 	if !ok {
 		t.Errorf("namespace label not found")
 	}
 	if ns != trueNamespace {
-		t.Errorf("namespace label not set to %s, set to %s instead", trueNamespace, namespace)
+		t.Errorf("namespace label not set to %s, set to %s instead", trueNamespace, fakeNs)
 	}
 
 	sa, ok := labels[k8sconst.PolicyLabelServiceAccount]
@@ -380,9 +481,110 @@ func TestSanitizePodLabels(t *testing.T) {
 		t.Errorf("namespace meta label not set to %s, set to %s instead", trueNamespaceLabelValue, namespaceMetaLabel)
 	}
 
-	labels = SanitizePodLabels(testedLabels, namespace, "", trueClusterName)
+	labels = SanitizePodLabels(testedLabels, fakeNs, "", trueClusterName)
 	sa, ok = labels[k8sconst.PolicyLabelServiceAccount]
 	if ok {
 		t.Errorf("Expected service account label to be deleted, got %s instead", sa)
+	}
+}
+
+func TestStripPodLabels(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   map[string]string
+	}{
+		{
+			name: "no stripped labels",
+			labels: map[string]string{
+				"app": "foo",
+			},
+			want: map[string]string{
+				"app": "foo",
+			},
+		},
+		{
+			name: "Cilium owned label",
+			labels: map[string]string{
+				"app":                            "foo",
+				"io.cilium.k8s.policy.namespace": "kube-system",
+				"io.cilium.k8s.something":        "cilium internal",
+				"io.cilium.k8s.namespace.labels.foo.bar/baz": "foobar",
+			},
+			want: map[string]string{
+				"app": "foo",
+			},
+		},
+		{
+			name: "K8s namespace label",
+			labels: map[string]string{
+				"app":                         "foo",
+				"io.kubernetes.pod.namespace": "default",
+			},
+			want: map[string]string{
+				"app": "foo",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripPodSpecialLabels(tt.labels)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func Test_filterPodLabels(t *testing.T) {
+	expectedLabels := map[string]string{
+		"app":                         "test",
+		"io.kubernetes.pod.namespace": "default",
+	}
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   map[string]string
+	}{
+		{
+			name: "normal scenario",
+			labels: map[string]string{
+				"app":                         "test",
+				"io.kubernetes.pod.namespace": "default",
+			},
+			want: expectedLabels,
+		},
+		{
+			name: "having cilium owned namespace labels",
+			labels: map[string]string{
+				"app":                         "test",
+				"io.kubernetes.pod.namespace": "default",
+				"io.cilium.k8s.namespace.labels.foo.bar/baz":                 "malicious-pod-level-override",
+				"io.cilium.k8s.namespace.labels.kubernetes.io/metadata.name": "kube-system",
+			},
+			want: expectedLabels,
+		},
+		{
+			name: "having cilium owned policy labels",
+			labels: map[string]string{
+				"app":                                 "test",
+				"io.kubernetes.pod.namespace":         "default",
+				"io.cilium.k8s.policy.name":           "admin",
+				"io.cilium.k8s.policy.cluster":        "admin-cluster",
+				"io.cilium.k8s.policy.derived-from":   "admin",
+				"io.cilium.k8s.policy.namespace":      "kube-system",
+				"io.cilium.k8s.policy.serviceaccount": "admin-serviceaccount",
+				"io.cilium.k8s.policy.uuid":           "6eadee3e-0121-11ed-b58d-fc3497a92ef6",
+			},
+			want: map[string]string{
+				"app":                         "test",
+				"io.kubernetes.pod.namespace": "default",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RemoveCiliumLabels(tt.labels)
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }

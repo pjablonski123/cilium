@@ -4,8 +4,10 @@
 package k8sTest
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"strconv"
 
 	. "github.com/onsi/gomega"
 
@@ -26,8 +28,8 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sAgentFQDNTest", func() {
 		appPods map[string]string
 
 		// The IPs are updated in BeforeAll
-		worldTarget          = "vagrant-cache.ci.cilium.io"
-		worldTargetIP        = "147.75.38.95"
+		worldTarget          = "nginx-ci.cilium.rocks"
+		worldTargetIP        = "3.227.177.40"
 		worldInvalidTarget   = "cilium.io"
 		worldInvalidTargetIP = "104.198.14.52"
 	)
@@ -38,7 +40,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sAgentFQDNTest", func() {
 		err := helpers.WithTimeout(func() bool {
 			addrs, err2 := net.LookupHost(worldTarget)
 			if err2 != nil {
-				lookupErr = fmt.Errorf("error looking up target domain: %s", err2)
+				lookupErr = fmt.Errorf("error looking up target domain: %w", err2)
 				return false
 			}
 			worldTargetIP = addrs[0]
@@ -50,7 +52,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sAgentFQDNTest", func() {
 		err = helpers.WithTimeout(func() bool {
 			addrs, err2 := net.LookupHost(worldInvalidTarget)
 			if err2 != nil {
-				lookupErr = fmt.Errorf("error looking up target domain: %s", err2)
+				lookupErr = fmt.Errorf("error looking up target domain: %w", err2)
 				return false
 			}
 			worldInvalidTargetIP = addrs[0]
@@ -62,7 +64,10 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sAgentFQDNTest", func() {
 		demoManifest = helpers.ManifestGet(kubectl.BasePath(), "demo.yaml")
 
 		ciliumFilename = helpers.TimestampFilename("cilium.yaml")
-		DeployCiliumAndDNS(kubectl, ciliumFilename)
+		DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, map[string]string{
+			"dnsProxy.idleConnectionGracePeriod": "5m",  // do not GC connections while we are restarting
+			"dnsProxy.minTtl":                    "300", // force long TTLs for names
+		})
 
 		By("Applying demo manifest")
 		res := kubectl.ApplyDefault(demoManifest)
@@ -92,6 +97,10 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sAgentFQDNTest", func() {
 
 	AfterEach(func() {
 		_ = kubectl.Exec(fmt.Sprintf("%s delete --all cnp", helpers.KubectlCmd))
+	})
+
+	JustAfterEach(func() {
+		kubectl.CollectFeatures()
 	})
 
 	It("Restart Cilium validate that FQDN is still working", func() {
@@ -159,6 +168,28 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sAgentFQDNTest", func() {
 		Expect(err).To(BeNil(), "Cannot install fqdn proxy policy")
 
 		connectivityTest()
+
+		// Collect numeric identity of worldTargetIP and the worldTarget selector
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		cmdTargetIdentity := fmt.Sprintf(`cilium-dbg ip list -o json | jq -r '.[] | select(.cidr == "%s/32") | .identity'`, worldTargetIP)
+		worldTargetIdentityBefore, err := kubectl.CiliumExecContext(ctx, ciliumPodK8s1, cmdTargetIdentity).IntOutput()
+		Expect(err).To(BeNil(), "Identity of IP %s for ToFQDN selector %s not found in IPCache", worldTargetIP, worldTarget)
+		Expect(worldTargetIdentityBefore).NotTo(BeZero())
+
+		cmdTargetSelector := fmt.Sprintf(`cilium-dbg policy selectors list -o json | jq '.[] | select(.selector | test("%s")) | .identities[] | .'`, worldTarget)
+		var worldTargetsBefore []int
+		res := kubectl.CiliumExecContext(ctx, ciliumPodK8s1, cmdTargetSelector)
+		Expect(res.GetError()).To(BeNil())
+		for _, line := range res.GetStdOut().ByLines() {
+			i, err := strconv.Atoi(line)
+			Expect(err).NotTo(HaveOccurred())
+			worldTargetsBefore = append(worldTargetsBefore, i)
+		}
+		Expect(worldTargetsBefore).NotTo(BeEmpty())
+
+		Expect(worldTargetIdentityBefore).To(BeElementOf(worldTargetsBefore), "Identity selected by ToFQDN selector %s does not match identity of IP %s", worldTarget, worldTargetIP)
+
 		By("restarting cilium pods")
 
 		// kill pid 1 in each cilium pod
@@ -174,7 +205,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sAgentFQDNTest", func() {
 		<-run // waiting for first run to finish
 
 		By("Testing connectivity when cilium is restoring using IPS without DNS")
-		res := kubectl.ExecPodCmd(
+		res = kubectl.ExecPodCmd(
 			helpers.DefaultNamespace, appPods[helpers.App2],
 			helpers.CurlFail(worldTargetIP))
 		res.ExpectSuccess("%q cannot curl to %q during restart", helpers.App2, worldTargetIP)
@@ -229,6 +260,24 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sAgentFQDNTest", func() {
 		err = kubectl.CiliumEndpointWaitReady()
 		Expect(err).To(BeNil(), "Endpoints are not ready after Cilium restarts")
 
+		// Collect numeric identity of worldTargetIP and the worldTarget selector after restart
+		worldTargetIdentityAfter, err := kubectl.CiliumExecContext(ctx, ciliumPodK8s1, cmdTargetIdentity).IntOutput()
+		Expect(err).To(BeNil(), "Identity of IP %s for ToFQDN selector %s not found in IPCache after restart", worldTargetIP, worldTarget)
+		Expect(worldTargetIdentityAfter).NotTo(BeZero())
+
+		var worldTargetsAfter []int
+		res = kubectl.CiliumExecContext(ctx, ciliumPodK8s1, cmdTargetSelector)
+		Expect(res.GetError()).To(BeNil())
+		for _, line := range res.GetStdOut().ByLines() {
+			i, err := strconv.Atoi(line)
+			Expect(err).NotTo(HaveOccurred())
+			worldTargetsAfter = append(worldTargetsAfter, i)
+		}
+		Expect(worldTargetsAfter).NotTo(BeEmpty())
+
+		Expect(worldTargetIdentityAfter).To(BeElementOf(worldTargetsAfter), "Identity selected by ToFQDN selector %s does not match identity of IP %s after restart", worldTarget, worldTargetIP)
+		Expect(worldTargetIdentityAfter).To(Equal(worldTargetIdentityBefore), "Identity IP %s changed after restart", worldTargetIP)
+
 		By("Testing connectivity when cilium is *restored* using IPS without DNS")
 		res = kubectl.ExecPodCmd(
 			helpers.DefaultNamespace, appPods[helpers.App2],
@@ -244,7 +293,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sAgentFQDNTest", func() {
 		connectivityTest()
 	})
 
-	SkipItIf(helpers.RunsOnAKS, "Validate that multiple specs are working correctly", func() {
+	It("Validate that multiple specs are working correctly", func() {
 		// To make sure that UUID in multiple specs are plumbed correctly to
 		// Cilium Policy
 		fqdnPolicy := helpers.ManifestGet(kubectl.BasePath(), "fqdn-proxy-multiple-specs.yaml")
@@ -280,7 +329,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sAgentFQDNTest", func() {
 		res.ExpectFail("Can connect to a valid target when it should NOT work")
 	})
 
-	SkipItIf(helpers.RunsOnAKS, "Validate that FQDN policy continues to work after being updated", func() {
+	It("Validate that FQDN policy continues to work after being updated", func() {
 		// To make sure that UUID in multiple specs are plumbed correctly to
 		// Cilium Policy
 		fqdnPolicy := helpers.ManifestGet(kubectl.BasePath(), "fqdn-proxy-multiple-specs.yaml")

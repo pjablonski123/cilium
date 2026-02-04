@@ -5,13 +5,34 @@
  * Data metrics collection functions
  *
  */
-#ifndef __LIB_METRICS__
-#define __LIB_METRICS__
+#pragma once
 
 #include "common.h"
 #include "utils.h"
-#include "maps.h"
 #include "dbg.h"
+
+struct metrics_key {
+	__u8      reason;	/* 0: forwarded, >0 dropped */
+	__u8      dir:2,	/* 1: ingress 2: egress */
+		  pad:6;
+	__u16	  line;		/* __MAGIC_LINE__ */
+	__u8	  file;		/* __MAGIC_FILE__, needs to fit __id_for_file */
+	__u8	  reserved[3];	/* reserved for future extension */
+};
+
+struct metrics_value {
+	__u64	count;
+	__u64	bytes;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+	__type(key, struct metrics_key);
+	__type(value, struct metrics_value);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, METRICS_MAP_SIZE);
+	__uint(map_flags, CONDITIONAL_PREALLOC);
+} cilium_metrics __section_maps_btf;
 
 /**
  * update_metrics
@@ -21,24 +42,27 @@
  *		is the drop error code.
  * Update the metrics map.
  */
-static __always_inline void update_metrics(__u64 bytes, __u8 direction,
-					   __u8 reason)
+#define update_metrics(bytes, direction, reason) \
+		_update_metrics(bytes, direction, reason, __MAGIC_LINE__, __MAGIC_FILE__)
+static __always_inline void _update_metrics(__u64 bytes, __u8 direction,
+					    __u8 reason, __u16 line, __u8 file)
 {
 	struct metrics_value *entry, new_entry = {};
 	struct metrics_key key = {};
 
 	key.reason = reason;
 	key.dir    = direction;
+	key.line   = line;
+	key.file   = file;
 
-
-	entry = map_lookup_elem(&METRICS_MAP, &key);
+	entry = map_lookup_elem(&cilium_metrics, &key);
 	if (entry) {
 		entry->count += 1;
 		entry->bytes += bytes;
 	} else {
 		new_entry.count = 1;
 		new_entry.bytes = bytes;
-		map_update_elem(&METRICS_MAP, &key, &new_entry, 0);
+		map_update_elem(&cilium_metrics, &key, &new_entry, 0);
 	}
 }
 
@@ -60,5 +84,3 @@ static __always_inline enum metric_dir ct_to_metrics_dir(enum ct_dir ct_dir)
 		return 0;
 	}
 }
-
-#endif /* __LIB_METRICS__ */

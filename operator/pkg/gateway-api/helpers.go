@@ -5,6 +5,8 @@ package gateway_api
 
 import (
 	"context"
+	"log/slog"
+	"maps"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -13,16 +15,15 @@ import (
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	"github.com/cilium/cilium/operator/pkg/model"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 const (
-	kindGateway   = "Gateway"
 	kindHTTPRoute = "HTTPRoute"
 	kindTLSRoute  = "TLSRoute"
+	kindGRPCRoute = "GRPCRoute"
 	kindUDPRoute  = "UDPRoute"
 	kindTCPRoute  = "TCPRoute"
-	kindService   = "Service"
-	kindSecret    = "Secret"
 )
 
 func GatewayAddressTypePtr(addr gatewayv1.AddressType) *gatewayv1.AddressType {
@@ -52,8 +53,9 @@ func groupDerefOr(group *gatewayv1.Group, defaultGroup string) string {
 }
 
 // isAllowed returns true if the provided Route is allowed to attach to given gateway
-func isAllowed(ctx context.Context, c client.Client, gw *gatewayv1.Gateway, route metav1.Object) bool {
+func isAllowed(ctx context.Context, c client.Client, gw *gatewayv1.Gateway, route metav1.Object, logger *slog.Logger) bool {
 	for _, listener := range gw.Spec.Listeners {
+
 		// all routes in the same namespace are allowed for this listener
 		if listener.AllowedRoutes == nil || listener.AllowedRoutes.Namespaces == nil {
 			return route.GetNamespace() == gw.GetNamespace()
@@ -76,7 +78,7 @@ func isAllowed(ctx context.Context, c client.Client, gw *gatewayv1.Gateway, rout
 			nsList := &corev1.NamespaceList{}
 			selector, _ := metav1.LabelSelectorAsSelector(listener.AllowedRoutes.Namespaces.Selector)
 			if err := c.List(ctx, nsList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
-				log.WithError(err).Error("Unable to list namespaces")
+				logger.ErrorContext(ctx, "Unable to list namespaces", logfields.Error, err)
 				return false
 			}
 
@@ -84,6 +86,43 @@ func isAllowed(ctx context.Context, c client.Client, gw *gatewayv1.Gateway, rout
 				if ns.Name == route.GetNamespace() {
 					return true
 				}
+			}
+		}
+	}
+	return false
+}
+
+// listenerisAllowed is a single listener check to see if a route and listerner are valid
+func listenerisAllowed(ctx context.Context, c client.Client, gw *gatewayv1.Gateway, listener *gatewayv1.Listener, route metav1.Object, logger *slog.Logger) bool {
+	// all routes in the same namespace are allowed for this listener
+	if listener.AllowedRoutes == nil || listener.AllowedRoutes.Namespaces == nil {
+		return route.GetNamespace() == gw.GetNamespace()
+	}
+
+	// check if route is kind-allowed
+	if !isKindAllowed(*listener, route) {
+		return false
+	}
+	// check if route is namespace-allowed
+	switch *listener.AllowedRoutes.Namespaces.From {
+	case gatewayv1.NamespacesFromAll:
+		return true
+	case gatewayv1.NamespacesFromSame:
+		if route.GetNamespace() == gw.GetNamespace() {
+			return true
+		}
+		return false
+	case gatewayv1.NamespacesFromSelector:
+		nsList := &corev1.NamespaceList{}
+		selector, _ := metav1.LabelSelectorAsSelector(listener.AllowedRoutes.Namespaces.Selector)
+		if err := c.List(ctx, nsList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
+			logger.ErrorContext(ctx, "Unable to list namespaces", logfields.Error, err)
+			return false
+		}
+
+		for _, ns := range nsList.Items {
+			if ns.Name == route.GetNamespace() {
+				return true
 			}
 		}
 	}
@@ -104,22 +143,25 @@ func isKindAllowed(listener gatewayv1.Listener, route metav1.Object) bool {
 		} else if (kind.Group == nil || string(*kind.Group) == gatewayv1alpha2.GroupName) &&
 			kind.Kind == kindTLSRoute && routeKind == kindTLSRoute {
 			return true
+		} else if (kind.Group == nil || string(*kind.Group) == gatewayv1.GroupName) &&
+			kind.Kind == kindGRPCRoute && routeKind == kindGRPCRoute {
+			return true
 		}
 	}
 	return false
 }
 
-func computeHosts[T ~string](gw *gatewayv1.Gateway, hostnames []T) []string {
+func computeHosts[T ~string](gw *gatewayv1.Gateway, hostnames []T, excludeHostNames []T) []string {
 	hosts := make([]string, 0, len(hostnames))
 	for _, listener := range gw.Spec.Listeners {
-		hosts = append(hosts, computeHostsForListener(&listener, hostnames)...)
+		hosts = append(hosts, computeHostsForListener(&listener, hostnames, excludeHostNames)...)
 	}
 
 	return hosts
 }
 
-func computeHostsForListener[T ~string](listener *gatewayv1.Listener, hostnames []T) []string {
-	return model.ComputeHosts(toStringSlice(hostnames), (*string)(listener.Hostname))
+func computeHostsForListener[T ~string](listener *gatewayv1.Listener, hostnames []T, excludeHostNames []T) []string {
+	return model.ComputeHosts(toStringSlice(hostnames), (*string)(listener.Hostname), toStringSlice(excludeHostNames))
 }
 
 func toStringSlice[T ~string](s []T) []string {
@@ -130,22 +172,45 @@ func toStringSlice[T ~string](s []T) []string {
 	return res
 }
 
-func getSupportedGroupKind(protocol gatewayv1.ProtocolType) (*gatewayv1.Group, gatewayv1.Kind) {
+func getSupportedRouteKinds(protocol gatewayv1.ProtocolType) []gatewayv1.RouteGroupKind {
 	switch protocol {
+	case gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType:
+		return []gatewayv1.RouteGroupKind{
+			{
+				Group: GroupPtr(gatewayv1.GroupName),
+				Kind:  kindHTTPRoute,
+			},
+			{
+				Group: GroupPtr(gatewayv1.GroupName),
+				Kind:  kindGRPCRoute,
+			},
+		}
 	case gatewayv1.TLSProtocolType:
-		return GroupPtr(gatewayv1alpha2.GroupName), kindTLSRoute
-	case gatewayv1.HTTPSProtocolType:
-		return GroupPtr(gatewayv1.GroupName), kindHTTPRoute
-	case gatewayv1.HTTPProtocolType:
-		return GroupPtr(gatewayv1.GroupName), kindHTTPRoute
+		return []gatewayv1.RouteGroupKind{
+			{
+				Group: GroupPtr(gatewayv1alpha2.GroupName),
+				Kind:  kindTLSRoute,
+			},
+		}
 	case gatewayv1.TCPProtocolType:
-		return GroupPtr(gatewayv1alpha2.GroupName), kindTCPRoute
+		return []gatewayv1.RouteGroupKind{
+			{
+				Group: GroupPtr(gatewayv1alpha2.GroupName),
+				Kind:  kindTCPRoute,
+			},
+		}
 	case gatewayv1.UDPProtocolType:
-		return GroupPtr(gatewayv1alpha2.GroupName), kindUDPRoute
+		return []gatewayv1.RouteGroupKind{
+			{
+				Group: GroupPtr(gatewayv1alpha2.GroupName),
+				Kind:  kindUDPRoute,
+			},
+		}
 	default:
-		return GroupPtr("Unknown"), "Unknown"
+		return nil
 	}
 }
+
 func getGatewayKindForObject(obj metav1.Object) gatewayv1.Kind {
 	switch obj.(type) {
 	case *gatewayv1.HTTPRoute:
@@ -165,9 +230,7 @@ func mergeMap(left, right map[string]string) map[string]string {
 	if left == nil {
 		return right
 	} else {
-		for key, value := range right {
-			left[key] = value
-		}
+		maps.Copy(left, right)
 	}
 	return left
 }

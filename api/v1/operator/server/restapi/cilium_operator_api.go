@@ -22,6 +22,7 @@ import (
 	"github.com/go-openapi/strfmt"
 	"github.com/go-openapi/swag"
 
+	"github.com/cilium/cilium/api/v1/operator/server/restapi/cluster"
 	"github.com/cilium/cilium/api/v1/operator/server/restapi/metrics"
 	"github.com/cilium/cilium/api/v1/operator/server/restapi/operator"
 )
@@ -49,10 +50,21 @@ func NewCiliumOperatorAPI(spec *loads.Document) *CiliumOperatorAPI {
 		JSONProducer: runtime.JSONProducer(),
 		TxtProducer:  runtime.TextProducer(),
 
+		ClusterGetClusterHandler: cluster.GetClusterHandlerFunc(func(params cluster.GetClusterParams) middleware.Responder {
+			_ = params
+
+			return middleware.NotImplemented("operation cluster.GetCluster has not yet been implemented")
+		}),
+
 		OperatorGetHealthzHandler: operator.GetHealthzHandlerFunc(func(params operator.GetHealthzParams) middleware.Responder {
+			_ = params
+
 			return middleware.NotImplemented("operation operator.GetHealthz has not yet been implemented")
 		}),
+
 		MetricsGetMetricsHandler: metrics.GetMetricsHandlerFunc(func(params metrics.GetMetricsParams) middleware.Responder {
+			_ = params
+
 			return middleware.NotImplemented("operation metrics.GetMetrics has not yet been implemented")
 		}),
 	}
@@ -94,6 +106,8 @@ type CiliumOperatorAPI struct {
 	//   - text/plain
 	TxtProducer runtime.Producer
 
+	// ClusterGetClusterHandler sets the operation handler for the get cluster operation
+	ClusterGetClusterHandler cluster.GetClusterHandler
 	// OperatorGetHealthzHandler sets the operation handler for the get healthz operation
 	OperatorGetHealthzHandler operator.GetHealthzHandler
 	// MetricsGetMetricsHandler sets the operation handler for the get metrics operation
@@ -115,7 +129,7 @@ type CiliumOperatorAPI struct {
 	CommandLineOptionsGroups []swag.CommandLineOptionsGroup
 
 	// User defined logger function.
-	Logger func(string, ...interface{})
+	Logger func(string, ...any)
 }
 
 // UseRedoc for documentation at /docs
@@ -178,6 +192,9 @@ func (o *CiliumOperatorAPI) Validate() error {
 		unregistered = append(unregistered, "TxtProducer")
 	}
 
+	if o.ClusterGetClusterHandler == nil {
+		unregistered = append(unregistered, "cluster.GetClusterHandler")
+	}
 	if o.OperatorGetHealthzHandler == nil {
 		unregistered = append(unregistered, "operator.GetHealthzHandler")
 	}
@@ -208,12 +225,12 @@ func (o *CiliumOperatorAPI) Authorizer() runtime.Authorizer {
 }
 
 // ConsumersFor gets the consumers for the specified media types.
+//
 // MIME type parameters are ignored here.
 func (o *CiliumOperatorAPI) ConsumersFor(mediaTypes []string) map[string]runtime.Consumer {
 	result := make(map[string]runtime.Consumer, len(mediaTypes))
 	for _, mt := range mediaTypes {
-		switch mt {
-		case "application/json":
+		if mt == "application/json" {
 			result["application/json"] = o.JSONConsumer
 		}
 
@@ -221,10 +238,12 @@ func (o *CiliumOperatorAPI) ConsumersFor(mediaTypes []string) map[string]runtime
 			result[mt] = c
 		}
 	}
+
 	return result
 }
 
 // ProducersFor gets the producers for the specified media types.
+//
 // MIME type parameters are ignored here.
 func (o *CiliumOperatorAPI) ProducersFor(mediaTypes []string) map[string]runtime.Producer {
 	result := make(map[string]runtime.Producer, len(mediaTypes))
@@ -240,6 +259,7 @@ func (o *CiliumOperatorAPI) ProducersFor(mediaTypes []string) map[string]runtime
 			result[mt] = p
 		}
 	}
+
 	return result
 }
 
@@ -274,6 +294,10 @@ func (o *CiliumOperatorAPI) initHandlerCache() {
 		o.handlers = make(map[string]map[string]http.Handler)
 	}
 
+	if o.handlers["GET"] == nil {
+		o.handlers["GET"] = make(map[string]http.Handler)
+	}
+	o.handlers["GET"]["/cluster"] = cluster.NewGetCluster(o.context, o.ClusterGetClusterHandler)
 	if o.handlers["GET"] == nil {
 		o.handlers["GET"] = make(map[string]http.Handler)
 	}
@@ -323,6 +347,6 @@ func (o *CiliumOperatorAPI) AddMiddlewareFor(method, path string, builder middle
 	}
 	o.Init()
 	if h, ok := o.handlers[um][path]; ok {
-		o.handlers[method][path] = builder(h)
+		o.handlers[um][path] = builder(h)
 	}
 }

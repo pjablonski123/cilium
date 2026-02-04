@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	cbor "k8s.io/apimachinery/pkg/runtime/serializer/cbor/direct"
 	"k8s.io/klog/v2"
 )
 
@@ -26,6 +27,7 @@ import (
 // +protobuf=true
 // +protobuf.options.(gogoproto.goproto_stringer)=false
 // +k8s:openapi-gen=true
+// +k8s:openapi-model-package=io.k8s.apimachinery.pkg.util.intstr
 type IntOrString struct {
 	Type   Type   `protobuf:"varint,1,opt,name=type,casttype=Type"`
 	IntVal int32  `protobuf:"varint,2,opt,name=intVal"`
@@ -81,6 +83,20 @@ func (intstr *IntOrString) UnmarshalJSON(value []byte) error {
 	return json.Unmarshal(value, &intstr.IntVal)
 }
 
+func (intstr *IntOrString) UnmarshalCBOR(value []byte) error {
+	if err := cbor.Unmarshal(value, &intstr.StrVal); err == nil {
+		intstr.Type = String
+		return nil
+	}
+
+	if err := cbor.Unmarshal(value, &intstr.IntVal); err != nil {
+		return err
+	}
+
+	intstr.Type = Int
+	return nil
+}
+
 // String returns the string value, or the Itoa of the int value.
 func (intstr *IntOrString) String() string {
 	if intstr == nil {
@@ -112,6 +128,17 @@ func (intstr IntOrString) MarshalJSON() ([]byte, error) {
 		return json.Marshal(intstr.StrVal)
 	default:
 		return []byte{}, fmt.Errorf("impossible IntOrString.Type")
+	}
+}
+
+func (intstr IntOrString) MarshalCBOR() ([]byte, error) {
+	switch intstr.Type {
+	case Int:
+		return cbor.Marshal(intstr.IntVal)
+	case String:
+		return cbor.Marshal(intstr.StrVal)
+	default:
+		return nil, fmt.Errorf("impossible IntOrString.Type")
 	}
 }
 
@@ -147,7 +174,7 @@ func GetScaledValueFromIntOrPercent(intOrPercent *IntOrString, total int, roundU
 	}
 	value, isPercent, err := getIntOrPercentValueSafely(intOrPercent)
 	if err != nil {
-		return 0, fmt.Errorf("invalid value for IntOrString: %v", err)
+		return 0, fmt.Errorf("invalid value for IntOrString: %w", err)
 	}
 	if isPercent {
 		if roundUp {
@@ -169,7 +196,7 @@ func GetValueFromIntOrPercent(intOrPercent *IntOrString, total int, roundUp bool
 	}
 	value, isPercent, err := getIntOrPercentValue(intOrPercent)
 	if err != nil {
-		return 0, fmt.Errorf("invalid value for IntOrString: %v", err)
+		return 0, fmt.Errorf("invalid value for IntOrString: %w", err)
 	}
 	if isPercent {
 		if roundUp {
@@ -188,10 +215,10 @@ func getIntOrPercentValue(intOrStr *IntOrString) (int, bool, error) {
 	case Int:
 		return intOrStr.IntValue(), false, nil
 	case String:
-		s := strings.Replace(intOrStr.StrVal, "%", "", -1)
+		s := strings.ReplaceAll(intOrStr.StrVal, "%", "")
 		v, err := strconv.Atoi(s)
 		if err != nil {
-			return 0, false, fmt.Errorf("invalid value %q: %v", intOrStr.StrVal, err)
+			return 0, false, fmt.Errorf("invalid value %q: %w", intOrStr.StrVal, err)
 		}
 		return int(v), true, nil
 	}
@@ -213,7 +240,7 @@ func getIntOrPercentValueSafely(intOrStr *IntOrString) (int, bool, error) {
 		}
 		v, err := strconv.Atoi(s)
 		if err != nil {
-			return 0, false, fmt.Errorf("invalid value %q: %v", intOrStr.StrVal, err)
+			return 0, false, fmt.Errorf("invalid value %q: %w", intOrStr.StrVal, err)
 		}
 		return int(v), isPercent, nil
 	}

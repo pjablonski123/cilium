@@ -1,35 +1,38 @@
+# check=error=true
+
 # Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
-ARG TESTER_IMAGE=quay.io/cilium/image-tester:dd09c8d3ef349a909fbcdc99279516baef153f22@sha256:c056d064cb47c97acd607343db5457e1d49d9338d6d8a87e93e23cc93f052c73
-ARG GOLANG_IMAGE=docker.io/library/golang:1.21.5@sha256:2ff79bcdaff74368a9fdcb06f6599e54a71caf520fd2357a55feddd504bcaffb
-ARG UBUNTU_IMAGE=docker.io/library/ubuntu:22.04@sha256:8eab65df33a6de2844c9aefd19efe8ddb87b7df5e9185a4ab73af936225685bb
+ARG GOLANG_IMAGE=docker.io/library/golang:1.25.6@sha256:ce63a16e0f7063787ebb4eb28e72d477b00b4726f79874b3205a965ffd797ab2
+ARG UBUNTU_IMAGE=docker.io/library/ubuntu:24.04@sha256:cd1dba651b3080c3686ecf4e3c4220f026b521fb76978881737d24f200828b2b
 
-ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:a8c542efc076b62ba683e7699c0013adb6955f0f@sha256:38e8941107bd19eb30bdde6e478760a22325f38d1f2771dfd1b9af81d74235e7
-ARG CILIUM_BPFTOOL_IMAGE=quay.io/cilium/cilium-bpftool:d3093f6aeefef8270306011109be623a7e80ad1b@sha256:2c28c64195dee20ab596d70a59a4597a11058333c6b35a99da32c339dcd7df56
-ARG CILIUM_IPTABLES_IMAGE=quay.io/cilium/iptables:67f517af50e18f64cd12625021f1c39246bb4f92@sha256:d075f03e89aacf51908346ec8ed5d251b8d3ad528ce30a710fcd074cdf91f11d
+ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:19.1.7-1769028416-0a7185e@sha256:48ce0bbdf57b21866db310f364f2e0a2552a19ccc85d709d76690a6aa6338f06
+ARG CILIUM_BPFTOOL_IMAGE=quay.io/cilium/cilium-bpftool:7.6.0-1768387623-54f9852@sha256:7db5e646accf881f852d9d9d895cfeabe9b332d9f83c5edb070aaf40d7a649df
+ARG CILIUM_IPTABLES_IMAGE=quay.io/cilium/iptables:1.8.8-1-1764684255-8506ae2@sha256:038abab3de749feda1f9dbc0f86ed5777e6eb15f6f5f19fa2fd36322c8a7e1bd
 
-FROM ${CILIUM_LLVM_IMAGE} as llvm-dist
-FROM ${CILIUM_BPFTOOL_IMAGE} as bpftool-dist
-FROM ${CILIUM_IPTABLES_IMAGE} as iptables-dist
+FROM ${CILIUM_LLVM_IMAGE} AS llvm-dist
+FROM ${CILIUM_BPFTOOL_IMAGE} AS bpftool-dist
+FROM ${CILIUM_IPTABLES_IMAGE} AS iptables-dist
 
-FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} as gops-cni-builder
+FROM ${GOLANG_IMAGE} AS go-builder
 
-RUN apt-get update && apt-get install -y binutils-aarch64-linux-gnu binutils-x86-64-linux-gnu
-
-# build-gops.sh will build both archs at the same time
 WORKDIR /go/src/github.com/cilium/cilium/images/runtime
-RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/runtime --mount=target=/root/.cache,type=cache --mount=target=/go/pkg/mod,type=cache \
+RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/runtime \
+    --mount=target=/root/.cache,type=cache \
+    --mount=target=/go/pkg/mod,type=cache \
     ./build-gops.sh
-# download-cni.sh will build both archs at the same time
-RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/runtime --mount=target=/root/.cache,type=cache --mount=target=/go/pkg/mod,type=cache \
+
+ARG TARGETARCH
+RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/runtime \
+    --mount=target=/root/.cache,type=cache \
+    --mount=target=/go/pkg/mod,type=cache \
     ./download-cni.sh
 
-FROM ${UBUNTU_IMAGE} as rootfs
+FROM ${UBUNTU_IMAGE} AS rootfs
 
 # Change the number to force the generation of a new git-tree SHA. Useful when
 # we want to re-run 'apt-get upgrade' for stale images.
-ENV FORCE_BUILD=3
+ENV FORCE_BUILD=4
 
 # Update ubuntu packages to the most recent versions
 RUN apt-get update && \
@@ -47,18 +50,8 @@ RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/r
     ./iptables-wrapper-installer.sh --no-sanity-check
 
 COPY --from=llvm-dist /usr/local/bin/clang /usr/local/bin/llc /usr/local/bin/
-COPY --from=bpftool-dist /usr/local /usr/local
-
-ARG TARGETPLATFORM
-COPY --from=gops-cni-builder /out/${TARGETPLATFORM}/bin/loopback /cni/loopback
-COPY --from=gops-cni-builder /out/${TARGETPLATFORM}/bin/gops /bin/gops
-
-FROM ${TESTER_IMAGE} as test
-COPY --from=rootfs / /
-COPY --from=llvm-dist /test /test
-COPY --from=bpftool-dist /test /test
-RUN /test/bin/cst -C /test/llvm
-RUN /test/bin/cst -C /test/bpftool
+COPY --from=bpftool-dist /usr/local/bin/bpftool /usr/local/bin/bpftool
+COPY --from=go-builder /out /
 
 FROM scratch
 LABEL maintainer="maintainer@cilium.io"

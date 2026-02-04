@@ -6,45 +6,54 @@
 package loader
 
 import (
-	"fmt"
 	"net"
 	"testing"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
-	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/cilium/hive/hivetest"
+	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
+	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
 	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/netns"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/sysctl"
 	"github.com/cilium/cilium/pkg/testutils"
+	"github.com/cilium/cilium/pkg/testutils/netns"
 )
 
-func mustTCProgram(t *testing.T) *ebpf.Program {
-	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{
-		Type: ebpf.SchedCLS,
-		Instructions: asm.Instructions{
-			asm.Mov.Imm(asm.R0, 0),
-			asm.Return(),
-		},
-		License: "Apache-2.0",
-	})
-	if err != nil {
-		t.Skipf("tc programs not supported: %s", err)
-	}
-	t.Cleanup(func() {
-		p.Close()
-	})
-	return p
+// lo accesses the default loopback interface present in the current netns.
+var lo = &netlink.GenericLink{
+	LinkAttrs: netlink.LinkAttrs{Name: "lo", Index: 1},
+	LinkType:  "loopback",
 }
 
-func mustXDPProgram(t *testing.T) *ebpf.Program {
+type mockBigTCP struct {
+}
+
+func (c mockBigTCP) GetGROIPv6MaxSize() int {
+	return 65536
+}
+
+func (c mockBigTCP) GetGSOIPv6MaxSize() int {
+	return 65536
+}
+
+func (c mockBigTCP) GetGROIPv4MaxSize() int {
+	return 65536
+}
+
+func (c mockBigTCP) GetGSOIPv4MaxSize() int {
+	return 65536
+}
+
+func mustXDPProgram(t *testing.T, name string) *ebpf.Program {
 	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Type: ebpf.XDP,
+		Name: name,
 		Instructions: asm.Instructions{
 			asm.Mov.Imm(asm.R0, 0),
 			asm.Return(),
@@ -60,8 +69,11 @@ func mustXDPProgram(t *testing.T) *ebpf.Program {
 	return p
 }
 
-func TestSetupDev(t *testing.T) {
+func TestPrivilegedSetupDev(t *testing.T) {
 	testutils.PrivilegedTest(t)
+	logger := hivetest.Logger(t)
+
+	sysctl := sysctl.NewDirectSysctl(afero.NewOsFs(), "/proc")
 
 	prevConfigEnableIPv4 := option.Config.EnableIPv4
 	prevConfigEnableIPv6 := option.Config.EnableIPv6
@@ -72,16 +84,9 @@ func TestSetupDev(t *testing.T) {
 	option.Config.EnableIPv4 = true
 	option.Config.EnableIPv6 = true
 
-	netnsName := "test-setup-dev"
-	netns0, err := netns.ReplaceNetNSWithName(netnsName)
-	require.NoError(t, err)
-	require.NotNil(t, netns0)
-	t.Cleanup(func() {
-		netns0.Close()
-		netns.RemoveNetNSWithName(netnsName)
-	})
+	ns := netns.NewNetNS(t)
 
-	netns0.Do(func(_ ns.NetNS) error {
+	ns.Do(func() error {
 		ifName := "dummy"
 		dummy := &netlink.Dummy{
 			LinkAttrs: netlink.LinkAttrs{
@@ -91,27 +96,27 @@ func TestSetupDev(t *testing.T) {
 		err := netlink.LinkAdd(dummy)
 		require.NoError(t, err)
 
-		err = enableForwarding(dummy)
+		err = enableForwarding(logger, sysctl, dummy)
 		require.NoError(t, err)
 
-		enabledSettings := []string{
-			fmt.Sprintf("net.ipv6.conf.%s.forwarding", ifName),
-			fmt.Sprintf("net.ipv4.conf.%s.forwarding", ifName),
-			fmt.Sprintf("net.ipv4.conf.%s.accept_local", ifName),
+		enabledSettings := [][]string{
+			{"net", "ipv6", "conf", ifName, "forwarding"},
+			{"net", "ipv4", "conf", ifName, "forwarding"},
+			{"net", "ipv4", "conf", ifName, "accept_local"},
 		}
-		disabledSettings := []string{
-			fmt.Sprintf("net.ipv4.conf.%s.rp_filter", ifName),
-			fmt.Sprintf("net.ipv4.conf.%s.send_redirects", ifName),
+		disabledSettings := [][]string{
+			{"net", "ipv4", "conf", ifName, "rp_filter"},
+			{"net", "ipv4", "conf", ifName, "send_redirects"},
 		}
 		for _, setting := range enabledSettings {
 			s, err := sysctl.Read(setting)
 			require.NoError(t, err)
-			require.Equal(t, s, "1")
+			require.Equal(t, "1", s)
 		}
 		for _, setting := range disabledSettings {
 			s, err := sysctl.Read(setting)
 			require.NoError(t, err)
-			require.Equal(t, s, "0")
+			require.Equal(t, "0", s)
 		}
 
 		err = netlink.LinkDel(dummy)
@@ -121,32 +126,27 @@ func TestSetupDev(t *testing.T) {
 	})
 }
 
-func TestSetupTunnelDevice(t *testing.T) {
+func TestPrivilegedSetupTunnelDevice(t *testing.T) {
 	testutils.PrivilegedTest(t)
+	logger := hivetest.Logger(t)
 
+	sysctl := sysctl.NewDirectSysctl(afero.NewOsFs(), "/proc")
 	mtu := 1500
 
 	t.Run("Geneve", func(t *testing.T) {
-		netnsName := "test-setup-geneve-device"
-		netns0, err := netns.ReplaceNetNSWithName(netnsName)
-		require.NoError(t, err)
-		require.NotNil(t, netns0)
-		t.Cleanup(func() {
-			netns0.Close()
-			netns.RemoveNetNSWithName(netnsName)
-		})
+		ns := netns.NewNetNS(t)
 
-		netns0.Do(func(_ ns.NetNS) error {
-			err := setupTunnelDevice(tunnel.Geneve, defaults.TunnelPortGeneve, mtu)
+		ns.Do(func() error {
+			err := setupTunnelDevice(logger, sysctl, tunnel.Geneve, defaults.TunnelPortGeneve, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
 
-			link, err := netlink.LinkByName(defaults.GeneveDevice)
+			link, err := safenetlink.LinkByName(defaults.GeneveDevice)
 			require.NoError(t, err)
 
 			geneve, ok := link.(*netlink.Geneve)
 			require.True(t, ok)
 			require.True(t, geneve.FlowBased)
-			require.EqualValues(t, geneve.Dport, defaults.TunnelPortGeneve)
+			require.Equal(t, defaults.TunnelPortGeneve, geneve.Dport)
 
 			err = netlink.LinkDel(link)
 			require.NoError(t, err)
@@ -156,29 +156,22 @@ func TestSetupTunnelDevice(t *testing.T) {
 	})
 
 	t.Run("GeneveModifyPort", func(t *testing.T) {
-		netnsName := "test-setup-geneve-device-modify-port"
-		netns0, err := netns.ReplaceNetNSWithName(netnsName)
-		require.NoError(t, err)
-		require.NotNil(t, netns0)
-		t.Cleanup(func() {
-			netns0.Close()
-			netns.RemoveNetNSWithName(netnsName)
-		})
+		ns := netns.NewNetNS(t)
 
-		netns0.Do(func(_ ns.NetNS) error {
-			err := setupTunnelDevice(tunnel.Geneve, defaults.TunnelPortGeneve, mtu)
+		ns.Do(func() error {
+			err := setupTunnelDevice(logger, sysctl, tunnel.Geneve, defaults.TunnelPortGeneve, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
 
-			err = setupTunnelDevice(tunnel.Geneve, 12345, mtu)
+			err = setupTunnelDevice(logger, sysctl, tunnel.Geneve, 12345, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
 
-			link, err := netlink.LinkByName(defaults.GeneveDevice)
+			link, err := safenetlink.LinkByName(defaults.GeneveDevice)
 			require.NoError(t, err)
 
 			geneve, ok := link.(*netlink.Geneve)
 			require.True(t, ok)
 			require.True(t, geneve.FlowBased)
-			require.EqualValues(t, geneve.Dport, 12345)
+			require.EqualValues(t, 12345, geneve.Dport)
 
 			err = netlink.LinkDel(link)
 			require.NoError(t, err)
@@ -188,59 +181,48 @@ func TestSetupTunnelDevice(t *testing.T) {
 	})
 
 	t.Run("GeneveModifyMTU", func(t *testing.T) {
-		netnsName := "test-setup-geneve-device-modify-mtu"
-		netns0, err := netns.ReplaceNetNSWithName(netnsName)
-		require.NoError(t, err)
-		require.NotNil(t, netns0)
-		t.Cleanup(func() {
-			netns0.Close()
-			netns.RemoveNetNSWithName(netnsName)
-		})
+		ns := netns.NewNetNS(t)
 
-		netns0.Do(func(_ ns.NetNS) error {
-			err := setupTunnelDevice(tunnel.Geneve, defaults.TunnelPortGeneve, mtu)
+		ns.Do(func() error {
+			err := setupTunnelDevice(logger, sysctl, tunnel.Geneve, defaults.TunnelPortGeneve, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
 
-			link, err := netlink.LinkByName(defaults.GeneveDevice)
+			link, err := safenetlink.LinkByName(defaults.GeneveDevice)
 			require.NoError(t, err)
 
 			// Ensure the ifindex does not change when specifying a different MTU.
 			ifindex := link.Attrs().Index
 
-			err = setupTunnelDevice(tunnel.Geneve, defaults.TunnelPortGeneve, mtu-1)
+			err = setupTunnelDevice(logger, sysctl, tunnel.Geneve, defaults.TunnelPortGeneve, 0, 0, mtu-1, mockBigTCP{})
 			require.NoError(t, err)
 
-			link, err = netlink.LinkByName(defaults.GeneveDevice)
+			link, err = safenetlink.LinkByName(defaults.GeneveDevice)
 			require.NoError(t, err)
 
 			require.Equal(t, ifindex, link.Attrs().Index, "ifindex must not change when changing MTU")
 			require.Equal(t, mtu-1, link.Attrs().MTU)
+
+			err = netlink.LinkDel(link)
+			require.NoError(t, err)
 
 			return nil
 		})
 	})
 
 	t.Run("Vxlan", func(t *testing.T) {
-		netnsName := "test-setup-vxlan-device"
-		netns0, err := netns.ReplaceNetNSWithName(netnsName)
-		require.NoError(t, err)
-		require.NotNil(t, netns0)
-		t.Cleanup(func() {
-			netns0.Close()
-			netns.RemoveNetNSWithName(netnsName)
-		})
+		ns := netns.NewNetNS(t)
 
-		netns0.Do(func(_ ns.NetNS) error {
-			err := setupTunnelDevice(tunnel.VXLAN, defaults.TunnelPortVXLAN, mtu)
+		ns.Do(func() error {
+			err := setupTunnelDevice(logger, sysctl, tunnel.VXLAN, defaults.TunnelPortVXLAN, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
 
-			link, err := netlink.LinkByName(defaults.VxlanDevice)
+			link, err := safenetlink.LinkByName(defaults.VxlanDevice)
 			require.NoError(t, err)
 
 			vxlan, ok := link.(*netlink.Vxlan)
 			require.True(t, ok)
 			require.True(t, vxlan.FlowBased)
-			require.EqualValues(t, vxlan.Port, defaults.TunnelPortVXLAN)
+			require.EqualValues(t, defaults.TunnelPortVXLAN, vxlan.Port)
 
 			err = netlink.LinkDel(link)
 			require.NoError(t, err)
@@ -250,29 +232,59 @@ func TestSetupTunnelDevice(t *testing.T) {
 	})
 
 	t.Run("VxlanModifyPort", func(t *testing.T) {
-		netnsName := "test-setup-vxlan-device-modify"
-		netns0, err := netns.ReplaceNetNSWithName(netnsName)
-		require.NoError(t, err)
-		require.NotNil(t, netns0)
-		t.Cleanup(func() {
-			netns0.Close()
-			netns.RemoveNetNSWithName(netnsName)
-		})
+		ns := netns.NewNetNS(t)
 
-		netns0.Do(func(_ ns.NetNS) error {
-			err := setupTunnelDevice(tunnel.VXLAN, defaults.TunnelPortVXLAN, mtu)
+		ns.Do(func() error {
+			err := setupTunnelDevice(logger, sysctl, tunnel.VXLAN, defaults.TunnelPortVXLAN, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
 
-			err = setupTunnelDevice(tunnel.VXLAN, 12345, mtu)
+			err = setupTunnelDevice(logger, sysctl, tunnel.VXLAN, 12345, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
 
-			link, err := netlink.LinkByName(defaults.VxlanDevice)
+			link, err := safenetlink.LinkByName(defaults.VxlanDevice)
 			require.NoError(t, err)
 
 			vxlan, ok := link.(*netlink.Vxlan)
 			require.True(t, ok)
 			require.True(t, vxlan.FlowBased)
-			require.EqualValues(t, vxlan.Port, 12345)
+			require.Equal(t, 12345, vxlan.Port)
+
+			err = netlink.LinkDel(link)
+			require.NoError(t, err)
+
+			return nil
+		})
+	})
+
+	t.Run("VxlanConflictWithExternallyManagedDevice", func(t *testing.T) {
+		ns := netns.NewNetNS(t)
+
+		ns.Do(func() error {
+			externallyMangedVxlan := &netlink.Vxlan{
+				LinkAttrs: netlink.LinkAttrs{
+					Name: "extManagedVxlan",
+				},
+				Port: int(defaults.TunnelPortVXLAN),
+			}
+			err := netlink.LinkAdd(externallyMangedVxlan)
+			require.NoError(t, err)
+
+			err = netlink.LinkSetUp(externallyMangedVxlan)
+			require.NoError(t, err)
+
+			err = setupTunnelDevice(logger, sysctl, tunnel.VXLAN, defaults.TunnelPortVXLAN, 0, 0, mtu, mockBigTCP{})
+			require.Error(t, err)
+
+			err = setupTunnelDevice(logger, sysctl, tunnel.VXLAN, 12345, 0, 0, mtu, mockBigTCP{})
+			require.NoError(t, err)
+
+			link, err := safenetlink.LinkByName(defaults.VxlanDevice)
+			require.NoError(t, err)
+
+			vxlan, ok := link.(*netlink.Vxlan)
+			require.True(t, ok)
+			require.True(t, vxlan.FlowBased)
+			require.Equal(t, 12345, vxlan.Port)
 
 			err = netlink.LinkDel(link)
 			require.NoError(t, err)
@@ -282,79 +294,132 @@ func TestSetupTunnelDevice(t *testing.T) {
 	})
 
 	t.Run("VxlanModifyMTU", func(t *testing.T) {
-		netnsName := "test-setup-vxlan-device-modify-mtu"
-		netns0, err := netns.ReplaceNetNSWithName(netnsName)
-		require.NoError(t, err)
-		require.NotNil(t, netns0)
-		t.Cleanup(func() {
-			netns0.Close()
-			netns.RemoveNetNSWithName(netnsName)
-		})
+		ns := netns.NewNetNS(t)
 
-		netns0.Do(func(_ ns.NetNS) error {
-			err := setupTunnelDevice(tunnel.VXLAN, defaults.TunnelPortVXLAN, mtu)
+		ns.Do(func() error {
+			err := setupTunnelDevice(logger, sysctl, tunnel.VXLAN, defaults.TunnelPortVXLAN, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
 
-			link, err := netlink.LinkByName(defaults.VxlanDevice)
+			link, err := safenetlink.LinkByName(defaults.VxlanDevice)
 			require.NoError(t, err)
 
 			// Ensure the ifindex does not change when specifying a different MTU.
 			ifindex := link.Attrs().Index
 
-			err = setupTunnelDevice(tunnel.VXLAN, defaults.TunnelPortVXLAN, mtu-1)
+			err = setupTunnelDevice(logger, sysctl, tunnel.VXLAN, defaults.TunnelPortVXLAN, 0, 0, mtu-1, mockBigTCP{})
 			require.NoError(t, err)
 
-			link, err = netlink.LinkByName(defaults.VxlanDevice)
+			link, err = safenetlink.LinkByName(defaults.VxlanDevice)
 			require.NoError(t, err)
 
 			require.Equal(t, ifindex, link.Attrs().Index, "ifindex must not change when changing MTU")
 			require.Equal(t, mtu-1, link.Attrs().MTU)
+
+			err = netlink.LinkDel(link)
+			require.NoError(t, err)
+
+			return nil
+		})
+	})
+
+	t.Run("VxlanSrcPortRange", func(t *testing.T) {
+		ns := netns.NewNetNS(t)
+
+		ns.Do(func() error {
+			srcMin := uint16(1000)
+			srcMax := uint16(2000)
+
+			err := setupTunnelDevice(logger, sysctl, tunnel.VXLAN, 4567, srcMin, srcMax, mtu, mockBigTCP{})
+			require.NoError(t, err)
+
+			link, err := safenetlink.LinkByName(defaults.VxlanDevice)
+			require.NoError(t, err)
+
+			vxlan, ok := link.(*netlink.Vxlan)
+			require.True(t, ok)
+			require.True(t, vxlan.FlowBased)
+			require.Equal(t, 4567, vxlan.Port)
+			require.EqualValues(t, srcMin, vxlan.PortLow)
+			require.EqualValues(t, srcMax, vxlan.PortHigh)
+
+			err = netlink.LinkDel(link)
+			require.NoError(t, err)
+
+			return nil
+		})
+	})
+
+	t.Run("VxlanSrcPortRangeExistingDev", func(t *testing.T) {
+		ns := netns.NewNetNS(t)
+
+		ns.Do(func() error {
+			srcMin := uint16(1000)
+			srcMax := uint16(2000)
+
+			err := setupTunnelDevice(logger, sysctl, tunnel.VXLAN, defaults.TunnelPortVXLAN, 0, 0, mtu, mockBigTCP{})
+			require.NoError(t, err)
+
+			link, err := safenetlink.LinkByName(defaults.VxlanDevice)
+			require.NoError(t, err)
+
+			vxlan, ok := link.(*netlink.Vxlan)
+			require.True(t, ok)
+			require.Equal(t, 0, vxlan.PortLow)
+			require.Equal(t, 0, vxlan.PortHigh)
+
+			err = setupTunnelDevice(logger, sysctl, tunnel.VXLAN, defaults.TunnelPortVXLAN, srcMin, srcMax, mtu, mockBigTCP{})
+			require.NoError(t, err)
+
+			link, err = safenetlink.LinkByName(defaults.VxlanDevice)
+			require.NoError(t, err)
+
+			// On existing device the port range should not change.
+			vxlan, ok = link.(*netlink.Vxlan)
+			require.True(t, ok)
+			require.Equal(t, 0, vxlan.PortLow)
+			require.Equal(t, 0, vxlan.PortHigh)
+
+			err = netlink.LinkDel(link)
+			require.NoError(t, err)
 
 			return nil
 		})
 	})
 
 	t.Run("EnableSwitchDisable", func(t *testing.T) {
-		netnsName := "test-tunnel-enable-switch-disable"
-		netns0, err := netns.ReplaceNetNSWithName(netnsName)
-		require.NoError(t, err)
-		require.NotNil(t, netns0)
-		t.Cleanup(func() {
-			netns0.Close()
-			netns.RemoveNetNSWithName(netnsName)
-		})
+		ns := netns.NewNetNS(t)
 
-		netns0.Do(func(_ ns.NetNS) error {
+		ns.Do(func() error {
 			// Start with a Geneve tunnel.
-			err := setupTunnelDevice(tunnel.Geneve, defaults.TunnelPortGeneve, mtu)
+			err := setupTunnelDevice(logger, sysctl, tunnel.Geneve, defaults.TunnelPortGeneve, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
-			_, err = netlink.LinkByName(defaults.GeneveDevice)
+			_, err = safenetlink.LinkByName(defaults.GeneveDevice)
 			require.NoError(t, err)
-			_, err = netlink.LinkByName(defaults.VxlanDevice)
+			_, err = safenetlink.LinkByName(defaults.VxlanDevice)
 			require.Error(t, err)
 
 			// Switch to vxlan mode.
-			err = setupTunnelDevice(tunnel.VXLAN, defaults.TunnelPortVXLAN, mtu)
+			err = setupTunnelDevice(logger, sysctl, tunnel.VXLAN, defaults.TunnelPortVXLAN, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
-			_, err = netlink.LinkByName(defaults.GeneveDevice)
+			_, err = safenetlink.LinkByName(defaults.GeneveDevice)
 			require.Error(t, err)
-			_, err = netlink.LinkByName(defaults.VxlanDevice)
+			_, err = safenetlink.LinkByName(defaults.VxlanDevice)
 			require.NoError(t, err)
 
 			// Switch back to Geneve.
-			err = setupTunnelDevice(tunnel.Geneve, defaults.TunnelPortGeneve, mtu)
+			err = setupTunnelDevice(logger, sysctl, tunnel.Geneve, defaults.TunnelPortGeneve, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
-			_, err = netlink.LinkByName(defaults.GeneveDevice)
+			_, err = safenetlink.LinkByName(defaults.GeneveDevice)
 			require.NoError(t, err)
-			_, err = netlink.LinkByName(defaults.VxlanDevice)
+			_, err = safenetlink.LinkByName(defaults.VxlanDevice)
 			require.Error(t, err)
 
 			// Disable tunneling.
-			err = setupTunnelDevice(tunnel.Disabled, 0, mtu)
+			err = setupTunnelDevice(logger, sysctl, tunnel.Disabled, 0, 0, 0, mtu, mockBigTCP{})
 			require.NoError(t, err)
-			_, err = netlink.LinkByName(defaults.VxlanDevice)
+			_, err = safenetlink.LinkByName(defaults.VxlanDevice)
 			require.Error(t, err)
-			_, err = netlink.LinkByName(defaults.GeneveDevice)
+			_, err = safenetlink.LinkByName(defaults.GeneveDevice)
 			require.Error(t, err)
 
 			return nil
@@ -362,23 +427,16 @@ func TestSetupTunnelDevice(t *testing.T) {
 	})
 }
 
-func TestAddHostDeviceAddr(t *testing.T) {
+func TestPrivilegedAddHostDeviceAddr(t *testing.T) {
 	testutils.PrivilegedTest(t)
 
 	// test IP addresses
 	testIPv4 := net.ParseIP("1.2.3.4")
 	testIPv6 := net.ParseIP("2001:db08:0bad:cafe:600d:bee2:0bad:cafe")
 
-	netnsName := "test-internal-node-ips"
-	netns0, err := netns.ReplaceNetNSWithName(netnsName)
-	require.NoError(t, err)
-	require.NotNil(t, netns0)
-	t.Cleanup(func() {
-		netns0.Close()
-		netns.RemoveNetNSWithName(netnsName)
-	})
+	ns := netns.NewNetNS(t)
 
-	netns0.Do(func(_ ns.NetNS) error {
+	ns.Do(func() error {
 		ifName := "dummy"
 		dummy := &netlink.Dummy{
 			LinkAttrs: netlink.LinkAttrs{
@@ -403,103 +461,11 @@ func TestAddHostDeviceAddr(t *testing.T) {
 				foundIPv6 = true
 			}
 		}
-		require.Equal(t, foundIPv4, true)
-		require.Equal(t, foundIPv6, true)
+		require.True(t, foundIPv4)
+		require.True(t, foundIPv6)
 
 		err = netlink.LinkDel(dummy)
 		require.NoError(t, err)
-
-		return nil
-	})
-}
-
-func TestAttachRemoveTCProgram(t *testing.T) {
-	testutils.PrivilegedTest(t)
-
-	netnsName := "test-attach-remove-program"
-	netns0, err := netns.ReplaceNetNSWithName(netnsName)
-	require.NoError(t, err)
-	require.NotNil(t, netns0)
-	t.Cleanup(func() {
-		netns0.Close()
-		netns.RemoveNetNSWithName(netnsName)
-	})
-
-	netns0.Do(func(_ ns.NetNS) error {
-		ifName := "dummy0"
-		dummy := &netlink.Dummy{
-			LinkAttrs: netlink.LinkAttrs{
-				Name: ifName,
-			},
-		}
-		err := netlink.LinkAdd(dummy)
-		require.NoError(t, err)
-
-		prog := mustTCProgram(t)
-
-		err = attachTCProgram(dummy, prog, "test", directionToParent(dirEgress))
-		require.NoError(t, err)
-
-		filters, err := netlink.FilterList(dummy, directionToParent(dirEgress))
-		require.NoError(t, err)
-		require.NotEmpty(t, filters)
-
-		err = removeTCFilters(dummy.Attrs().Name, directionToParent(dirEgress))
-		require.NoError(t, err)
-
-		filters, err = netlink.FilterList(dummy, directionToParent(dirEgress))
-		require.NoError(t, err)
-		require.Empty(t, filters)
-
-		err = netlink.LinkDel(dummy)
-		require.NoError(t, err)
-
-		return nil
-	})
-}
-
-func TestSetupIPIPDevices(t *testing.T) {
-	testutils.PrivilegedTest(t)
-
-	netnsName := "test-setup-ipip-devs"
-	netns0, err := netns.ReplaceNetNSWithName(netnsName)
-	require.NoError(t, err)
-	require.NotNil(t, netns0)
-	t.Cleanup(func() {
-		netns0.Close()
-		netns.RemoveNetNSWithName(netnsName)
-	})
-
-	netns0.Do(func(_ ns.NetNS) error {
-		err := setupIPIPDevices(true, true)
-		require.NoError(t, err)
-
-		_, err = netlink.LinkByName(defaults.IPIPv4Device)
-		require.NoError(t, err)
-
-		_, err = netlink.LinkByName(defaults.IPIPv6Device)
-		require.NoError(t, err)
-
-		_, err = netlink.LinkByName("cilium_tunl")
-		require.NoError(t, err)
-
-		_, err = netlink.LinkByName("cilium_ip6tnl")
-		require.NoError(t, err)
-
-		_, err = netlink.LinkByName("tunl0")
-		require.Error(t, err)
-
-		_, err = netlink.LinkByName("ip6tnl0")
-		require.Error(t, err)
-
-		err = setupIPIPDevices(false, false)
-		require.NoError(t, err)
-
-		_, err = netlink.LinkByName(defaults.IPIPv4Device)
-		require.Error(t, err)
-
-		_, err = netlink.LinkByName(defaults.IPIPv6Device)
-		require.Error(t, err)
 
 		return nil
 	})

@@ -19,15 +19,15 @@ concurrency:
 jobs:
   go-mod:
     name: Check Go Modules
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Install Go
-        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           # renovate: datasource=golang-version depName=go
-          go-version: 1.21.5
+          go-version: 1.25.6
       - name: Checkout code
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Check module vendoring
@@ -36,90 +36,126 @@ jobs:
           go mod vendor
           test -z "$(git status --porcelain)" || (echo "please run 'go mod tidy && go mod vendor', and submit your changes"; exit 1)
 
-  golangci:
-    name: Lint Source Code
-    runs-on: ubuntu-latest
+  license-check:
+    name: Check third party dependencies licenses
+    runs-on: ubuntu-24.04
     steps:
       - name: Install Go
-        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           # renovate: datasource=golang-version depName=go
-          go-version: 1.21.5
+          go-version: 1.25.6
       - name: Checkout code
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Check for unauthorized dependencies
+        run: go run ./tools/licensecheck ./... 2>/dev/null
+
+  golangci:
+    name: Lint Source Code
+    runs-on: ${{ vars.GH_RUNNER_EXTRA_POWER_UBUNTU_LATEST || 'ubuntu-24.04' }}
+    steps:
+      - name: Collect Workflow Telemetry
+        uses: catchpoint/workflow-telemetry-action@94c3c3d9567a0205de6da68a76c428ce4e769af1 # v2.0.0
+        with:
+          comment_on_pr: false
+
+      - name: Install Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          # renovate: datasource=golang-version depName=go
+          go-version: 1.25.6
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@3a919529898de77ec3da873e3063ca4b10e7f5cc # v3.7.0
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:
           # renovate: datasource=docker depName=golangci/golangci-lint
-          version: v1.55.2
+          version: v2.8.0
           skip-cache: true
-          args: "--out-${NO_FUTURE}format colored-line-number --verbose --modules-download-mode=vendor"
+          args: "--verbose --modules-download-mode=vendor --disable=kubeapilinter"
+      - name: Run kube-api-lint
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
+        with:
+          # renovate: datasource=docker depName=golangci/golangci-lint
+          version: v2.8.0
+          skip-cache: true
+          args: "--verbose --modules-download-mode=vendor --enable-only=kubeapilinter ./pkg/k8s/apis/cilium.io/..."
 
   precheck:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: Precheck
     steps:
       - name: Install Go
-        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           # renovate: datasource=golang-version depName=go
-          go-version: 1.21.5
+          go-version: 1.25.6
       - name: Checkout code
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           # hard-code the path instead of using ${{ github.repository }} to make sure it works for forked repo as well
           path: src/github.com/cilium/cilium
+      - name: Executables check
+        run: |
+          cd src/github.com/cilium/cilium
+          HELP="check permissions of files and allowlist them in contrib/executable_list.txt if you are adding a new executable"
+          make check-permissions || (echo $HELP; exit 1)
       - name: Go code prechecks
         run: |
           cd src/github.com/cilium/cilium
           make precheck
+      - name: Custom linters
+        run: |
+          cd src/github.com/cilium/cilium
+          make custom-lint
 
   generate-api:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: Generate API
     steps:
       - name: Install Go
-        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           # renovate: datasource=golang-version depName=go
-          go-version: 1.21.5
+          go-version: 1.25.6
       - name: Checkout code
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           # hard-code the path instead of using ${{ github.repository }} to make sure it works for forked repo as well
           path: src/github.com/cilium/cilium
       - name: Check api generated files
+        env:
+          BUILDER_GOCACHE_DIR: "/tmp/.cache/go/.cache/go-build"
+          BUILDER_GOMODCACHE_DIR: "/tmp/.cache/go/pkg"
         run: |
           cd src/github.com/cilium/cilium
           contrib/scripts/check-api-code-gen.sh
 
   generate-k8s-api:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: Generate k8s API
     steps:
       - name: Install Go
-        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           # renovate: datasource=golang-version depName=go
-          go-version: 1.21.5
+          go-version: 1.25.6
       - name: Checkout code
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           # hard-code the path instead of using ${{ github.repository }} to make sure it works for forked repo as well
           path: src/github.com/cilium/cilium
-      - name: Install protobuf dependencies
-        env:
-          PROTOBUF_VERSION: 3.12.4
-        run: |
-          curl -Lo protoc-$PROTOBUF_VERSION-linux-x86_64.zip https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOBUF_VERSION/protoc-$PROTOBUF_VERSION-linux-x86_64.zip
-          unzip protoc-$PROTOBUF_VERSION-linux-x86_64.zip
-          sudo chmod +x bin/protoc && sudo cp bin/protoc /usr/local/bin
       - name: Check k8s generated files
+        env:
+          BUILDER_GOCACHE_DIR: "/tmp/.cache/go/.cache/go-build"
+          BUILDER_GOMODCACHE_DIR: "/tmp/.cache/go/pkg"
         run: |
           # Set GOBIN to ensure 'go install' binaries end up in the same directory
           # as the one actions/setup-go adds to PATH, regardless of GOPATH.

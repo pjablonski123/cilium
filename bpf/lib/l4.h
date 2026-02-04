@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
 
-#ifndef __LIB_L4_H_
-#define __LIB_L4_H_
+#pragma once
 
 #include <linux/tcp.h>
 #include <linux/udp.h>
@@ -56,11 +55,11 @@ static __always_inline int l4_modify_port(struct __ctx_buff *ctx, int l4_off,
 					  int off, struct csum_offset *csum_off,
 					  __be16 port, __be16 old_port)
 {
-	if (csum_l4_replace(ctx, l4_off, csum_off, old_port, port, sizeof(port)) < 0)
-		return DROP_CSUM_L4;
-
 	if (ctx_store_bytes(ctx, l4_off + off, &port, sizeof(port), 0) < 0)
 		return DROP_WRITE_ERROR;
+
+	if (csum_l4_replace(ctx, l4_off, csum_off, old_port, port, sizeof(port)) < 0)
+		return DROP_CSUM_L4;
 
 	return 0;
 }
@@ -82,4 +81,3 @@ static __always_inline int l4_load_tcp_flags(struct __ctx_buff *ctx, int l4_off,
 {
 	return ctx_load_bytes(ctx, l4_off + 12, flags, 2);
 }
-#endif

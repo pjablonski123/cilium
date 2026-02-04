@@ -5,19 +5,18 @@ package k8s
 
 import (
 	"fmt"
+	"testing"
 	"time"
 
-	. "github.com/cilium/checkmate"
+	"github.com/stretchr/testify/require"
 	core_v1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/annotation"
-	"github.com/cilium/cilium/pkg/checker"
-	fakeDatapath "github.com/cilium/cilium/pkg/datapath/fake"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	cilium_v2a1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/k8s/types"
@@ -27,10 +26,10 @@ import (
 
 var (
 	unknownObj    = 100
-	unknownObjErr = fmt.Errorf("unknown object type %T", unknownObj)
+	errUnknownObj = fmt.Errorf("unknown object type %T", unknownObj)
 )
 
-func (s *K8sSuite) Test_EqualV2CNP(c *C) {
+func Test_EqualV2CNP(t *testing.T) {
 	type args struct {
 		o1 *types.SlimCNP
 		o2 *types.SlimCNP
@@ -69,7 +68,7 @@ func (s *K8sSuite) Test_EqualV2CNP(c *C) {
 							Name: "rule1",
 						},
 						Spec: &api.Rule{
-							EndpointSelector: api.NewESFromLabels(labels.NewLabel("foo", "bar", "k8s")),
+							EndpointSelector: api.NewESFromLabels(labels.NewLabel("foo", "bar", labels.LabelSourceK8s)),
 						},
 					},
 				},
@@ -137,11 +136,11 @@ func (s *K8sSuite) Test_EqualV2CNP(c *C) {
 	}
 	for _, tt := range tests {
 		got := tt.args.o1.DeepEqual(tt.args.o2)
-		c.Assert(got, Equals, tt.want, Commentf("Test Name: %s", tt.name))
+		require.Equal(t, tt.want, got, "Test Name: %s", tt.name)
 	}
 }
 
-func (s *K8sSuite) Test_EqualV1Endpoints(c *C) {
+func Test_EqualV1Endpoints(t *testing.T) {
 	type args struct {
 		o1 *slim_corev1.Endpoints
 		o2 *slim_corev1.Endpoints
@@ -269,11 +268,11 @@ func (s *K8sSuite) Test_EqualV1Endpoints(c *C) {
 	}
 	for _, tt := range tests {
 		got := tt.args.o1.DeepEqual(tt.args.o2)
-		c.Assert(got, Equals, tt.want, Commentf("Test Name: %s", tt.name))
+		require.Equal(t, tt.want, got, "Test Name: %s", tt.name)
 	}
 }
 
-func (s *K8sSuite) Test_EqualV1Pod(c *C) {
+func Test_EqualV1Pod(t *testing.T) {
 	type args struct {
 		o1 *slim_corev1.Pod
 		o2 *slim_corev1.Pod
@@ -437,7 +436,7 @@ func (s *K8sSuite) Test_EqualV1Pod(c *C) {
 			want: true,
 		},
 		{
-			name: "Pods with differing proxy-visibility annotations",
+			name: "Pods with differing no-track-port annotations",
 			args: args{
 				o1: &slim_corev1.Pod{
 					ObjectMeta: slim_metav1.ObjectMeta{
@@ -462,7 +461,7 @@ func (s *K8sSuite) Test_EqualV1Pod(c *C) {
 							"foo": "bar",
 						},
 						Annotations: map[string]string{
-							annotation.ProxyVisibility: "80/HTTP",
+							annotation.NoTrack: "53",
 						},
 					},
 					Status: slim_corev1.PodStatus{
@@ -521,11 +520,11 @@ func (s *K8sSuite) Test_EqualV1Pod(c *C) {
 	}
 	for _, tt := range tests {
 		got := tt.args.o1.DeepEqual(tt.args.o2)
-		c.Assert(got, Equals, tt.want, Commentf("Test Name: %s", tt.name))
+		require.Equal(t, tt.want, got, "Test Name: %s", tt.name)
 	}
 }
 
-func (s *K8sSuite) Test_EqualV1Node(c *C) {
+func Test_EqualV1Node(t *testing.T) {
 	type args struct {
 		o1 *slim_corev1.Node
 		o2 *slim_corev1.Node
@@ -774,11 +773,11 @@ func (s *K8sSuite) Test_EqualV1Node(c *C) {
 	}
 	for _, tt := range tests {
 		got := tt.args.o1.DeepEqual(tt.args.o2)
-		c.Assert(got, Equals, tt.want, Commentf("Test Name: %s", tt.name))
+		require.Equal(t, tt.want, got, "Test Name: %s", tt.name)
 	}
 }
 
-func (s *K8sSuite) Test_EqualV1Namespace(c *C) {
+func Test_EqualV1Namespace(t *testing.T) {
 	type args struct {
 		o1 *slim_corev1.Namespace
 		o2 *slim_corev1.Namespace
@@ -867,295 +866,18 @@ func (s *K8sSuite) Test_EqualV1Namespace(c *C) {
 	}
 	for _, tt := range tests {
 		got := tt.args.o1.DeepEqual(tt.args.o2)
-		c.Assert(got, Equals, tt.want, Commentf("Test Name: %s", tt.name))
+		require.Equal(t, tt.want, got, "Test Name: %s", tt.name)
 	}
 }
 
-func (s *K8sSuite) Test_EqualV1Service(c *C) {
+func Test_TransformToCNP(t *testing.T) {
 	type args struct {
-		o1 *slim_corev1.Service
-		o2 *slim_corev1.Service
-	}
-	tests := []struct {
-		name string
-		args args
-		want bool
-	}{
-		{
-			name: "Service with different annotations",
-			args: args{
-				o1: &slim_corev1.Service{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Annotations: map[string]string{},
-					},
-				},
-				o2: &slim_corev1.Service{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Annotations: map[string]string{
-							"service.cilium.io/shared": "true",
-						},
-					},
-				},
-			},
-			want: false,
-		},
-	}
-	for _, tt := range tests {
-		got := EqualV1Services(tt.args.o1, tt.args.o2, fakeDatapath.NewNodeAddressing())
-		c.Assert(got, Equals, tt.want, Commentf("Test Name: %s", tt.name))
-	}
-}
-
-func (s *K8sSuite) Test_TransformToK8sService(c *C) {
-	type args struct {
-		obj interface{}
+		obj any
 	}
 	tests := []struct {
 		name     string
 		args     args
-		want     interface{}
-		expected bool
-	}{
-		{
-			name: "normal transformation",
-			args: args{
-				obj: &core_v1.Service{},
-			},
-			want:     &slim_corev1.Service{},
-			expected: true,
-		},
-		{
-			name: "transformation unneeded",
-			args: args{
-				obj: &slim_corev1.Service{},
-			},
-			want:     &slim_corev1.Service{},
-			expected: true,
-		},
-		{
-			name: "delete final state unknown transformation",
-			args: args{
-				obj: cache.DeletedFinalStateUnknown{
-					Key: "foo",
-					Obj: &core_v1.Service{},
-				},
-			},
-			want: cache.DeletedFinalStateUnknown{
-				Key: "foo",
-				Obj: &slim_corev1.Service{},
-			},
-			expected: true,
-		},
-		{
-			name: "delete final state unknown transformation with slim Service",
-			args: args{
-				obj: cache.DeletedFinalStateUnknown{
-					Key: "foo",
-					Obj: &slim_corev1.Service{},
-				},
-			},
-			want: cache.DeletedFinalStateUnknown{
-				Key: "foo",
-				Obj: &slim_corev1.Service{},
-			},
-			expected: true,
-		},
-		{
-			name: "unknown object type in delete final state unknown transformation",
-			args: args{
-				obj: cache.DeletedFinalStateUnknown{
-					Key: "foo",
-					Obj: unknownObj,
-				},
-			},
-			want:     unknownObjErr,
-			expected: false,
-		},
-		{
-			name: "unknown object type in transformation",
-			args: args{
-				obj: unknownObj,
-			},
-			want:     unknownObjErr,
-			expected: false,
-		},
-	}
-	for _, tt := range tests {
-		got, err := TransformToK8sService(tt.args.obj)
-		if tt.expected {
-			c.Assert(err, checker.Equals, nil)
-			c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
-		} else {
-			c.Assert(err, checker.Equals, tt.want, Commentf("Test Name: %s", tt.name))
-		}
-	}
-}
-
-func (s *K8sSuite) Test_ConvertToK8sV1ServicePorts(c *C) {
-	type args struct {
-		ports []slim_corev1.ServicePort
-	}
-	tests := []struct {
-		name string
-		args args
-		want []core_v1.ServicePort
-	}{
-		{
-			name: "empty",
-			args: args{
-				ports: []slim_corev1.ServicePort{},
-			},
-			want: []core_v1.ServicePort{},
-		},
-		{
-			name: "non-empty",
-			args: args{
-				ports: []slim_corev1.ServicePort{
-					{
-						Name: "foo",
-						Port: int32(1),
-					},
-				},
-			},
-			want: []core_v1.ServicePort{
-				{
-					Name: "foo",
-					Port: int32(1),
-				},
-			},
-		},
-	}
-	for _, tt := range tests {
-		got := ConvertToK8sV1ServicePorts(tt.args.ports)
-		c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
-	}
-}
-
-func (s *K8sSuite) Test_ConvertToK8sV1SessionAffinityConfig(c *C) {
-	ts := int32(1)
-	type args struct {
-		cfg *slim_corev1.SessionAffinityConfig
-	}
-	tests := []struct {
-		name string
-		args args
-		want *core_v1.SessionAffinityConfig
-	}{
-		{
-			name: "empty",
-			args: args{
-				cfg: &slim_corev1.SessionAffinityConfig{},
-			},
-			want: &core_v1.SessionAffinityConfig{},
-		},
-		{
-			name: "non-empty",
-			args: args{
-				cfg: &slim_corev1.SessionAffinityConfig{
-					ClientIP: &slim_corev1.ClientIPConfig{
-						TimeoutSeconds: &ts,
-					},
-				},
-			},
-			want: &core_v1.SessionAffinityConfig{
-				ClientIP: &core_v1.ClientIPConfig{
-					TimeoutSeconds: &ts,
-				},
-			},
-		},
-	}
-	for _, tt := range tests {
-		got := ConvertToK8sV1ServiceAffinityConfig(tt.args.cfg)
-		c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
-	}
-}
-
-func (s *K8sSuite) Test_ConvertToK8sV1LoadBalancerIngress(c *C) {
-	type args struct {
-		ings []slim_corev1.LoadBalancerIngress
-	}
-	tests := []struct {
-		name string
-		args args
-		want []core_v1.LoadBalancerIngress
-	}{
-		{
-			name: "empty",
-			args: args{
-				ings: []slim_corev1.LoadBalancerIngress{},
-			},
-			want: []core_v1.LoadBalancerIngress{},
-		},
-		{
-			name: "non-empty",
-			args: args{
-				ings: []slim_corev1.LoadBalancerIngress{
-					{
-						IP: "1.1.1.1",
-					},
-				},
-			},
-			want: []core_v1.LoadBalancerIngress{
-				{
-					IP:    "1.1.1.1",
-					Ports: nil,
-				},
-			},
-		},
-	}
-	for _, tt := range tests {
-		got := ConvertToK8sV1LoadBalancerIngress(tt.args.ings)
-		c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
-	}
-}
-
-func (s *K8sSuite) Test_ConvertToNetworkV1IngressLoadBalancerIngress(c *C) {
-	type args struct {
-		ings []slim_corev1.LoadBalancerIngress
-	}
-	tests := []struct {
-		name string
-		args args
-		want []networkingv1.IngressLoadBalancerIngress
-	}{
-		{
-			name: "empty",
-			args: args{
-				ings: []slim_corev1.LoadBalancerIngress{},
-			},
-			want: []networkingv1.IngressLoadBalancerIngress{},
-		},
-		{
-			name: "non-empty",
-			args: args{
-				ings: []slim_corev1.LoadBalancerIngress{
-					{
-						IP: "1.1.1.1",
-					},
-				},
-			},
-			want: []networkingv1.IngressLoadBalancerIngress{
-				{
-					IP:    "1.1.1.1",
-					Ports: []networkingv1.IngressPortStatus{},
-				},
-			},
-		},
-	}
-	for _, tt := range tests {
-		got := ConvertToNetworkV1IngressLoadBalancerIngress(tt.args.ings)
-		c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
-	}
-}
-
-func (s *K8sSuite) Test_TransformToCNP(c *C) {
-	type args struct {
-		obj interface{}
-	}
-	tests := []struct {
-		name     string
-		args     args
-		want     interface{}
+		want     any
 		expected bool
 	}{
 		{
@@ -1214,7 +936,7 @@ func (s *K8sSuite) Test_TransformToCNP(c *C) {
 					Obj: unknownObj,
 				},
 			},
-			want:     unknownObjErr,
+			want:     errUnknownObj,
 			expected: false,
 		},
 		{
@@ -1222,29 +944,29 @@ func (s *K8sSuite) Test_TransformToCNP(c *C) {
 			args: args{
 				obj: unknownObj,
 			},
-			want:     unknownObjErr,
+			want:     errUnknownObj,
 			expected: false,
 		},
 	}
 	for _, tt := range tests {
 		got, err := TransformToCNP(tt.args.obj)
 		if tt.expected {
-			c.Assert(err, checker.Equals, nil)
-			c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
+			require.NoError(t, err)
+			require.Equalf(t, tt.want, got, "Test Name: %s", tt.name)
 		} else {
-			c.Assert(err, checker.Equals, tt.want, Commentf("Test Name: %s", tt.name))
+			require.Equal(t, tt.want, err, "Test Name: %s", tt.name)
 		}
 	}
 }
 
-func (s *K8sSuite) Test_TransformToCCNP(c *C) {
+func Test_TransformToCCNP(t *testing.T) {
 	type args struct {
-		obj interface{}
+		obj any
 	}
 	tests := []struct {
 		name     string
 		args     args
-		want     interface{}
+		want     any
 		expected bool
 	}{
 		{
@@ -1313,7 +1035,7 @@ func (s *K8sSuite) Test_TransformToCCNP(c *C) {
 					Obj: unknownObj,
 				},
 			},
-			want:     unknownObjErr,
+			want:     errUnknownObj,
 			expected: false,
 		},
 		{
@@ -1321,29 +1043,29 @@ func (s *K8sSuite) Test_TransformToCCNP(c *C) {
 			args: args{
 				obj: unknownObj,
 			},
-			want:     unknownObjErr,
+			want:     errUnknownObj,
 			expected: false,
 		},
 	}
 	for _, tt := range tests {
 		got, err := TransformToCCNP(tt.args.obj)
 		if tt.expected {
-			c.Assert(err, checker.Equals, nil)
-			c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
+			require.NoError(t, err)
+			require.Equalf(t, tt.want, got, "Test Name: %s", tt.name)
 		} else {
-			c.Assert(err, checker.Equals, tt.want, Commentf("Test Name: %s", tt.name))
+			require.Equal(t, tt.want, err, "Test Name: %s", tt.name)
 		}
 	}
 }
 
-func (s *K8sSuite) Test_TransformToCiliumEndpoint(c *C) {
+func Test_TransformToCiliumEndpoint(t *testing.T) {
 	type args struct {
-		obj interface{}
+		obj any
 	}
 	tests := []struct {
 		name     string
 		args     args
-		want     interface{}
+		want     any
 		expected bool
 	}{
 		{
@@ -1450,6 +1172,7 @@ func (s *K8sSuite) Test_TransformToCiliumEndpoint(c *C) {
 									Protocol: "TCP",
 								},
 							},
+							ServiceAccount: "test-service-account",
 						},
 					},
 				},
@@ -1470,6 +1193,16 @@ func (s *K8sSuite) Test_TransformToCiliumEndpoint(c *C) {
 						// they are not used by the CEP handlers.
 						Labels:      nil,
 						Annotations: nil,
+						// OwnerReferences is preserved for ztunnel xDS to extract Pod UID.
+						OwnerReferences: []slim_metav1.OwnerReference{
+							{
+								Kind:       "Pod",
+								APIVersion: "v1",
+								Name:       "foo",
+								UID:        "65dasd54d45",
+								Controller: nil,
+							},
+						},
 					},
 					Identity: &v2.EndpointIdentity{
 						ID: 9654,
@@ -1496,6 +1229,7 @@ func (s *K8sSuite) Test_TransformToCiliumEndpoint(c *C) {
 							Protocol: "TCP",
 						},
 					},
+					ServiceAccount: "test-service-account",
 				},
 			},
 			expected: true,
@@ -1508,7 +1242,7 @@ func (s *K8sSuite) Test_TransformToCiliumEndpoint(c *C) {
 					Obj: unknownObj,
 				},
 			},
-			want:     unknownObjErr,
+			want:     errUnknownObj,
 			expected: false,
 		},
 		{
@@ -1530,53 +1264,136 @@ func (s *K8sSuite) Test_TransformToCiliumEndpoint(c *C) {
 			args: args{
 				obj: unknownObj,
 			},
-			want:     unknownObjErr,
+			want:     errUnknownObj,
 			expected: false,
 		},
 	}
 	for _, tt := range tests {
 		got, err := TransformToCiliumEndpoint(tt.args.obj)
 		if tt.expected {
-			c.Assert(err, checker.Equals, nil)
-			c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
+			require.NoError(t, err)
+			require.Equalf(t, tt.want, got, "Test Name: %s", tt.name)
 		} else {
-			c.Assert(err, checker.Equals, tt.want, Commentf("Test Name: %s", tt.name))
+			require.Equal(t, tt.want, err, "Test Name: %s", tt.name)
 		}
 	}
 }
 
-func (s *K8sSuite) Test_AnnotationsEqual(c *C) {
+func Test_ConvertCEPToCoreCEP(t *testing.T) {
+	cep := &v2.CiliumEndpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-endpoint",
+		},
+		Status: v2.EndpointStatus{
+			Identity: &v2.EndpointIdentity{
+				ID: 1234,
+			},
+			Networking: &v2.EndpointNetworking{
+				Addressing: []*v2.AddressPair{
+					{
+						IPV4: "10.0.0.1",
+						IPV6: "fd00::1",
+					},
+				},
+				NodeIP: "192.168.1.1",
+			},
+			Encryption: v2.EncryptionSpec{
+				Key: 42,
+			},
+			NamedPorts: []*models.Port{
+				{
+					Name:     "http",
+					Port:     8080,
+					Protocol: "TCP",
+				},
+			},
+			ServiceAccount: "test-service-account",
+		},
+	}
+
+	coreCEP := ConvertCEPToCoreCEP(cep)
+
+	require.Equal(t, "test-endpoint", coreCEP.Name)
+	require.Equal(t, int64(1234), coreCEP.IdentityID)
+	require.Equal(t, "test-service-account", coreCEP.ServiceAccount)
+	require.Equal(t, v2.EncryptionSpec{Key: 42}, coreCEP.Encryption)
+	require.NotNil(t, coreCEP.Networking)
+	require.Equal(t, "192.168.1.1", coreCEP.Networking.NodeIP)
+	require.Len(t, coreCEP.NamedPorts, 1)
+	require.Equal(t, "http", coreCEP.NamedPorts[0].Name)
+}
+
+func Test_ConvertCoreCiliumEndpointToTypesCiliumEndpoint(t *testing.T) {
+	coreCEP := &cilium_v2a1.CoreCiliumEndpoint{
+		Name:       "test-endpoint",
+		IdentityID: 5678,
+		Networking: &v2.EndpointNetworking{
+			Addressing: []*v2.AddressPair{
+				{
+					IPV4: "10.0.0.2",
+					IPV6: "fd00::2",
+				},
+			},
+			NodeIP: "192.168.1.2",
+		},
+		Encryption: v2.EncryptionSpec{
+			Key: 99,
+		},
+		NamedPorts: []*models.Port{
+			{
+				Name:     "grpc",
+				Port:     9090,
+				Protocol: "TCP",
+			},
+		},
+		ServiceAccount: "test-service-account",
+	}
+
+	typesCEP := ConvertCoreCiliumEndpointToTypesCiliumEndpoint(coreCEP, "test-namespace")
+
+	require.Equal(t, "test-endpoint", typesCEP.Name)
+	require.Equal(t, "test-namespace", typesCEP.Namespace)
+	require.Equal(t, int64(5678), typesCEP.Identity.ID)
+	require.Equal(t, "test-service-account", typesCEP.ServiceAccount)
+	require.Equal(t, v2.EncryptionSpec{Key: 99}, *typesCEP.Encryption)
+	require.NotNil(t, typesCEP.Networking)
+	require.Equal(t, "192.168.1.2", typesCEP.Networking.NodeIP)
+	require.Len(t, typesCEP.NamedPorts, 1)
+	require.Equal(t, "grpc", typesCEP.NamedPorts[0].Name)
+}
+
+func Test_AnnotationsEqual(t *testing.T) {
 	irrelevantAnnoKey := "foo"
 	irrelevantAnnoVal := "bar"
 
-	relevantAnnoKey := annotation.ProxyVisibility
-	relevantAnnoVal1 := "<Ingress/80/TCP/HTTP>"
-	relevantAnnoVal2 := "<Ingress/80/TCP/HTTP>,<Egress/80/TCP/HTTP>"
+	relevantAnnoKey := annotation.NoTrack
+	relevantAnnoVal1 := ""
+	relevantAnnoVal2 := "53"
 
 	// Empty returns true.
-	c.Assert(AnnotationsEqual(nil, map[string]string{}, map[string]string{}), Equals, true)
+	require.True(t, AnnotationsEqual(nil, map[string]string{}, map[string]string{}))
 
-	c.Assert(AnnotationsEqual(nil,
+	require.True(t, AnnotationsEqual(nil,
 		map[string]string{
 			irrelevantAnnoKey: irrelevantAnnoVal,
 			relevantAnnoKey:   relevantAnnoVal1,
 		}, map[string]string{
 			irrelevantAnnoKey: irrelevantAnnoVal,
 			relevantAnnoKey:   relevantAnnoVal2,
-		}), Equals, true)
+		}))
 
 	// If the relevant annotation isn't in either map, return true.
-	c.Assert(AnnotationsEqual([]string{relevantAnnoKey},
+	require.True(t, AnnotationsEqual([]string{relevantAnnoKey},
 		map[string]string{
 			irrelevantAnnoKey: irrelevantAnnoVal,
 		}, map[string]string{
 			irrelevantAnnoKey: irrelevantAnnoVal,
-		}), Equals, true)
+		}))
 
-	c.Assert(AnnotationsEqual([]string{relevantAnnoKey},
+	require.False(t, AnnotationsEqual([]string{relevantAnnoKey},
 		map[string]string{
 			relevantAnnoKey: relevantAnnoVal1,
 		}, map[string]string{
 			relevantAnnoKey: relevantAnnoVal2,
-		}), Equals, false)
+		}))
 }

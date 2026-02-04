@@ -3,18 +3,27 @@
 
 package mac
 
-import "github.com/vishvananda/netlink"
+import (
+	"errors"
+	"net"
 
-// HasMacAddr returns true if the given network interface has L2 addr.
-func HasMacAddr(iface string) bool {
-	link, err := netlink.LinkByName(iface)
+	"github.com/vishvananda/netlink"
+
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
+)
+
+// ReplaceMacAddressWithLinkName replaces the MAC address of the given link
+func ReplaceMacAddressWithLinkName(ifName, macAddress string) error {
+	l, err := safenetlink.LinkByName(ifName)
 	if err != nil {
-		return false
+		if errors.As(err, &netlink.LinkNotFoundError{}) {
+			return nil
+		}
+		return err
 	}
-	return LinkHasMacAddr(link)
-}
-
-// LinkHasMacAddr returns true if the given network interface has L2 addr.
-func LinkHasMacAddr(link netlink.Link) bool {
-	return len(link.Attrs().HardwareAddr) != 0
+	hw, err := net.ParseMAC(macAddress)
+	if err != nil {
+		return err
+	}
+	return netlink.LinkSetHardwareAddr(l, hw)
 }

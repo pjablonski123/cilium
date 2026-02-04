@@ -4,12 +4,11 @@
 package k8s
 
 import (
-	"github.com/cilium/cilium/pkg/hive/cell"
+	"github.com/cilium/hive/cell"
+
+	operatorK8s "github.com/cilium/cilium/operator/k8s"
+	"github.com/cilium/cilium/pkg/clustermesh/mcsapi"
 	"github.com/cilium/cilium/pkg/k8s"
-	cilium_api_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
-	"github.com/cilium/cilium/pkg/k8s/resource"
-	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
-	"github.com/cilium/cilium/pkg/k8s/types"
 )
 
 var (
@@ -23,28 +22,22 @@ var (
 		"Clustermesh-apiserver Kubernetes resources",
 
 		cell.Config(k8s.DefaultConfig),
+		cell.Provide(k8s.DefaultServiceWatchConfig),
+		cell.Config(DefaultCiliumEndpointSliceConfig),
+
 		cell.Provide(
 			k8s.ServiceResource,
-			k8s.EndpointsResource,
-			k8s.CiliumNodeResource,
-			k8s.CiliumIdentityResource,
-			// The CiliumSlimEndpoint resource constructor in the agent depends on the
-			// LocalNodeStore to index its cache. In the clustermesh-apiserver, there is no
-			// cell providing LocalNodeStore, so we provide the resource with a separate
-			// constructor.
+			mcsapi.ServiceExportResource,
+			operatorK8s.EndpointsResource,
+			CiliumNodeResource,
+			CiliumIdentityResource,
+			// The CiliumSlimEndpoint and CiliumEndpointSlice resource constructors in the agent depend
+			// on the LocalNodeStore to index its cache. In the clustermesh-apiserver, there is no
+			// cell providing LocalNodeStore, so we provide the resources with separate
+			// constructors.
 			CiliumSlimEndpointResource,
-			k8s.CiliumExternalWorkloads,
+			CiliumEndpointSliceResource,
+			k8s.NamespaceResource,
 		),
 	)
 )
-
-// Resources is a convenience struct to group all the agent k8s resources as cell constructor parameters.
-type Resources struct {
-	cell.In
-
-	Services            resource.Resource[*slim_corev1.Service]
-	Endpoints           resource.Resource[*k8s.Endpoints]
-	CiliumNodes         resource.Resource[*cilium_api_v2.CiliumNode]
-	CiliumIdentities    resource.Resource[*cilium_api_v2.CiliumIdentity]
-	CiliumSlimEndpoints resource.Resource[*types.CiliumEndpoint]
-}

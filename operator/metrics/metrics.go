@@ -4,96 +4,81 @@
 package metrics
 
 import (
-	"errors"
-	"net/http"
+	"log/slog"
+	"regexp"
 
+	"github.com/cilium/hive/cell"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/sirupsen/logrus"
-	controllerRuntimeMetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+	k8sCtrlMetrics "sigs.k8s.io/controller-runtime/pkg/certwatcher/metrics"
 
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/metrics/metric"
 )
 
+// goCustomCollectorsRX tracks enabled go runtime metrics.
+var goCustomCollectorsRX = regexp.MustCompile(`^/sched/latencies:seconds`)
+
 type params struct {
 	cell.In
 
-	Logger     logrus.FieldLogger
-	Lifecycle  hive.Lifecycle
+	Logger     *slog.Logger
+	Lifecycle  cell.Lifecycle
 	Shutdowner hive.Shutdowner
 
 	Cfg       Config
 	SharedCfg SharedConfig
 
 	Metrics []metric.WithMetadata `group:"hive-metrics"`
+
+	Registry         *metrics.Registry
+	TLSConfigPromise metrics.TLSConfigPromise
 }
 
-type metricsManager struct {
-	logger     logrus.FieldLogger
-	shutdowner hive.Shutdowner
+// Note: metrics are always initialized so we have access to sampler ring buffer data
+// for debugging. However, actual prometheus server will be started depending on if
+// metrics are enabled.
+func initializeMetrics(p params) {
+	p.Registry.MustRegister(collectors.NewGoCollector(
+		collectors.WithGoCollectorRuntimeMetrics(
+			collectors.GoRuntimeMetricsRule{Matcher: goCustomCollectorsRX},
+		),
+	))
 
-	server http.Server
+	p.Registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{Namespace: metrics.CiliumOperatorNamespace}))
 
-	metrics []metric.WithMetadata
-}
-
-func (mm *metricsManager) Start(ctx hive.HookContext) error {
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(Registry, promhttp.HandlerOpts{}))
-	mm.server.Handler = mux
-
-	go func() {
-		mm.logger.WithField("address", mm.server.Addr).Info("Starting metrics server")
-		if err := mm.server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			mm.logger.WithError(err).Error("Unable to start metrics server")
-			mm.shutdowner.Shutdown()
-		}
-	}()
-
-	return nil
-}
-
-func (mm *metricsManager) Stop(ctx hive.HookContext) error {
-	if err := mm.server.Shutdown(ctx); err != nil {
-		mm.logger.WithError(err).Error("Shutdown operator metrics server failed")
-		return err
-	}
-	return nil
-}
-
-func registerMetricsManager(p params) {
-	if !p.SharedCfg.EnableMetrics {
-		return
+	for _, metric := range p.Metrics {
+		p.Registry.MustRegister(metric.(prometheus.Collector))
 	}
 
-	mm := &metricsManager{
-		logger:     p.Logger,
-		shutdowner: p.Shutdowner,
-		server:     http.Server{Addr: p.Cfg.OperatorPrometheusServeAddr},
-		metrics:    p.Metrics,
-	}
+	metrics.NewLegacyMetrics()
+	p.Registry.MustRegister(
+		metrics.VersionMetric,
+		metrics.KVStoreOperationsDuration,
+		metrics.KVStoreEventsQueueDuration,
+		metrics.KVStoreQuorumErrors,
+		metrics.APILimiterProcessingDuration,
+		metrics.APILimiterWaitDuration,
+		metrics.APILimiterRequestsInFlight,
+		metrics.APILimiterRateLimit,
+		metrics.APILimiterProcessedRequests,
 
-	if p.SharedCfg.EnableGatewayAPI {
-		// Use the same Registry as controller-runtime, so that we don't need
-		// to expose multiple metrics endpoints or servers.
-		//
-		// Ideally, we should use our own Registry instance, but the metrics
-		// registration is done by init() functions, which are executed before
-		// this function is called.
-		Registry = controllerRuntimeMetrics.Registry
-	} else {
-		Registry = prometheus.NewPedanticRegistry()
-	}
+		metrics.WorkQueueDepth,
+		metrics.WorkQueueAddsTotal,
+		metrics.WorkQueueLatency,
+		metrics.WorkQueueDuration,
+		metrics.WorkQueueUnfinishedWork,
+		metrics.WorkQueueLongestRunningProcessor,
+		metrics.WorkQueueRetries,
+	)
 
-	Registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{Namespace: metrics.CiliumOperatorNamespace}))
+	p.Registry.Register(k8sCtrlMetrics.ReadCertificateTotal)
+	p.Registry.Register(k8sCtrlMetrics.ReadCertificateErrors)
 
-	for _, metric := range mm.metrics {
-		Registry.MustRegister(metric.(prometheus.Collector))
-	}
+	metrics.InitOperatorMetrics()
+	p.Registry.MustRegister(metrics.ErrorsWarnings)
+	metrics.FlushLoggingMetrics()
 
-	p.Lifecycle.Append(mm)
+	p.Registry.AddServerRuntimeHooks("operator-prometheus-server", p.TLSConfigPromise)
 }

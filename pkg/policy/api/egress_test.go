@@ -5,29 +5,30 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/netip"
+	"testing"
 
-	. "github.com/cilium/checkmate"
+	"github.com/stretchr/testify/require"
 
-	"github.com/cilium/cilium/pkg/checker"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 )
 
-func (s *PolicyAPITestSuite) TestRequiresDerivativeRuleWithoutToGroups(c *C) {
+func TestRequiresDerivativeRuleWithoutToGroups(t *testing.T) {
 	eg := EgressRule{}
-	c.Assert(eg.RequiresDerivative(), Equals, false)
+	require.False(t, eg.RequiresDerivative())
 }
 
-func (s *PolicyAPITestSuite) TestRequiresDerivativeRuleWithToGroups(c *C) {
+func TestRequiresDerivativeRuleWithToGroups(t *testing.T) {
 	eg := EgressRule{}
-	eg.ToGroups = []ToGroups{
-		GetToGroupsRule(),
+	eg.ToGroups = []Groups{
+		GetGroupsRule(),
 	}
-	c.Assert(eg.RequiresDerivative(), Equals, true)
+	require.True(t, eg.RequiresDerivative())
 }
 
-func (s *PolicyAPITestSuite) TestCreateDerivativeRuleWithoutToGroups(c *C) {
+func TestCreateDerivativeRuleWithoutToGroups(t *testing.T) {
 	eg := &EgressRule{
 		EgressCommonRule: EgressCommonRule{
 			ToEndpoints: []EndpointSelector{
@@ -41,49 +42,49 @@ func (s *PolicyAPITestSuite) TestCreateDerivativeRuleWithoutToGroups(c *C) {
 		},
 	}
 	newRule, err := eg.CreateDerivative(context.TODO())
-	c.Assert(eg, checker.DeepEquals, newRule)
-	c.Assert(err, IsNil)
+	require.Equal(t, newRule, eg)
+	require.NoError(t, err)
 }
 
-func (s *PolicyAPITestSuite) TestCreateDerivativeRuleWithToGroupsWitInvalidRegisterCallback(c *C) {
-	cb := func(ctx context.Context, group *ToGroups) ([]netip.Addr, error) {
+func TestCreateDerivativeRuleWithToGroupsWitInvalidRegisterCallback(t *testing.T) {
+	cb := func(ctx context.Context, group *Groups) ([]netip.Addr, error) {
 		return []netip.Addr{}, fmt.Errorf("Invalid error")
 	}
 	RegisterToGroupsProvider(AWSProvider, cb)
 
 	eg := &EgressRule{
 		EgressCommonRule: EgressCommonRule{
-			ToGroups: []ToGroups{
-				GetToGroupsRule(),
+			ToGroups: []Groups{
+				GetGroupsRule(),
 			},
 		},
 	}
 	_, err := eg.CreateDerivative(context.TODO())
-	c.Assert(err, NotNil)
+	require.Error(t, err)
 }
 
-func (s *PolicyAPITestSuite) TestCreateDerivativeRuleWithToGroupsAndToPorts(c *C) {
+func TestCreateDerivativeRuleWithToGroupsAndToPorts(t *testing.T) {
 	cb := GetCallBackWithRule("192.168.1.1")
 	RegisterToGroupsProvider(AWSProvider, cb)
 
 	eg := &EgressRule{
 		EgressCommonRule: EgressCommonRule{
-			ToGroups: []ToGroups{
-				GetToGroupsRule(),
+			ToGroups: []Groups{
+				GetGroupsRule(),
 			},
 		},
 	}
 
 	// Checking that the derivative rule is working correctly
-	c.Assert(eg.RequiresDerivative(), Equals, true)
+	require.True(t, eg.RequiresDerivative())
 
 	newRule, err := eg.CreateDerivative(context.TODO())
-	c.Assert(err, IsNil)
-	c.Assert(len(newRule.ToGroups), Equals, 0)
-	c.Assert(len(newRule.ToCIDRSet), Equals, 1)
+	require.NoError(t, err)
+	require.Empty(t, newRule.ToGroups)
+	require.Len(t, newRule.ToCIDRSet, 1)
 }
 
-func (s *PolicyAPITestSuite) TestCreateDerivativeWithoutErrorAndNoIPs(c *C) {
+func TestCreateDerivativeWithoutErrorAndNoIPs(t *testing.T) {
 	// Testing that if the len of the Ips returned by provider is 0 to block
 	// all the IPS outside.
 	cb := GetCallBackWithRule()
@@ -91,264 +92,182 @@ func (s *PolicyAPITestSuite) TestCreateDerivativeWithoutErrorAndNoIPs(c *C) {
 
 	eg := &EgressRule{
 		EgressCommonRule: EgressCommonRule{
-			ToGroups: []ToGroups{
-				GetToGroupsRule(),
+			ToGroups: []Groups{
+				GetGroupsRule(),
 			},
 		},
 	}
 
 	// Checking that the derivative rule is working correctly
-	c.Assert(eg.RequiresDerivative(), Equals, true)
+	require.True(t, eg.RequiresDerivative())
 
 	newRule, err := eg.CreateDerivative(context.TODO())
-	c.Assert(err, IsNil)
-	c.Assert(newRule, checker.DeepEquals, &EgressRule{})
+	require.NoError(t, err)
+	require.Equal(t, &EgressRule{
+		EgressCommonRule: EgressCommonRule{
+			ToCIDRSet: CIDRRuleSlice{},
+		},
+	}, newRule)
 }
 
-func (s *PolicyAPITestSuite) TestIsLabelBasedEgress(c *C) {
-	type args struct {
-		eg *EgressRule
-	}
-	type wanted struct {
-		isLabelBased bool
-	}
-
-	tests := []struct {
-		name        string
-		setupArgs   func() args
-		setupWanted func() wanted
+func TestEgressCommonRuleDeepEqual(t *testing.T) {
+	testCases := []struct {
+		name      string
+		in, other *EgressCommonRule
+		expected  bool
 	}{
 		{
-			name: "label-based-rule",
-			setupArgs: func() args {
-				return args{
-					eg: &EgressRule{
-						EgressCommonRule: EgressCommonRule{
-							ToEndpoints: []EndpointSelector{
-								{
-									LabelSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{
-										"test": "true",
-									},
-									},
-								},
-							},
-						},
-					},
-				}
-			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
-			},
+			name:     "All fields are nil in both",
+			in:       &EgressCommonRule{},
+			other:    &EgressCommonRule{},
+			expected: true,
 		},
 		{
-			name: "cidr-based-rule",
-			setupArgs: func() args {
-				return args{
-					&EgressRule{
-						EgressCommonRule: EgressCommonRule{
-							ToCIDR: CIDRSlice{"192.0.0.0/3"},
-						},
-					},
-				}
+			name: "All fields are empty in both",
+			in: &EgressCommonRule{
+				ToEndpoints: []EndpointSelector{},
+				ToCIDR:      []CIDR{},
+				ToCIDRSet:   []CIDRRule{},
+				ToEntities:  []Entity{},
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &EgressCommonRule{
+				ToEndpoints: []EndpointSelector{},
+				ToCIDR:      []CIDR{},
+				ToCIDRSet:   []CIDRRule{},
+				ToEntities:  []Entity{},
 			},
+			expected: true,
 		},
 		{
-			name: "cidrset-based-rule",
-			setupArgs: func() args {
-				return args{
-					&EgressRule{
-						EgressCommonRule: EgressCommonRule{
-							ToCIDRSet: CIDRRuleSlice{
-								{
-									Cidr: "192.0.0.0/3",
-								},
-							},
-						},
-					},
-				}
+			name: "ToEndpoints is nil in left operand",
+			in: &EgressCommonRule{
+				ToEndpoints: nil,
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &EgressCommonRule{
+				ToEndpoints: []EndpointSelector{},
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-requirements",
-			setupArgs: func() args {
-				return args{
-					&EgressRule{
-						EgressCommonRule: EgressCommonRule{
-							ToRequires: []EndpointSelector{
-								{
-									LabelSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{
-										"test": "true",
-									},
-									},
-								},
-							},
-						},
-					},
-				}
+			name: "ToEndpoints is empty in left operand",
+			in: &EgressCommonRule{
+				ToEndpoints: []EndpointSelector{},
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: false,
-				}
+			other: &EgressCommonRule{
+				ToEndpoints: nil,
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-services",
-			setupArgs: func() args {
-
-				svcLabels := map[string]string{
-					"app": "tested-service",
-				}
-				selector := ServiceSelector(NewESFromMatchRequirements(svcLabels, nil))
-				return args{
-					&EgressRule{
-						EgressCommonRule: EgressCommonRule{
-							ToServices: []Service{
-								{
-									K8sServiceSelector: &K8sServiceSelectorNamespace{
-										Selector:  selector,
-										Namespace: "",
-									},
-								},
-							},
-						},
-					},
-				}
+			name: "ToCIDR is nil in left operand",
+			in: &EgressCommonRule{
+				ToCIDR: nil,
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: false,
-				}
+			other: &EgressCommonRule{
+				ToCIDR: []CIDR{},
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-fqdn",
-			setupArgs: func() args {
-				return args{
-					&EgressRule{
-						ToFQDNs: FQDNSelectorSlice{
-							{
-								MatchName: "cilium.io",
-							},
-						},
-					},
-				}
+			name: "ToCIDR is empty in left operand",
+			in: &EgressCommonRule{
+				ToCIDR: []CIDR{},
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: false,
-				}
+			other: &EgressCommonRule{
+				ToCIDR: nil,
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-entities",
-			setupArgs: func() args {
-				return args{
-					&EgressRule{
-						EgressCommonRule: EgressCommonRule{
-							ToEntities: EntitySlice{
-								EntityHost,
-							},
-						},
-					},
-				}
+			name: "ToCIDRSet is nil in left operand",
+			in: &EgressCommonRule{
+				ToCIDRSet: nil,
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &EgressCommonRule{
+				ToCIDRSet: []CIDRRule{},
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-no-l3-specification",
-			setupArgs: func() args {
-				return args{
-					&EgressRule{
-						ToPorts: []PortRule{
-							{
-								Ports: []PortProtocol{
-									{
-										Port:     "80",
-										Protocol: ProtoTCP,
-									},
-								},
-							},
-						},
-					},
-				}
+			name: "ToCIDRSet is empty in left operand",
+			in: &EgressCommonRule{
+				ToCIDRSet: []CIDRRule{},
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &EgressCommonRule{
+				ToCIDRSet: nil,
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-icmp",
-			setupArgs: func() args {
-				return args{
-					&EgressRule{
-						ICMPs: ICMPRules{
-							{
-								Fields: []ICMPField{
-									{
-										Type: 8,
-									},
-								},
-							},
-						},
-					},
-				}
+			name: "ToEntities is nil in left operand",
+			in: &EgressCommonRule{
+				ToEntities: nil,
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &EgressCommonRule{
+				ToEntities: []Entity{},
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-icmp6",
-			setupArgs: func() args {
-				return args{
-					&EgressRule{
-						ICMPs: ICMPRules{
-							{
-								Fields: []ICMPField{
-									{
-										Family: IPv6Family,
-										Type:   128,
-									},
-								},
-							},
-						},
-					},
-				}
+			name: "ToEntities is empty in left operand",
+			in: &EgressCommonRule{
+				ToEntities: []Entity{},
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &EgressCommonRule{
+				ToEntities: nil,
 			},
+			expected: false,
 		},
 	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.expected, tc.in.DeepEqual(tc.other))
+		})
+	}
+}
 
-	for _, tt := range tests {
-		args := tt.setupArgs()
-		want := tt.setupWanted()
-		c.Assert(args.eg.sanitize(), Equals, nil, Commentf("Test name: %q", tt.name))
-		isLabelBased := args.eg.AllowsWildcarding()
-		c.Assert(isLabelBased, checker.DeepEquals, want.isLabelBased, Commentf("Test name: %q", tt.name))
+func TestEgressCommonRuleMarshalling(t *testing.T) {
+	testCases := []struct {
+		name     string
+		in       *EgressCommonRule
+		expected string
+	}{
+		{
+			name: "ToCIDRSet is nil",
+			in: &EgressCommonRule{
+				ToCIDRSet: nil,
+			},
+			expected: `{}`,
+		},
+		{
+			name: "ToCIDRSet is empty",
+			in: &EgressCommonRule{
+				ToCIDRSet: []CIDRRule{},
+			},
+			expected: `{"toCIDRSet":[]}`,
+		},
+		{
+			name: "ToCIDRSet has CIDR",
+			in: &EgressCommonRule{
+				ToCIDRSet: []CIDRRule{
+					{
+						Cidr: "192.168.1.0/24",
+					},
+				},
+			},
+			expected: `{"toCIDRSet":[{"cidr":"192.168.1.0/24"}]}`,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.in)
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, string(data))
+
+			rule := EgressCommonRule{}
+			err = json.Unmarshal(data, &rule)
+			require.NoError(t, err)
+			require.True(t, tc.in.DeepEqual(&rule))
+		})
 	}
 }

@@ -20,8 +20,6 @@ import (
 
 // ClockSource Status of BPF clock source
 //
-// +k8s:deepcopy-gen=true
-//
 // swagger:model ClockSource
 type ClockSource struct {
 
@@ -29,7 +27,7 @@ type ClockSource struct {
 	Hertz int64 `json:"hertz,omitempty"`
 
 	// Datapath clock source
-	// Enum: [ktime jiffies]
+	// Enum: ["ktime","jiffies"]
 	Mode string `json:"mode,omitempty"`
 }
 
@@ -47,7 +45,7 @@ func (m *ClockSource) Validate(formats strfmt.Registry) error {
 	return nil
 }
 
-var clockSourceTypeModePropEnum []interface{}
+var clockSourceTypeModePropEnum []any
 
 func init() {
 	var res []string

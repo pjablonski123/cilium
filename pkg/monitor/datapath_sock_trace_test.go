@@ -8,16 +8,15 @@ import (
 	"encoding/binary"
 	"testing"
 
-	. "github.com/cilium/checkmate"
+	"github.com/stretchr/testify/require"
 
-	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/types"
 )
 
-func (s *MonitorSuite) TestDecodeTraceSockNotify(c *C) {
+func TestDecodeTraceSockNotify(t *testing.T) {
 	// This check on the struct length constant is there to ensure that this
 	// test is updated when the struct changes.
-	c.Assert(TraceSockNotifyLen, Equals, 38)
+	require.Equal(t, 40, TraceSockNotifyLen)
 
 	input := TraceSockNotify{
 		Type:       0x00,
@@ -39,36 +38,35 @@ func (s *MonitorSuite) TestDecodeTraceSockNotify(c *C) {
 	}
 
 	buf := bytes.NewBuffer(nil)
-	err := binary.Write(buf, byteorder.Native, input)
-	c.Assert(err, IsNil)
+	err := binary.Write(buf, binary.NativeEndian, input)
+	require.NoError(t, err)
 
 	output := &TraceSockNotify{}
-	err = DecodeTraceSockNotify(buf.Bytes(), output)
-	c.Assert(err, IsNil)
+	err = output.Decode(buf.Bytes())
+	require.NoError(t, err)
 
-	c.Assert(output.Type, Equals, input.Type)
-	c.Assert(output.XlatePoint, Equals, input.XlatePoint)
-	c.Assert(output.DstIP, Equals, input.DstIP)
-	c.Assert(output.DstPort, Equals, input.DstPort)
-	c.Assert(output.SockCookie, Equals, input.SockCookie)
-	c.Assert(output.L4Proto, Equals, input.L4Proto)
-	c.Assert(output.Flags, Equals, input.Flags)
+	require.Equal(t, input.Type, output.Type)
+	require.Equal(t, input.XlatePoint, output.XlatePoint)
+	require.Equal(t, input.DstIP, output.DstIP)
+	require.Equal(t, input.DstPort, output.DstPort)
+	require.Equal(t, input.SockCookie, output.SockCookie)
+	require.Equal(t, input.L4Proto, output.L4Proto)
+	require.Equal(t, input.Flags, output.Flags)
 }
 
 func BenchmarkNewDecodeTraceSockNotify(b *testing.B) {
 	input := &TraceSockNotify{}
 	buf := bytes.NewBuffer(nil)
 
-	if err := binary.Write(buf, byteorder.Native, input); err != nil {
+	if err := binary.Write(buf, binary.NativeEndian, input); err != nil {
 		b.Fatal(err)
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		tsn := &TraceSockNotify{}
-		if err := DecodeTraceSockNotify(buf.Bytes(), tsn); err != nil {
+		if err := tsn.Decode(buf.Bytes()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -78,16 +76,15 @@ func BenchmarkOldDecodeTraceSockNotify(b *testing.B) {
 	input := &TraceSockNotify{}
 	buf := bytes.NewBuffer(nil)
 
-	if err := binary.Write(buf, byteorder.Native, input); err != nil {
+	if err := binary.Write(buf, binary.NativeEndian, input); err != nil {
 		b.Fatal(err)
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		tsn := &TraceSockNotify{}
-		if err := binary.Read(bytes.NewBuffer(buf.Bytes()), byteorder.Native, tsn); err != nil {
+		if err := binary.Read(bytes.NewBuffer(buf.Bytes()), binary.NativeEndian, tsn); err != nil {
 			b.Fatal(err)
 		}
 	}

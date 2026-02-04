@@ -6,31 +6,41 @@ import (
 	"context"
 	"fmt"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
-	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"time"
 )
 
-// Attaches an EBS volume to a running or stopped instance and exposes it to the
-// instance with the specified device name. Encrypted EBS volumes must be attached
-// to instances that support Amazon EBS encryption. For more information, see
-// Amazon EBS encryption (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSEncryption.html)
-// in the Amazon Elastic Compute Cloud User Guide. After you attach an EBS volume,
-// you must make it available. For more information, see Make an EBS volume
-// available for use (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-using-volumes.html)
-// . If a volume has an Amazon Web Services Marketplace product code:
+// Attaches an Amazon EBS volume to a running or stopped instance, and exposes it
+// to the instance with the specified device name.
+//
+// The maximum number of Amazon EBS volumes that you can attach to an instance
+// depends on the instance type. If you exceed the volume attachment limit for an
+// instance type, the attachment request fails with the AttachmentLimitExceeded
+// error. For more information, see [Instance volume limits].
+//
+// After you attach an EBS volume, you must make it available for use. For more
+// information, see [Make an EBS volume available for use].
+//
+// If a volume has an Amazon Web Services Marketplace product code:
+//
 //   - The volume can be attached only to a stopped instance.
+//
 //   - Amazon Web Services Marketplace product codes are copied from the volume to
 //     the instance.
+//
 //   - You must be subscribed to the product.
+//
 //   - The instance type and operating system of the instance must support the
 //     product. For example, you can't detach a volume from a Windows instance and
 //     attach it to a Linux instance.
 //
-// For more information, see Attach an Amazon EBS volume to an instance (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-attaching-volume.html)
-// in the Amazon Elastic Compute Cloud User Guide.
+// For more information, see [Attach an Amazon EBS volume to an instance] in the Amazon EBS User Guide.
+//
+// [Make an EBS volume available for use]: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-using-volumes.html
+// [Attach an Amazon EBS volume to an instance]: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-attaching-volume.html
+// [Instance volume limits]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/volume_limits.html
 func (c *Client) AttachVolume(ctx context.Context, params *AttachVolumeInput, optFns ...func(*Options)) (*AttachVolumeOutput, error) {
 	if params == nil {
 		params = &AttachVolumeInput{}
@@ -70,11 +80,19 @@ type AttachVolumeInput struct {
 	// UnauthorizedOperation .
 	DryRun *bool
 
+	// The index of the EBS card. Some instance types support multiple EBS cards. The
+	// default EBS card index is 0.
+	EbsCardIndex *int32
+
 	noSmithyDocumentSerde
 }
 
 // Describes volume attachment details.
 type AttachVolumeOutput struct {
+
+	// The ARN of the Amazon Web Services-managed resource to which the volume is
+	// attached.
+	AssociatedResource *string
 
 	// The time stamp when the attachment initiated.
 	AttachTime *time.Time
@@ -83,10 +101,27 @@ type AttachVolumeOutput struct {
 	DeleteOnTermination *bool
 
 	// The device name.
+	//
+	// If the volume is attached to an Amazon Web Services-managed resource, this
+	// parameter returns null .
 	Device *string
 
+	// The index of the EBS card. Some instance types support multiple EBS cards. The
+	// default EBS card index is 0.
+	EbsCardIndex *int32
+
 	// The ID of the instance.
+	//
+	// If the volume is attached to an Amazon Web Services-managed resource, this
+	// parameter returns null .
 	InstanceId *string
+
+	// The service principal of the Amazon Web Services service that owns the
+	// underlying resource to which the volume is attached.
+	//
+	// This parameter is returned only for volumes that are attached to Amazon Web
+	// Services-managed resources.
+	InstanceOwningService *string
 
 	// The attachment state of the volume.
 	State types.VolumeAttachmentState
@@ -122,25 +157,28 @@ func (c *Client) addOperationAttachVolumeMiddlewares(stack *middleware.Stack, op
 	if err = addSetLoggerMiddleware(stack, options); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddClientRequestIDMiddleware(stack); err != nil {
+	if err = addClientRequestID(stack); err != nil {
 		return err
 	}
-	if err = smithyhttp.AddComputeContentLengthMiddleware(stack); err != nil {
+	if err = addComputeContentLength(stack); err != nil {
 		return err
 	}
 	if err = addResolveEndpointMiddleware(stack, options); err != nil {
 		return err
 	}
-	if err = v4.AddComputePayloadSHA256Middleware(stack); err != nil {
+	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetryMiddlewares(stack, options); err != nil {
+	if err = addRetry(stack, options); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRawResponseToMetadata(stack); err != nil {
+	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRecordResponseTiming(stack); err != nil {
+	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -155,13 +193,22 @@ func (c *Client) addOperationAttachVolumeMiddlewares(stack *middleware.Stack, op
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
+	if err = addCredentialSource(stack, options); err != nil {
+		return err
+	}
 	if err = addOpAttachVolumeValidationMiddleware(stack); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opAttachVolume(options.Region), middleware.Before); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRecursionDetection(stack); err != nil {
+	if err = addRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addRequestIDRetrieverMiddleware(stack); err != nil {
@@ -174,6 +221,15 @@ func (c *Client) addOperationAttachVolumeMiddlewares(stack *middleware.Stack, op
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

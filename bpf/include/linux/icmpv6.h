@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /* Copyright Authors of the Linux kernel */
-#ifndef _LINUX_ICMPV6_H
-#define _LINUX_ICMPV6_H
+#pragma once
 
 #include <linux/types.h>
 #include <linux/in6.h>
@@ -69,6 +68,7 @@ struct icmp6hdr {
 #define icmp6_mtu		icmp6_dataun.un_data32[0]
 #define icmp6_unused		icmp6_dataun.un_data32[0]
 #define icmp6_maxdelay		icmp6_dataun.un_data16[0]
+#define icmp6_datagram_len	icmp6_dataun.un_data8[0]
 #define icmp6_router		icmp6_dataun.u_nd_advt.router
 #define icmp6_solicited		icmp6_dataun.u_nd_advt.solicited
 #define icmp6_override		icmp6_dataun.u_nd_advt.override
@@ -91,6 +91,8 @@ struct icmp6hdr {
 #define ICMPV6_TIME_EXCEED		3
 #define ICMPV6_PARAMPROB		4
 
+#define ICMPV6_ERRMSG_MAX       127
+
 #define ICMPV6_INFOMSG_MASK		0x80
 
 #define ICMPV6_ECHO_REQUEST		128
@@ -98,6 +100,9 @@ struct icmp6hdr {
 #define ICMPV6_MGM_QUERY		130
 #define ICMPV6_MGM_REPORT       	131
 #define ICMPV6_MGM_REDUCTION    	132
+
+#define ICMPV6_NA_MSG			136
+#define ICMPV6_REDIRECT			137
 
 #define ICMPV6_NI_QUERY			139
 #define ICMPV6_NI_REPLY			140
@@ -108,6 +113,11 @@ struct icmp6hdr {
 #define ICMPV6_DHAAD_REPLY		145
 #define ICMPV6_MOBILE_PREFIX_SOL	146
 #define ICMPV6_MOBILE_PREFIX_ADV	147
+
+#define ICMPV6_MRDISC_ADV		151
+#define ICMPV6_MRDISC_SOL		152
+
+#define ICMPV6_MSG_MAX          255
 
 /*
  *	Codes for Destination Unreachable
@@ -132,7 +142,11 @@ struct icmp6hdr {
 #define ICMPV6_HDR_FIELD		0
 #define ICMPV6_UNK_NEXTHDR		1
 #define ICMPV6_UNK_OPTION		2
+#define ICMPV6_HDR_INCOMP		3
 
+/* Codes for EXT_ECHO (PROBE) */
+#define ICMPV6_EXT_ECHO_REQUEST		160
+#define ICMPV6_EXT_ECHO_REPLY		161
 /*
  *	constants for (set|get)sockopt
  */
@@ -163,6 +177,3 @@ struct icmp6_filter {
 #define MLD2_BLOCK_OLD_SOURCES	6
 
 #define MLD2_ALL_MCR_INIT { { { 0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,0x16 } } }
-
-
-#endif /* _LINUX_ICMPV6_H */

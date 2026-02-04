@@ -29,10 +29,13 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"strings"
+	"testing"
 
 	"golang.org/x/net/http2"
 
 	"sigs.k8s.io/gateway-api/conformance/utils/config"
+	"sigs.k8s.io/gateway-api/conformance/utils/tlog"
 )
 
 const (
@@ -47,6 +50,7 @@ type RoundTripper interface {
 
 // Request is the primary input for making a request.
 type Request struct {
+	T                *testing.T
 	URL              url.URL
 	Host             string
 	Protocol         string
@@ -56,6 +60,7 @@ type Request struct {
 	CertPem          []byte
 	KeyPem           []byte
 	Server           string
+	Body             string
 }
 
 // String returns a printable version of Request for logging. Note that the
@@ -83,6 +88,14 @@ type CapturedRequest struct {
 
 	Namespace string `json:"namespace"`
 	Pod       string `json:"pod"`
+	TLS       TLS    `json:"tls"`
+}
+
+type TLS struct {
+	Version            string `json:"version"`
+	ServerName         string `json:"serverName"`
+	NegotiatedProtocol string `json:"negotiatedProtocol"`
+	CipherSuite        string `json:"cipherSuite"`
 }
 
 // RedirectRequest contains a follow up request metadata captured from a redirect
@@ -96,11 +109,12 @@ type RedirectRequest struct {
 
 // CapturedResponse contains response metadata.
 type CapturedResponse struct {
-	StatusCode      int
-	ContentLength   int64
-	Protocol        string
-	Headers         map[string][]string
-	RedirectRequest *RedirectRequest
+	StatusCode       int
+	ContentLength    int64
+	Protocol         string
+	Headers          map[string][]string
+	RedirectRequest  *RedirectRequest
+	PeerCertificates []*x509.Certificate
 }
 
 // DefaultRoundTripper is the default implementation of a RoundTripper. It will
@@ -141,7 +155,7 @@ func (d *DefaultRoundTripper) h2cPriorKnowledgeTransport(request Request) (http.
 
 	transport := &http2.Transport{
 		AllowHTTP: true,
-		DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, network, addr)
 		},
@@ -176,7 +190,7 @@ func (d *DefaultRoundTripper) defaultRoundTrip(request Request, transport http.R
 	client := &http.Client{}
 
 	if request.UnfollowRedirect {
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
 	}
@@ -189,7 +203,13 @@ func (d *DefaultRoundTripper) defaultRoundTrip(request Request, transport http.R
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), d.TimeoutConfig.RequestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, request.URL.String(), nil)
+	ctx = withT(ctx, request.T)
+
+	var reqBody io.Reader
+	if request.Body != "" {
+		reqBody = strings.NewReader(request.Body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, request.URL.String(), reqBody)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -211,11 +231,23 @@ func (d *DefaultRoundTripper) defaultRoundTrip(request Request, transport http.R
 			return nil, nil, err
 		}
 
-		fmt.Printf("Sending Request:\n%s\n\n", formatDump(dump, "< "))
+		tlog.Logf(request.T, "Sending Request:\n%s\n\n", formatDump(dump, "< "))
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if d.Debug {
+			var dump []byte
+			if resp != nil {
+				dump, err = httputil.DumpResponse(resp, true)
+				if err != nil {
+					return nil, nil, err
+				}
+				tlog.Logf(request.T, "Error sending request:\n%s\n\n", formatDump(dump, "< "))
+			} else {
+				tlog.Logf(request.T, "Error sending request: %v (no response)\n", err)
+			}
+		}
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
@@ -227,7 +259,7 @@ func (d *DefaultRoundTripper) defaultRoundTrip(request Request, transport http.R
 			return nil, nil, err
 		}
 
-		fmt.Printf("Received Response:\n%s\n\n", formatDump(dump, "< "))
+		tlog.Logf(request.T, "Received Response:\n%s\n\n", formatDump(dump, "< "))
 	}
 
 	cReq := &CapturedRequest{}
@@ -252,6 +284,10 @@ func (d *DefaultRoundTripper) defaultRoundTrip(request Request, transport http.R
 		ContentLength: resp.ContentLength,
 		Protocol:      resp.Proto,
 		Headers:       resp.Header,
+	}
+
+	if resp.TLS != nil {
+		cRes.PeerCertificates = resp.TLS.PeerCertificates
 	}
 
 	if IsRedirect(resp.StatusCode) {
@@ -321,6 +357,25 @@ func IsTimeoutError(statusCode int) bool {
 		return true
 	}
 	return false
+}
+
+// testingTContextKey is the key for adding testing.T to the context.Context
+type testingTContextKey struct{}
+
+// withT returns a context with the testing.T added as a value.
+func withT(ctx context.Context, t *testing.T) context.Context {
+	return context.WithValue(ctx, testingTContextKey{}, t)
+}
+
+// TFromContext returns the testing.T added to the context if available.
+func TFromContext(ctx context.Context) (*testing.T, bool) {
+	v := ctx.Value(testingTContextKey{})
+	if v != nil {
+		if t, ok := v.(*testing.T); ok {
+			return t, true
+		}
+	}
+	return nil, false
 }
 
 var startLineRegex = regexp.MustCompile(`(?m)^`)

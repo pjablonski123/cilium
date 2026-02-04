@@ -24,13 +24,13 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
-
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/gateway-api/conformance/utils/http"
 	"sigs.k8s.io/gateway-api/conformance/utils/kubernetes"
 	"sigs.k8s.io/gateway-api/conformance/utils/suite"
 	"sigs.k8s.io/gateway-api/conformance/utils/tls"
+	"sigs.k8s.io/gateway-api/pkg/features"
 )
 
 func init() {
@@ -40,16 +40,16 @@ func init() {
 var TLSRouteSimpleSameNamespace = suite.ConformanceTest{
 	ShortName:   "TLSRouteSimpleSameNamespace",
 	Description: "A single TLSRoute in the gateway-conformance-infra namespace attaches to a Gateway in the same namespace",
-	Features: []suite.SupportedFeature{
-		suite.SupportGateway,
-		suite.SupportTLSRoute,
+	Features: []features.FeatureName{
+		features.SupportGateway,
+		features.SupportTLSRoute,
 	},
 	Manifests: []string{"tests/tlsroute-simple-same-namespace.yaml"},
 	Test: func(t *testing.T, suite *suite.ConformanceTestSuite) {
 		ns := "gateway-conformance-infra"
 		routeNN := types.NamespacedName{Name: "gateway-conformance-infra-test", Namespace: ns}
 		gwNN := types.NamespacedName{Name: "gateway-tlsroute", Namespace: ns}
-		certNN := types.NamespacedName{Name: "tls-passthrough-checks-certificate", Namespace: ns}
+		certNN := types.NamespacedName{Name: "tls-checks-certificate", Namespace: ns}
 
 		kubernetes.NamespacesMustBeReady(t, suite.Client, suite.TimeoutConfig, []string{ns})
 

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/stretchr/testify/require"
@@ -17,13 +18,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cilium/cilium/pkg/k8s/client"
+	k8sClient "github.com/cilium/cilium/pkg/k8s/client/testutils"
 )
 
 type mockEntryClient struct {
-	ListEntriesFunc      func(ctx context.Context, in *entryv1.ListEntriesRequest, opts ...grpc.CallOption) (*entryv1.ListEntriesResponse, error)
-	BatchCreateEntryFunc func(ctx context.Context, in *entryv1.BatchCreateEntryRequest, opts ...grpc.CallOption) (*entryv1.BatchCreateEntryResponse, error)
-	BatchUpdateEntryFunc func(ctx context.Context, in *entryv1.BatchUpdateEntryRequest, opts ...grpc.CallOption) (*entryv1.BatchUpdateEntryResponse, error)
-	BatchDeleteEntryFunc func(ctx context.Context, in *entryv1.BatchDeleteEntryRequest, opts ...grpc.CallOption) (*entryv1.BatchDeleteEntryResponse, error)
+	ListEntriesFunc           func(ctx context.Context, in *entryv1.ListEntriesRequest, opts ...grpc.CallOption) (*entryv1.ListEntriesResponse, error)
+	BatchCreateEntryFunc      func(ctx context.Context, in *entryv1.BatchCreateEntryRequest, opts ...grpc.CallOption) (*entryv1.BatchCreateEntryResponse, error)
+	BatchUpdateEntryFunc      func(ctx context.Context, in *entryv1.BatchUpdateEntryRequest, opts ...grpc.CallOption) (*entryv1.BatchUpdateEntryResponse, error)
+	BatchDeleteEntryFunc      func(ctx context.Context, in *entryv1.BatchDeleteEntryRequest, opts ...grpc.CallOption) (*entryv1.BatchDeleteEntryResponse, error)
+	SyncAuthorizedEntriesFunc func(ctx context.Context, opts ...grpc.CallOption) (entryv1.Entry_SyncAuthorizedEntriesClient, error)
 }
 
 func (m mockEntryClient) CountEntries(ctx context.Context, in *entryv1.CountEntriesRequest, opts ...grpc.CallOption) (*entryv1.CountEntriesResponse, error) {
@@ -51,6 +54,10 @@ func (m mockEntryClient) BatchDeleteEntry(ctx context.Context, in *entryv1.Batch
 }
 
 func (m mockEntryClient) GetAuthorizedEntries(ctx context.Context, in *entryv1.GetAuthorizedEntriesRequest, opts ...grpc.CallOption) (*entryv1.GetAuthorizedEntriesResponse, error) {
+	panic("implement me")
+}
+
+func (m mockEntryClient) SyncAuthorizedEntries(ctx context.Context, opts ...grpc.CallOption) (entryv1.Entry_SyncAuthorizedEntriesClient, error) {
 	panic("implement me")
 }
 
@@ -82,7 +89,7 @@ func TestClient_Upsert(t *testing.T) {
 			fields: fields{
 				entry: mockEntryClient{
 					ListEntriesFunc: func(ctx context.Context, in *entryv1.ListEntriesRequest, opts ...grpc.CallOption) (*entryv1.ListEntriesResponse, error) {
-						require.Equal(t, in, &entryv1.ListEntriesRequest{
+						require.Equal(t, &entryv1.ListEntriesRequest{
 							Filter: &entryv1.ListEntriesRequest_Filter{
 								BySpiffeId: &types.SPIFFEID{
 									TrustDomain: "dummy.trusted.domain",
@@ -102,7 +109,7 @@ func TestClient_Upsert(t *testing.T) {
 									Match: types.SelectorMatch_MATCH_EXACT,
 								},
 							},
-						})
+						}, in)
 						return nil, fmt.Errorf("something is wrong")
 					},
 				},
@@ -117,7 +124,7 @@ func TestClient_Upsert(t *testing.T) {
 			fields: fields{
 				entry: mockEntryClient{
 					ListEntriesFunc: func(ctx context.Context, in *entryv1.ListEntriesRequest, opts ...grpc.CallOption) (*entryv1.ListEntriesResponse, error) {
-						require.Equal(t, in, &entryv1.ListEntriesRequest{
+						require.Equal(t, &entryv1.ListEntriesRequest{
 							Filter: &entryv1.ListEntriesRequest_Filter{
 								BySpiffeId: &types.SPIFFEID{
 									TrustDomain: "dummy.trusted.domain",
@@ -137,7 +144,7 @@ func TestClient_Upsert(t *testing.T) {
 									Match: types.SelectorMatch_MATCH_EXACT,
 								},
 							},
-						})
+						}, in)
 						return nil, fmt.Errorf("NotFound")
 					},
 					BatchCreateEntryFunc: func(ctx context.Context, in *entryv1.BatchCreateEntryRequest, opts ...grpc.CallOption) (*entryv1.BatchCreateEntryResponse, error) {
@@ -167,7 +174,7 @@ func TestClient_Upsert(t *testing.T) {
 			fields: fields{
 				entry: mockEntryClient{
 					ListEntriesFunc: func(ctx context.Context, in *entryv1.ListEntriesRequest, opts ...grpc.CallOption) (*entryv1.ListEntriesResponse, error) {
-						require.Equal(t, in, &entryv1.ListEntriesRequest{
+						require.Equal(t, &entryv1.ListEntriesRequest{
 							Filter: &entryv1.ListEntriesRequest_Filter{
 								BySpiffeId: &types.SPIFFEID{
 									TrustDomain: "dummy.trusted.domain",
@@ -187,7 +194,7 @@ func TestClient_Upsert(t *testing.T) {
 									Match: types.SelectorMatch_MATCH_EXACT,
 								},
 							},
-						})
+						}, in)
 						return &entryv1.ListEntriesResponse{
 							Entries: []*types.Entry{{}},
 						}, nil
@@ -218,7 +225,7 @@ func TestClient_Upsert(t *testing.T) {
 				cfg:   cfg,
 				entry: tt.fields.entry,
 			}
-			if err := c.Upsert(context.Background(), tt.args.id); (err != nil) != tt.wantErr {
+			if err := c.Upsert(t.Context(), tt.args.id); (err != nil) != tt.wantErr {
 				t.Errorf("Upsert() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
@@ -253,7 +260,7 @@ func TestClient_Delete(t *testing.T) {
 			fields: fields{
 				entry: mockEntryClient{
 					ListEntriesFunc: func(ctx context.Context, in *entryv1.ListEntriesRequest, opts ...grpc.CallOption) (*entryv1.ListEntriesResponse, error) {
-						require.Equal(t, in, &entryv1.ListEntriesRequest{
+						require.Equal(t, &entryv1.ListEntriesRequest{
 							Filter: &entryv1.ListEntriesRequest_Filter{
 								BySpiffeId: &types.SPIFFEID{
 									TrustDomain: "dummy.trusted.domain",
@@ -273,7 +280,7 @@ func TestClient_Delete(t *testing.T) {
 									Match: types.SelectorMatch_MATCH_EXACT,
 								},
 							},
-						})
+						}, in)
 						return nil, fmt.Errorf("something is wrong")
 					},
 				},
@@ -288,7 +295,7 @@ func TestClient_Delete(t *testing.T) {
 			fields: fields{
 				entry: mockEntryClient{
 					ListEntriesFunc: func(ctx context.Context, in *entryv1.ListEntriesRequest, opts ...grpc.CallOption) (*entryv1.ListEntriesResponse, error) {
-						require.Equal(t, in, &entryv1.ListEntriesRequest{
+						require.Equal(t, &entryv1.ListEntriesRequest{
 							Filter: &entryv1.ListEntriesRequest_Filter{
 								BySpiffeId: &types.SPIFFEID{
 									TrustDomain: "dummy.trusted.domain",
@@ -308,7 +315,7 @@ func TestClient_Delete(t *testing.T) {
 									Match: types.SelectorMatch_MATCH_EXACT,
 								},
 							},
-						})
+						}, in)
 						return nil, fmt.Errorf("NotFound")
 					},
 				},
@@ -322,7 +329,7 @@ func TestClient_Delete(t *testing.T) {
 			fields: fields{
 				entry: mockEntryClient{
 					ListEntriesFunc: func(ctx context.Context, in *entryv1.ListEntriesRequest, opts ...grpc.CallOption) (*entryv1.ListEntriesResponse, error) {
-						require.Equal(t, in, &entryv1.ListEntriesRequest{
+						require.Equal(t, &entryv1.ListEntriesRequest{
 							Filter: &entryv1.ListEntriesRequest_Filter{
 								BySpiffeId: &types.SPIFFEID{
 									TrustDomain: "dummy.trusted.domain",
@@ -342,7 +349,7 @@ func TestClient_Delete(t *testing.T) {
 									Match: types.SelectorMatch_MATCH_EXACT,
 								},
 							},
-						})
+						}, in)
 						return &entryv1.ListEntriesResponse{}, nil
 					},
 				},
@@ -356,7 +363,7 @@ func TestClient_Delete(t *testing.T) {
 			fields: fields{
 				entry: mockEntryClient{
 					ListEntriesFunc: func(ctx context.Context, in *entryv1.ListEntriesRequest, opts ...grpc.CallOption) (*entryv1.ListEntriesResponse, error) {
-						require.Equal(t, in, &entryv1.ListEntriesRequest{
+						require.Equal(t, &entryv1.ListEntriesRequest{
 							Filter: &entryv1.ListEntriesRequest_Filter{
 								BySpiffeId: &types.SPIFFEID{
 									TrustDomain: "dummy.trusted.domain",
@@ -376,7 +383,7 @@ func TestClient_Delete(t *testing.T) {
 									Match: types.SelectorMatch_MATCH_EXACT,
 								},
 							},
-						})
+						}, in)
 						return &entryv1.ListEntriesResponse{
 							Entries: []*types.Entry{{
 								Id: "auto-generated-dummy-id",
@@ -384,9 +391,9 @@ func TestClient_Delete(t *testing.T) {
 						}, nil
 					},
 					BatchDeleteEntryFunc: func(ctx context.Context, in *entryv1.BatchDeleteEntryRequest, opts ...grpc.CallOption) (*entryv1.BatchDeleteEntryResponse, error) {
-						require.Equal(t, in, &entryv1.BatchDeleteEntryRequest{
+						require.Equal(t, &entryv1.BatchDeleteEntryRequest{
 							Ids: []string{"auto-generated-dummy-id"},
-						})
+						}, in)
 						return &entryv1.BatchDeleteEntryResponse{}, nil
 					},
 				},
@@ -399,7 +406,7 @@ func TestClient_Delete(t *testing.T) {
 				cfg:   cfg,
 				entry: tt.fields.entry,
 			}
-			if err := c.Delete(context.Background(), tt.args.id); (err != nil) != tt.wantErr {
+			if err := c.Delete(t.Context(), tt.args.id); (err != nil) != tt.wantErr {
 				t.Errorf("Delete() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
@@ -407,8 +414,8 @@ func TestClient_Delete(t *testing.T) {
 }
 
 func Test_resolvedK8sService(t *testing.T) {
-	_, c := client.NewFakeClientset()
-	_, _ = c.CoreV1().Services("dummy-namespace").Create(context.Background(), &corev1.Service{
+	_, c := k8sClient.NewFakeClientset(hivetest.Logger(t))
+	_, _ = c.CoreV1().Services("dummy-namespace").Create(t.Context(), &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "valid-service",
 		},
@@ -468,7 +475,7 @@ func Test_resolvedK8sService(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolvedK8sService(context.Background(), tt.args.client, tt.args.address)
+			got, err := resolvedK8sService(t.Context(), tt.args.client, tt.args.address)
 			if tt.wantedErr != nil && (err == nil || !reflect.DeepEqual(err.Error(), tt.wantedErr.Error())) {
 				t.Errorf("resolvedK8sService() error = %v, wantErr %v", err, tt.wantedErr)
 				return

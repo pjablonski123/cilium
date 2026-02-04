@@ -5,6 +5,7 @@ package cache
 
 import (
 	"context"
+	"log/slog"
 	"reflect"
 
 	"github.com/cilium/cilium/api/v1/models"
@@ -13,18 +14,9 @@ import (
 	"github.com/cilium/cilium/pkg/identity/key"
 	identitymodel "github.com/cilium/cilium/pkg/identity/model"
 	"github.com/cilium/cilium/pkg/idpool"
-	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
-	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
-
-var (
-	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "identity-cache")
-)
-
-// IdentityCache is a cache of identity to labels mapping
-type IdentityCache map[identity.NumericIdentity]labels.LabelArray
 
 // IdentitiesModel is a wrapper so that we can implement the sort.Interface
 // to sort the slice by ID
@@ -37,7 +29,7 @@ func (s IdentitiesModel) Less(i, j int) bool {
 }
 
 // FromIdentityCache populates the provided model from an identity cache.
-func (s IdentitiesModel) FromIdentityCache(cache IdentityCache) IdentitiesModel {
+func (s IdentitiesModel) FromIdentityCache(cache identity.IdentityMap) IdentitiesModel {
 	for id, lbls := range cache {
 		s = append(s, identitymodel.CreateModel(&identity.Identity{
 			ID:     id,
@@ -48,9 +40,9 @@ func (s IdentitiesModel) FromIdentityCache(cache IdentityCache) IdentitiesModel 
 }
 
 // GetIdentityCache returns a cache of all known identities
-func (m *CachingIdentityAllocator) GetIdentityCache() IdentityCache {
-	log.Debug("getting identity cache for identity allocator manager")
-	cache := IdentityCache{}
+func (m *CachingIdentityAllocator) GetIdentityCache() identity.IdentityMap {
+	m.logger.Debug("getting identity cache for identity allocator manager")
+	cache := identity.IdentityMap{}
 
 	if m.isGlobalIdentityAllocatorInitialized() {
 		m.IdentityAllocator.ForeachCache(func(id idpool.ID, val allocator.AllocatorKey) {
@@ -58,8 +50,11 @@ func (m *CachingIdentityAllocator) GetIdentityCache() IdentityCache {
 				if gi, ok := val.(*key.GlobalIdentity); ok {
 					cache[identity.NumericIdentity(id)] = gi.LabelArray
 				} else {
-					log.Warningf("Ignoring unknown identity type '%s': %+v",
-						reflect.TypeOf(val), val)
+					m.logger.Warn(
+						"Ignoring unknown identity type",
+						logfields.Type, reflect.TypeOf(val),
+						logfields.Value, val,
+					)
 				}
 			}
 		})
@@ -107,36 +102,49 @@ func (m *CachingIdentityAllocator) GetIdentities() IdentitiesModel {
 }
 
 type identityWatcher struct {
-	owner IdentityAllocatorOwner
+	logger *slog.Logger
+	owner  IdentityAllocatorOwner
+
+	added, deleted identity.IdentityMap
+	toClose        []chan<- struct{}
 }
 
 // collectEvent records the 'event' as an added or deleted identity,
 // and makes sure that any identity is present in only one of the sets
 // (added or deleted).
-func collectEvent(event allocator.AllocatorEvent, added, deleted IdentityCache) bool {
+func (w *identityWatcher) collectEvent(event allocator.AllocatorEvent) {
+	if event.Done != nil {
+		w.toClose = append(w.toClose, event.Done)
+	}
+
+	if event.Typ == allocator.AllocatorChangeSync {
+		return
+	}
+
 	id := identity.NumericIdentity(event.ID)
 	// Only create events have the key
-	if event.Typ == kvstore.EventTypeCreate {
+	if event.Typ == allocator.AllocatorChangeUpsert {
 		if gi, ok := event.Key.(*key.GlobalIdentity); ok {
 			// Un-delete the added ID if previously
 			// 'deleted' so that collected events can be
 			// processed in any order.
-			delete(deleted, id)
-			added[id] = gi.LabelArray
-			return true
+			delete(w.deleted, id)
+			w.added[id] = gi.LabelArray
+		} else {
+			w.logger.Warn(
+				"collectEvent: Ignoring unknown identity type",
+				logfields.Type, reflect.TypeOf(event.Key),
+				logfields.Value, event.Key,
+			)
 		}
-		log.Warningf("collectEvent: Ignoring unknown identity type '%s': %+v",
-			reflect.TypeOf(event.Key), event.Key)
-		return false
+		return
 	}
 	// Reverse an add when subsequently deleted
-	delete(added, id)
+	delete(w.added, id)
 	// record the id deleted even if an add was reversed, as the
 	// id may also have previously existed, in which case the
 	// result is not no-op!
-	deleted[id] = labels.LabelArray{}
-
-	return true
+	w.deleted[id] = labels.LabelArray{}
 }
 
 // watch starts the identity watcher
@@ -144,27 +152,19 @@ func (w *identityWatcher) watch(events allocator.AllocatorEventRecvChan) {
 
 	go func() {
 		for {
-			added := IdentityCache{}
-			deleted := IdentityCache{}
-		First:
-			for {
-				event, ok := <-events
-				// Wait for one identity add or delete or stop
-				if !ok {
-					// 'events' was closed
-					return
-				}
-				// Collect first added and deleted labels
-				switch event.Typ {
-				case kvstore.EventTypeCreate, kvstore.EventTypeDelete:
-					if collectEvent(event, added, deleted) {
-						// First event collected
-						break First
-					}
-				default:
-					// Ignore modify events
-				}
+			w.added = identity.IdentityMap{}
+			w.deleted = identity.IdentityMap{}
+			w.toClose = nil
+
+			// Consume first event synchronously
+			event, ok := <-events
+			// Wait for one identity add or delete or stop
+			if !ok {
+				// 'events' was closed
+				return
 			}
+
+			w.collectEvent(event)
 
 		More:
 			for {
@@ -176,19 +176,26 @@ func (w *identityWatcher) watch(events allocator.AllocatorEventRecvChan) {
 						break More
 					}
 					// Collect more added and deleted labels
-					switch event.Typ {
-					case kvstore.EventTypeCreate, kvstore.EventTypeDelete:
-						collectEvent(event, added, deleted)
-					default:
-						// Ignore modify events
-					}
+					w.collectEvent(event)
+
 				default:
 					// No more events available without blocking
 					break More
 				}
 			}
 			// Issue collected updates
-			w.owner.UpdateIdentities(added, deleted) // disjoint sets
+			if len(w.added)+len(w.deleted) > 0 {
+				w.owner.UpdateIdentities(w.added, w.deleted) // disjoint sets
+			}
+
+			// If requested, inform producers that events have been consumed
+			//
+			// Note that this does not wait for PolicyMap updates to be distributed
+			// via the SelectorCache. This is curently safe, as it is only used during
+			// initialization, and thus there are no endpoints (and no policymaps).
+			for _, ch := range w.toClose {
+				close(ch)
+			}
 		}
 	}()
 }
@@ -210,6 +217,9 @@ func (m *CachingIdentityAllocator) isGlobalIdentityAllocatorInitialized() bool {
 // remote kvstores and finally fall back to the main kvstore.
 // May return nil for lookups if the allocator has not yet been synchronized.
 func (m *CachingIdentityAllocator) LookupIdentity(ctx context.Context, lbls labels.Labels) *identity.Identity {
+	ctx, cancel := context.WithTimeout(ctx, m.timeout)
+	defer cancel()
+
 	if reservedIdentity := identity.LookupReservedIdentityByLabels(lbls); reservedIdentity != nil {
 		return reservedIdentity
 	}
@@ -248,6 +258,9 @@ var unknownIdentity = identity.NewIdentity(identity.IdentityUnknown, labels.Labe
 // finally fall back to the main kvstore
 // May return nil for lookups if the allocator has not yet been synchronized.
 func (m *CachingIdentityAllocator) LookupIdentityByID(ctx context.Context, id identity.NumericIdentity) *identity.Identity {
+	ctx, cancel := context.WithTimeout(ctx, m.timeout)
+	defer cancel()
+
 	if id == identity.IdentityUnknown {
 		return unknownIdentity
 	}

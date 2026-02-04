@@ -4,29 +4,24 @@
 package bpf
 
 import (
-	"net"
+	"net/netip"
+	"testing"
 
-	. "github.com/cilium/checkmate"
+	"github.com/stretchr/testify/require"
 )
 
-// Hook up gocheck into the "go test" runner.
-type BPFTestSuite struct{}
-
-var _ = Suite(&BPFTestSuite{})
-
-func (s *BPFTestSuite) TestEndpointKeyToString(c *C) {
+func TestEndpointKeyToString(t *testing.T) {
 	tests := []struct {
-		ip string
+		addr netip.Addr
 	}{
-		{"0.0.0.0"},
-		{"192.0.2.3"},
-		{"::"},
-		{"fdff::ff"},
+		{netip.IPv4Unspecified()},
+		{netip.MustParseAddr("192.0.2.3")},
+		{netip.IPv6Unspecified()},
+		{netip.MustParseAddr("fdff::ff")},
 	}
 
 	for _, tt := range tests {
-		ip := net.ParseIP(tt.ip)
-		k := NewEndpointKey(ip, 0)
-		c.Assert(k.ToIP().String(), Equals, tt.ip)
+		k := NewEndpointKey(tt.addr, 0)
+		require.Equal(t, tt.addr.String(), k.ToAddr().String())
 	}
 }

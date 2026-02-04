@@ -6,8 +6,12 @@
 package labels
 
 import (
+	"fmt"
+	"maps"
 	"sort"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
 // Labels allows you to present labels independently from their storage.
@@ -17,6 +21,9 @@ type Labels interface {
 
 	// Get returns the value for the provided label.
 	Get(label string) (value string)
+
+	// Lookup returns the value for the provided label if it exists and whether the provided label exist
+	Lookup(label string) (value string, exists bool)
 }
 
 // Set is a map of label:value. It implements Labels.
@@ -43,6 +50,12 @@ func (ls Set) Has(label string) bool {
 // Get returns the value in the map for the provided label.
 func (ls Set) Get(label string) string {
 	return ls[label]
+}
+
+// Lookup returns the value for the provided label if it exists and whether the provided label exist
+func (ls Set) Lookup(label string) (string, bool) {
+	val, exists := ls[label]
+	return val, exists
 }
 
 // AsSelector converts labels into a selectors. It does not
@@ -102,14 +115,8 @@ func Conflicts(labels1, labels2 Set) bool {
 // Merge combines given maps, and does not check for any conflicts
 // between the maps. In case of conflicts, second map (labels2) wins
 func Merge(labels1, labels2 Set) Set {
-	mergedMap := Set{}
-
-	for k, v := range labels1 {
-		mergedMap[k] = v
-	}
-	for k, v := range labels2 {
-		mergedMap[k] = v
-	}
+	mergedMap := maps.Clone(labels1)
+	maps.Copy(mergedMap, labels2)
 	return mergedMap
 }
 
@@ -129,4 +136,31 @@ func Equals(labels1, labels2 Set) bool {
 		}
 	}
 	return true
+}
+
+// ConvertSelectorToLabelsMap converts selector string to labels map
+// and validates keys and values
+func ConvertSelectorToLabelsMap(selector string, opts ...field.PathOption) (Set, error) {
+	labelsMap := Set{}
+
+	if len(selector) == 0 {
+		return labelsMap, nil
+	}
+
+	for label := range strings.SplitSeq(selector, ",") {
+		l := strings.Split(label, "=")
+		if len(l) != 2 {
+			return labelsMap, fmt.Errorf("invalid selector: %s", l)
+		}
+		key := strings.TrimSpace(l[0])
+		if err := validateLabelKey(key, field.ToPath(opts...)); err != nil {
+			return labelsMap, err
+		}
+		value := strings.TrimSpace(l[1])
+		if err := validateLabelValue(key, value, field.ToPath(opts...)); err != nil {
+			return labelsMap, err
+		}
+		labelsMap[key] = value
+	}
+	return labelsMap, nil
 }

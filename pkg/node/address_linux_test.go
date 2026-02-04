@@ -8,27 +8,26 @@ package node
 import (
 	"fmt"
 	"net"
+	"testing"
 
-	"github.com/cilium/cilium/pkg/testutils"
-
-	. "github.com/cilium/checkmate"
+	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
+
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
-type NodePrivilegedSuite struct{}
-
-var _ = Suite(&NodePrivilegedSuite{})
-
-func (s *NodePrivilegedSuite) SetUpSuite(c *C) {
-	testutils.PrivilegedTest(c)
+func setUpSuite(tb testing.TB) {
+	testutils.PrivilegedTest(tb)
 }
 
-func (s *NodePrivilegedSuite) Test_firstGlobalV4Addr(c *C) {
+func TestPrivilegedFirstGlobalV4Addr(t *testing.T) {
+	setUpSuite(t)
+
 	testCases := []struct {
 		name           string
 		ipsOnInterface []string
 		preferredIP    string
-		preferPublic   bool
 		want           string
 	}{
 		{
@@ -37,21 +36,8 @@ func (s *NodePrivilegedSuite) Test_firstGlobalV4Addr(c *C) {
 			want:           "21.0.0.1",
 		},
 		{
-			name:           "prefer IP when not preferPublic",
+			name:           "prefer public IP over preferred IP",
 			ipsOnInterface: []string{"192.168.0.1", "21.0.0.1"},
-			preferredIP:    "192.168.0.1",
-			want:           "192.168.0.1",
-		},
-		{
-			name:           "preferPublic when not prefer IP",
-			ipsOnInterface: []string{"192.168.0.1", "21.0.0.1"},
-			preferPublic:   true,
-			want:           "21.0.0.1",
-		},
-		{
-			name:           "preferPublic when prefer IP",
-			ipsOnInterface: []string{"192.168.0.1", "21.0.0.1"},
-			preferPublic:   true,
 			preferredIP:    "192.168.0.1",
 			want:           "21.0.0.1",
 		},
@@ -60,18 +46,21 @@ func (s *NodePrivilegedSuite) Test_firstGlobalV4Addr(c *C) {
 			ipsOnInterface: []string{"192.168.0.2", "192.168.0.1"},
 			want:           "192.168.0.2",
 		},
+		{
+			name:           "preferred IP if defined",
+			ipsOnInterface: []string{"192.168.0.2", "192.168.0.1"},
+			preferredIP:    "192.168.0.1",
+			want:           "192.168.0.1",
+		},
 	}
 	const ifName = "dummy_iface"
 	for _, tc := range testCases {
 		err := setupDummyDevice(ifName, tc.ipsOnInterface...)
-		c.Assert(err, IsNil)
+		require.NoError(t, err)
 
-		got, err := firstGlobalV4Addr(ifName, net.ParseIP(tc.preferredIP), tc.preferPublic)
-		if err != nil {
-			c.Error(err)
-		} else {
-			c.Check(tc.want, Equals, got.String())
-		}
+		got, err := firstGlobalV4Addr(ifName, net.ParseIP(tc.preferredIP))
+		require.NoError(t, err)
+		require.Equal(t, tc.want, got.String())
 		removeDevice(ifName)
 	}
 }
@@ -83,12 +72,12 @@ func setupDummyDevice(name string, ips ...string) error {
 		},
 	}
 	if err := netlink.LinkAdd(dummy); err != nil {
-		return fmt.Errorf("netlink.LinkAdd failed: %v", err)
+		return fmt.Errorf("netlink.LinkAdd failed: %w", err)
 	}
 
 	if err := netlink.LinkSetUp(dummy); err != nil {
 		removeDevice(name)
-		return fmt.Errorf("netlink.LinkSetUp failed: %v", err)
+		return fmt.Errorf("netlink.LinkSetUp failed: %w", err)
 	}
 
 	for _, ipStr := range ips {
@@ -109,7 +98,7 @@ func setupDummyDevice(name string, ips ...string) error {
 }
 
 func removeDevice(name string) {
-	l, err := netlink.LinkByName(name)
+	l, err := safenetlink.LinkByName(name)
 	if err == nil {
 		netlink.LinkDel(l)
 	}

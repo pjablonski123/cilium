@@ -5,7 +5,10 @@ package types
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
+	"net/netip"
 	"path"
 	"slices"
 
@@ -68,6 +71,7 @@ func ParseCiliumNode(n *ciliumv2.CiliumNode) (node Node) {
 		Annotations:     n.ObjectMeta.Annotations,
 		NodeIdentity:    uint32(n.Spec.NodeIdentity),
 		WireguardPubKey: wireguardPubKey,
+		BootID:          n.Spec.BootID,
 	}
 
 	for _, cidrString := range n.Spec.IPAM.PodCIDRs {
@@ -165,40 +169,15 @@ func (n *Node) ToCiliumNode() *ciliumv2.CiliumNode {
 				PodCIDRs: podCIDRs,
 			},
 			NodeIdentity: uint64(n.NodeIdentity),
+			BootID:       n.BootID,
 		},
 	}
-}
-
-// RegisterNode overloads GetKeyName to ignore the cluster name, as cluster name may not be stable during node registration.
-//
-// +k8s:deepcopy-gen=true
-type RegisterNode struct {
-	Node
-}
-
-// GetKeyName Overloaded key name w/o cluster name
-func (n *RegisterNode) GetKeyName() string {
-	return n.Name
-}
-
-// DeepKeyCopy creates a deep copy of the LocalKey
-func (n *RegisterNode) DeepKeyCopy() store.LocalKey {
-	return n.DeepCopy()
-}
-
-func (n *RegisterNode) Unmarshal(_ string, data []byte) error {
-	newNode := Node{}
-	if err := json.Unmarshal(data, &newNode); err != nil {
-		return err
-	}
-
-	n.Node = newNode
-	return nil
 }
 
 // Node contains the nodes name, the list of addresses to this address
 //
 // +k8s:deepcopy-gen=true
+// +deepequal-gen=true
 type Node struct {
 	// Name is the name of the node. This is typically the hostname of the node.
 	Name string
@@ -213,7 +192,7 @@ type Node struct {
 	IPv4AllocCIDR *cidr.CIDR
 
 	// IPv4SecondaryAllocCIDRs contains additional IPv4 CIDRs from which this
-	//node allocates IPs for its local endpoints from
+	// node allocates IPs for its local endpoints from
 	IPv4SecondaryAllocCIDRs []*cidr.CIDR
 
 	// IPv6AllocCIDR if set, is the IPv6 address pool out of which the node
@@ -260,6 +239,9 @@ type Node struct {
 
 	// WireguardPubKey is the WireGuard public key of this node
 	WireguardPubKey string
+
+	// BootID is a unique node identifier generated on boot
+	BootID string
 }
 
 // Fullname returns the node's full name including the cluster name if a
@@ -280,12 +262,35 @@ type Address struct {
 	IP   net.IP
 }
 
+func (a *Address) DeepEqual(other *Address) bool {
+	return a.Type == other.Type && slices.Equal(a.IP, other.IP)
+}
+
 func (a Address) ToString() string {
 	return a.IP.String()
 }
 
 func (a Address) AddrType() addressing.AddressType {
 	return a.Type
+}
+
+// IsNodeIP determines if addr is one of the node's IP addresses,
+// and returns which type of address it is. "" is returned if addr
+// is not one of the node's IP addresses.
+func (n *Node) IsNodeIP(addr netip.Addr) addressing.AddressType {
+	for _, a := range n.IPAddresses {
+		// for IPv4 this should not allocate memory
+		// this conversion will go away once net.IP is replaced with netip.Addr
+		ip := a.IP.To4()
+		if ip == nil {
+			ip = a.IP
+		}
+		if na, ok := netip.AddrFromSlice(ip); ok && na == addr {
+			return a.Type
+		}
+	}
+
+	return ""
 }
 
 // GetNodeIP returns one of the node's IP addresses available with the
@@ -375,6 +380,9 @@ func (n *Node) GetCiliumInternalIP(ipv6 bool) net.IP {
 
 // SetCiliumInternalIP sets the CiliumInternalIP e.g. the IP associated
 // with cilium_host on the node.
+// This must not be conflated with k8s internal IP as this IP address is only relevant within the
+// Cilium-managed network (this means within the node for direct routing mode and on the overlay
+// for tunnel mode).
 func (n *Node) SetCiliumInternalIP(newAddr net.IP) {
 	n.setAddress(addressing.NodeCiliumInternalIP, newAddr)
 }
@@ -425,7 +433,6 @@ func (n *Node) setAddress(typ addressing.AddressType, newIP net.IP) {
 		return
 	}
 	n.IPAddresses = append(n.IPAddresses, newAddr)
-
 }
 
 func (n *Node) GetIPByType(addrType addressing.AddressType, ipv6 bool) net.IP {
@@ -621,7 +628,7 @@ func (n *Node) Marshal() ([]byte, error) {
 }
 
 // Unmarshal parses the JSON byte slice and updates the node receiver
-func (n *Node) Unmarshal(_ string, data []byte) error {
+func (n *Node) Unmarshal(key string, data []byte) error {
 	newNode := Node{}
 	if err := json.Unmarshal(data, &newNode); err != nil {
 		return err
@@ -636,7 +643,23 @@ func (n *Node) Unmarshal(_ string, data []byte) error {
 	return nil
 }
 
+// LogRepr returns a representation of the node to be used for logging
+func (n *Node) LogRepr() string {
+	b, err := n.Marshal()
+	if err != nil {
+		return fmt.Sprintf("%#v", n)
+	}
+	return string(b)
+}
+
 func (n *Node) validate() error {
+	switch {
+	case n.Cluster == "":
+		return errors.New("cluster is unset")
+	case n.Name == "":
+		return errors.New("name is unset")
+	}
+
 	// Skip the ClusterID check if it matches the local one, as we assume that
 	// it has already been validated, and to allow it to be zero.
 	if n.ClusterID != option.Config.ClusterID {

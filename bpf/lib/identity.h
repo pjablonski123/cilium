@@ -1,18 +1,88 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
 
-#ifndef __LIB_IDENTITY_H_
-#define __LIB_IDENTITY_H_
+#pragma once
+
+#include <bpf/config/node.h>
 
 #include "dbg.h"
+#include "clustermesh.h"
+/**
+ * get_identity - returns source identity from the mark field
+ *
+ * Identity stored in the mark is rearranged to place identity in the most
+ * significant bits and cluster_id in the least significant bits, separated by 8
+ * bits that are used for other options. When retrieving identity from the mark,
+ * we need to rearrange it back to the original format.
+ *
+ * Example mark containing identity, where I is a bit for identity, C is a bit
+ * for cluster_id, and X is a bit that should not be touched by this function:
+ * IIIIIIII IIIIIIII XXXXXXXX CCCCCCCC
+ *
+ * This function should return an identity that looks like the following:
+ * CCCCCCCC IIIIIIII IIIIIIII
+ *
+ * The agent flag 'max-connected-clusters' can effect the allocation of bits
+ * for identity and cluster_id in the mark (see comment in set_identity_mark).
+ */
+static __always_inline __maybe_unused int
+get_identity(const struct __ctx_buff *ctx __maybe_unused)
+{
+/* ctx->mark not available in XDP. */
+#if __ctx_is == __ctx_skb
+	__u32 cluster_id_lower = ctx->mark & CLUSTER_ID_LOWER_MASK;
+	__u32 cluster_id_upper = (ctx->mark & get_cluster_id_upper_mask()) >>
+				      (8 + IDENTITY_LOCAL_BITS);
+	__u32 identity = (ctx->mark >> 16) & IDENTITY_LOCAL_MAX;
+
+	return (cluster_id_lower | cluster_id_upper) << IDENTITY_LOCAL_BITS | identity;
+#else /* __ctx_is == __ctx_xdp */
+	return 0;
+#endif /* __ctx_is == __ctx_xdp */
+}
+
+/**
+ * set_identity_mark - pushes 24 bit identity into ctx mark value.
+ *
+ * Identity in the mark looks like the following, where I is a bit for
+ * identity, C is a bit for cluster_id, and X is a bit that should not be
+ * touched by this function:
+ * IIIIIIII IIIIIIII XXXXXXXX CCCCCCCC
+ *
+ * With the agent flag 'max-connected-clusters', it is possible to extend the
+ * cluster_id range by sacrificing some bits of the identity. When this is set
+ * to a value other than the default 255, the most significant bits are taken
+ * from identity and used for the most significant bits of cluster_id.
+ *
+ * An agent with 'max-connected-clusters=511' would set identity in the mark
+ * like the following:
+ * CIIIIIII IIIIIIII XXXXXXXX CCCCCCCC
+ */
+static __always_inline __maybe_unused void
+set_identity_mark(struct __ctx_buff *ctx __maybe_unused, __u32 identity __maybe_unused,
+		  __u32 magic __maybe_unused)
+{
+#if __ctx_is == __ctx_skb
+	__u32 cluster_id = (identity >> IDENTITY_LOCAL_BITS) & CLUSTER_ID_MAX;
+
+	ctx->mark = format_cluster_id_mark(cluster_id);
+	ctx->mark |= magic & MARK_MAGIC_KEY_MASK;
+	ctx->mark |= (identity & IDENTITY_LOCAL_MAX) << 16;
+#endif
+}
 
 static __always_inline bool identity_in_range(__u32 identity, __u32 range_start, __u32 range_end)
 {
 	return range_start <= identity && identity <= range_end;
 }
 
-#define IDENTITY_SCOPE_MASK 0xFF000000
-#define IDENTITY_SCOPE_REMOTE_NODE 0x02000000
+#define IDENTITY_LOCAL_SCOPE_MASK 0xFF000000
+#define IDENTITY_LOCAL_SCOPE_REMOTE_NODE 0x02000000
+
+static __always_inline bool identity_is_host(__u32 identity)
+{
+	return identity == HOST_ID;
+}
 
 static __always_inline bool identity_is_remote_node(__u32 identity)
 {
@@ -37,12 +107,7 @@ static __always_inline bool identity_is_remote_node(__u32 identity)
 	 */
 	return identity == REMOTE_NODE_ID ||
 		identity == KUBE_APISERVER_NODE_ID ||
-		(identity & IDENTITY_SCOPE_MASK) == IDENTITY_SCOPE_REMOTE_NODE;
-}
-
-static __always_inline bool identity_is_node(__u32 identity)
-{
-	return identity == HOST_ID || identity_is_remote_node(identity);
+		(identity & IDENTITY_LOCAL_SCOPE_MASK) == IDENTITY_LOCAL_SCOPE_REMOTE_NODE;
 }
 
 /**
@@ -110,6 +175,15 @@ static __always_inline bool identity_is_world_ipv6(__u32 identity)
 }
 
 /**
+ * identity_is_cidr_range is used to determine whether an identity is assigned
+ * to a CIDR range.
+ */
+static __always_inline bool identity_is_cidr_range(__u32 identity)
+{
+	return identity_in_range(identity, CIDR_IDENTITY_RANGE_START, CIDR_IDENTITY_RANGE_END);
+}
+
+/**
  * identity_is_cluster is used to determine whether an identity is assigned to
  * an entity inside the cluster.
  *
@@ -139,8 +213,7 @@ static __always_inline bool identity_is_cluster(__u32 identity)
 		return false;
 #endif
 
-	if (identity_in_range(identity, CIDR_IDENTITY_RANGE_START,
-			      CIDR_IDENTITY_RANGE_END))
+	if (identity_is_cidr_range(identity))
 		return false;
 
 	return true;
@@ -169,33 +242,9 @@ static __always_inline __u32 inherit_identity_from_host(struct __ctx_buff *ctx, 
 		*identity = get_identity(ctx);
 	} else if (magic == MARK_MAGIC_HOST) {
 		*identity = HOST_ID;
-	} else if (magic == MARK_MAGIC_ENCRYPT) {
-		*identity = ctx_load_meta(ctx, CB_ENCRYPT_IDENTITY);
-
-		/* Special case needed to handle upgrades. Can be removed in v1.15.
-		 * Before the upgrade, bpf_lxc will write the tunnel endpoint in
-		 * skb->cb[4]. After the upgrade, it will write the security identity.
-		 * For the upgrade to happen without drops, bpf_host thus needs to
-		 * handle both cases.
-		 * We can distinguish between the two cases by looking at the first
-		 * byte. Identities are on 24-bits so the first byte will be zero;
-		 * conversely, tunnel endpoint addresses within the range 0.0.0.0/8
-		 * (first byte is zero) are impossible because special purpose
-		 * (RFC6890).
-		 */
-		if ((*identity & 0xFF000000) != 0) {
-			/* skb->cb[4] was actually carrying the tunnel endpoint and the
-			 * security identity is in the mark.
-			 */
-			*identity = get_identity(ctx);
-		}
-#if defined(ENABLE_L7_LB)
-	} else if (magic == MARK_MAGIC_PROXY_EGRESS_EPID) {
-		*identity = get_epid(ctx); /* endpoint identity, not security identity! */
-#endif
 	} else {
 #if defined ENABLE_IPV4 && defined ENABLE_IPV6
-		__u16 proto = ctx_get_protocol(ctx);
+		__be16 proto = ctx_get_protocol(ctx);
 
 		if (proto == bpf_htons(ETH_P_IP))
 			*identity = WORLD_IPV4_ID;
@@ -211,16 +260,17 @@ static __always_inline __u32 inherit_identity_from_host(struct __ctx_buff *ctx, 
 	/* Reset packet mark to avoid hitting routing rules again */
 	ctx->mark = 0;
 
-#if defined(ENABLE_L7_LB)
-	/* Caller tail calls back to source endpoint egress in this case,
-	 * do not log the (world) identity.
-	 */
-	if (magic != MARK_MAGIC_PROXY_EGRESS_EPID)
-#endif
-		cilium_dbg(ctx, DBG_INHERIT_IDENTITY, *identity, 0);
+	cilium_dbg(ctx, DBG_INHERIT_IDENTITY, *identity, 0);
 
 	return magic;
 }
 #endif /* __ctx_is == __ctx_skb */
 
-#endif
+/**
+ * identity_is_local is used to determine whether an identity is locally
+ * allocated.
+ */
+static __always_inline bool identity_is_local(__u32 identity)
+{
+	return (identity & IDENTITY_LOCAL_SCOPE_MASK) != 0;
+}

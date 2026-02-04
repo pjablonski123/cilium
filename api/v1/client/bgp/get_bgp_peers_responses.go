@@ -9,6 +9,8 @@ package bgp
 // Editing this file might prove futile when you re-run the swagger generate command
 
 import (
+	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 
@@ -24,7 +26,7 @@ type GetBgpPeersReader struct {
 }
 
 // ReadResponse reads a server response into the received o.
-func (o *GetBgpPeersReader) ReadResponse(response runtime.ClientResponse, consumer runtime.Consumer) (interface{}, error) {
+func (o *GetBgpPeersReader) ReadResponse(response runtime.ClientResponse, consumer runtime.Consumer) (any, error) {
 	switch response.Code() {
 	case 200:
 		result := NewGetBgpPeersOK()
@@ -45,7 +47,7 @@ func (o *GetBgpPeersReader) ReadResponse(response runtime.ClientResponse, consum
 		}
 		return nil, result
 	default:
-		return nil, runtime.NewAPIError("response status code does not match any response statuses defined for this endpoint in the swagger spec", response, response.Code())
+		return nil, runtime.NewAPIError("[GET /bgp/peers] GetBgpPeers", response, response.Code())
 	}
 }
 
@@ -88,12 +90,19 @@ func (o *GetBgpPeersOK) IsCode(code int) bool {
 	return code == 200
 }
 
+// Code gets the status code for the get bgp peers o k response
+func (o *GetBgpPeersOK) Code() int {
+	return 200
+}
+
 func (o *GetBgpPeersOK) Error() string {
-	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersOK  %+v", 200, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersOK %s", 200, payload)
 }
 
 func (o *GetBgpPeersOK) String() string {
-	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersOK  %+v", 200, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersOK %s", 200, payload)
 }
 
 func (o *GetBgpPeersOK) GetPayload() []*models.BgpPeer {
@@ -103,7 +112,7 @@ func (o *GetBgpPeersOK) GetPayload() []*models.BgpPeer {
 func (o *GetBgpPeersOK) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
 
 	// response payload
-	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && err != io.EOF {
+	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && !stderrors.Is(err, io.EOF) {
 		return err
 	}
 
@@ -149,12 +158,19 @@ func (o *GetBgpPeersInternalServerError) IsCode(code int) bool {
 	return code == 500
 }
 
+// Code gets the status code for the get bgp peers internal server error response
+func (o *GetBgpPeersInternalServerError) Code() int {
+	return 500
+}
+
 func (o *GetBgpPeersInternalServerError) Error() string {
-	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersInternalServerError  %+v", 500, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersInternalServerError %s", 500, payload)
 }
 
 func (o *GetBgpPeersInternalServerError) String() string {
-	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersInternalServerError  %+v", 500, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersInternalServerError %s", 500, payload)
 }
 
 func (o *GetBgpPeersInternalServerError) GetPayload() models.Error {
@@ -164,7 +180,7 @@ func (o *GetBgpPeersInternalServerError) GetPayload() models.Error {
 func (o *GetBgpPeersInternalServerError) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
 
 	// response payload
-	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && err != io.EOF {
+	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && !stderrors.Is(err, io.EOF) {
 		return err
 	}
 
@@ -210,12 +226,19 @@ func (o *GetBgpPeersDisabled) IsCode(code int) bool {
 	return code == 501
 }
 
+// Code gets the status code for the get bgp peers disabled response
+func (o *GetBgpPeersDisabled) Code() int {
+	return 501
+}
+
 func (o *GetBgpPeersDisabled) Error() string {
-	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersDisabled  %+v", 501, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersDisabled %s", 501, payload)
 }
 
 func (o *GetBgpPeersDisabled) String() string {
-	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersDisabled  %+v", 501, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /bgp/peers][%d] getBgpPeersDisabled %s", 501, payload)
 }
 
 func (o *GetBgpPeersDisabled) GetPayload() models.Error {
@@ -225,7 +248,7 @@ func (o *GetBgpPeersDisabled) GetPayload() models.Error {
 func (o *GetBgpPeersDisabled) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
 
 	// response payload
-	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && err != io.EOF {
+	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && !stderrors.Is(err, io.EOF) {
 		return err
 	}
 

@@ -5,25 +5,22 @@ package bpf
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
-
 	"testing"
-
-	. "github.com/cilium/checkmate"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
+	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/testutils"
 )
@@ -34,81 +31,98 @@ const (
 	timeout = 10 * time.Second
 )
 
-type BPFPrivilegedTestSuite struct {
-	teardown func() error
-}
-
 type TestKey struct {
 	Key uint32
+}
+type TestLPMKey struct {
+	PrefixLen uint32
+	Key       uint32
 }
 type TestValue struct {
 	Value uint32
 }
+type TestValues []TestValue
 
 func (k *TestKey) String() string { return fmt.Sprintf("key=%d", k.Key) }
 func (k *TestKey) New() MapKey    { return &TestKey{} }
 
+func (k *TestLPMKey) String() string { return fmt.Sprintf("len=%d, key=%d", k.PrefixLen, k.Key) }
+func (k *TestLPMKey) New() MapKey    { return &TestLPMKey{} }
+
 func (v *TestValue) String() string { return fmt.Sprintf("value=%d", v.Value) }
 func (v *TestValue) New() MapValue  { return &TestValue{} }
+func (k *TestValue) NewSlice() any  { return &TestValues{} }
 
-var _ = Suite(&BPFPrivilegedTestSuite{})
+func setup(tb testing.TB) *Map {
+	testutils.PrivilegedTest(tb)
 
-func (s *BPFPrivilegedTestSuite) SetUpSuite(c *C) {
-	testutils.PrivilegedTest(c)
+	CheckOrMountFS(hivetest.Logger(tb), "")
 
-	CheckOrMountFS("")
+	err := rlimit.RemoveMemlock()
+	require.NoError(tb, err)
 
-	if err := rlimit.RemoveMemlock(); err != nil {
-		c.Fatal(err)
-	}
-
-	if err := testMap.OpenOrCreate(); err != nil {
-		c.Fatal("Failed to create map:", err)
-	}
-
-	s.teardown = func() error {
-		testMap.Close()
-
-		path, err := testMap.Path()
-		if err != nil {
-			return err
-		}
-
-		return os.Remove(path)
-	}
-}
-
-func (s *BPFPrivilegedTestSuite) TearDownSuite(c *C) {
-	if s.teardown != nil {
-		if err := s.teardown(); err != nil {
-			c.Fatal(err)
-		}
-	}
-}
-
-var (
-	maxEntries = 16
-
-	testMap = NewMap("cilium_test",
+	testMap := NewMap("cilium_test",
 		ebpf.Hash,
 		&TestKey{},
 		&TestValue{},
 		maxEntries,
-		BPF_F_NO_PREALLOC,
+		unix.BPF_F_NO_PREALLOC,
 	).WithCache()
-)
 
-func mapsEqual(a, b *Map) bool {
-	return a.name == b.name &&
-		reflect.DeepEqual(a.spec, b.spec)
+	err = testMap.OpenOrCreate()
+	require.NoError(tb, err, "Failed to create map")
+
+	tb.Cleanup(func() {
+		require.NoError(tb, testMap.Close())
+	})
+
+	return testMap
 }
 
-func (s *BPFPrivilegedTestSuite) TestOpen(c *C) {
+func setupPerCPU(tb testing.TB) *Map {
+	testutils.PrivilegedTest(tb)
+
+	CheckOrMountFS(hivetest.Logger(tb), "")
+
+	err := rlimit.RemoveMemlock()
+	require.NoError(tb, err)
+
+	testMap := NewMap("cilium_test_percpu",
+		ebpf.PerCPUArray,
+		&TestKey{},
+		&TestValue{},
+		3,
+		0,
+	)
+
+	err = testMap.OpenOrCreate()
+	require.NoError(tb, err, "Failed to create map")
+
+	tb.Cleanup(func() {
+		require.NoError(tb, testMap.Close())
+	})
+
+	return testMap
+}
+
+var (
+	maxEntries = 16
+)
+
+func mapsEqual(t *testing.T, expected, actual *Map) {
+	t.Helper()
+	require.Equal(t, expected.name, actual.name, "map names should match")
+	require.Equal(t, expected.spec, actual.spec, "map specs should match")
+}
+
+func TestPrivilegedOpen(t *testing.T) {
+	setup(t)
+
 	// Ensure that os.IsNotExist() can be used with Map.Open()
 	noSuchMap := NewMap("cilium_test_no_exist",
 		ebpf.Hash, &TestKey{}, &TestValue{}, maxEntries, 0)
 	err := noSuchMap.Open()
-	c.Assert(errors.Is(err, os.ErrNotExist), Equals, true)
+	require.ErrorIs(t, err, os.ErrNotExist)
 
 	// existingMap is the same as testMap. Opening should succeed.
 	existingMap := NewMap("cilium_test",
@@ -116,38 +130,45 @@ func (s *BPFPrivilegedTestSuite) TestOpen(c *C) {
 		&TestKey{},
 		&TestValue{},
 		maxEntries,
-		BPF_F_NO_PREALLOC).WithCache()
+		unix.BPF_F_NO_PREALLOC).WithCache()
+	defer func() {
+		err = existingMap.Close()
+		require.NoError(t, err)
+	}()
+
 	err = existingMap.Open()
-	c.Check(err, IsNil)      // Avoid assert to ensure Close() is called below.
-	err = existingMap.Open() // Reopen should be no-op.
-	c.Check(err, IsNil)
-	err = existingMap.Close()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
+	err = existingMap.Open()
+	require.NoError(t, err)
 }
 
-func (s *BPFPrivilegedTestSuite) TestOpenMap(c *C) {
+func TestPrivilegedOpenMap(t *testing.T) {
+	testMap := setup(t)
+	logger := hivetest.Logger(t)
+
 	openedMap, err := OpenMap("cilium_test_no_exist", &TestKey{}, &TestValue{})
-	c.Assert(err, Not(IsNil))
-	c.Assert(openedMap, IsNil)
+	require.Error(t, err)
+	require.Nil(t, openedMap)
 
-	openedMap, err = OpenMap(MapPath("cilium_test"), &TestKey{}, &TestValue{})
-	c.Assert(err, IsNil)
-
-	c.Assert(mapsEqual(openedMap, testMap), Equals, true)
+	openedMap, err = OpenMap(MapPath(logger, "cilium_test"), &TestKey{}, &TestValue{})
+	require.NoError(t, err)
+	mapsEqual(t, testMap, openedMap)
 }
 
-func (s *BPFPrivilegedTestSuite) TestOpenOrCreate(c *C) {
+func TestPrivilegedOpenOrCreate(t *testing.T) {
+	setup(t)
+
 	// existingMap is the same as testMap. OpenOrCreate should skip recreation.
 	existingMap := NewMap("cilium_test",
 		ebpf.Hash,
 		&TestKey{},
 		&TestValue{},
 		maxEntries,
-		BPF_F_NO_PREALLOC).WithCache()
+		unix.BPF_F_NO_PREALLOC).WithCache()
 	err := existingMap.OpenOrCreate()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
-	// preallocMap unsets BPF_F_NO_PREALLOC. OpenOrCreate should recreate map.
+	// preallocMap unsets unix.BPF_F_NO_PREALLOC. OpenOrCreate should recreate map.
 	EnableMapPreAllocation() // prealloc on/off is controllable in HASH map case.
 	preallocMap := NewMap("cilium_test",
 		ebpf.Hash,
@@ -157,30 +178,32 @@ func (s *BPFPrivilegedTestSuite) TestOpenOrCreate(c *C) {
 		0).WithCache()
 	err = preallocMap.OpenOrCreate()
 	defer preallocMap.Close()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	DisableMapPreAllocation()
 
 	// preallocMap is already open. OpenOrCreate does nothing.
 	err = preallocMap.OpenOrCreate()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 }
 
-func (s *BPFPrivilegedTestSuite) TestRecreateMap(c *C) {
+func TestPrivilegedRecreateMap(t *testing.T) {
+	testMap := setup(t)
+
 	parallelMap := NewMap("cilium_test",
 		ebpf.Hash,
 		&TestKey{},
 		&TestValue{},
 		maxEntries,
-		BPF_F_NO_PREALLOC).WithCache()
+		unix.BPF_F_NO_PREALLOC).WithCache()
 	err := parallelMap.Recreate()
 	defer parallelMap.Close()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	err = parallelMap.Recreate()
-	c.Assert(err, Not(IsNil))
+	require.Error(t, err)
 
 	// Check OpenMap warning section
-	c.Assert(mapsEqual(parallelMap, testMap), Equals, true)
+	mapsEqual(t, testMap, parallelMap)
 
 	key1 := &TestKey{Key: 101}
 	value1 := &TestValue{Value: 201}
@@ -188,40 +211,40 @@ func (s *BPFPrivilegedTestSuite) TestRecreateMap(c *C) {
 	value2 := &TestValue{Value: 202}
 
 	err = testMap.Update(key1, value1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	err = parallelMap.Update(key2, value2)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	value, err := testMap.Lookup(key1)
-	c.Assert(err, IsNil)
-	c.Assert(value, checker.DeepEquals, value1)
+	require.NoError(t, err)
+	require.EqualValues(t, value, value1)
 	value, err = testMap.Lookup(key2)
-	c.Assert(err, Not(IsNil))
-	c.Assert(value, IsNil)
+	require.Error(t, err)
+	require.Nil(t, value)
 
 	value, err = parallelMap.Lookup(key1)
-	c.Assert(err, Not(IsNil))
-	c.Assert(value, IsNil)
+	require.Error(t, err)
+	require.Nil(t, value)
 	value, err = parallelMap.Lookup(key2)
-	c.Assert(err, IsNil)
-	c.Assert(value, checker.DeepEquals, value2)
+	require.NoError(t, err)
+	require.EqualValues(t, value, value2)
 }
 
-func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
-
+func TestPrivilegedBasicManipulation(t *testing.T) {
+	setup(t)
 	// existingMap is the same as testMap. Opening should succeed.
 	existingMap := NewMap("cilium_test",
 		ebpf.Hash,
 		&TestKey{},
 		&TestValue{},
 		maxEntries,
-		BPF_F_NO_PREALLOC).
+		unix.BPF_F_NO_PREALLOC).
 		WithCache().
 		WithEvents(option.BPFEventBufferConfig{Enabled: true, MaxSize: 10})
 
 	err := existingMap.Open()
 	defer existingMap.Close()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	key1 := &TestKey{Key: 103}
 	value1 := &TestValue{Value: 203}
@@ -245,171 +268,174 @@ func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
 	assertEvent := func(i int, key, value, desiredAction, action string) {
 		e := event(i)
 		if e.cacheEntry.Key != nil {
-			c.Assert(e.cacheEntry.Key.String(), Equals, key)
+			require.Equal(t, key, e.cacheEntry.Key.String())
 		}
-		c.Assert(e.GetValue(), Equals, value)
-		c.Assert(e.cacheEntry.DesiredAction.String(), Equals, desiredAction)
-		c.Assert(e.GetAction(), Equals, action)
+		require.Equal(t, e.GetValue(), value)
+		require.Equal(t, e.cacheEntry.DesiredAction.String(), desiredAction)
+		require.Equal(t, e.GetAction(), action)
 	}
 
 	// event buffer should be empty
-	c.Assert(existingMap.events.buffer.Size(), Equals, 0)
+	require.Equal(t, 0, existingMap.events.buffer.Size())
 
 	err = existingMap.Update(key1, value1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	// Check events buffer
-	c.Assert(len(dumpEvents()), Equals, 1)
-	c.Assert(event(0).cacheEntry.Key.String(), Equals, "key=103")
-	c.Assert(event(0).cacheEntry.Value.String(), Equals, "value=203")
+	require.Len(t, dumpEvents(), 1)
+	require.Equal(t, "key=103", event(0).cacheEntry.Key.String())
+	require.Equal(t, "value=203", event(0).cacheEntry.Value.String())
 
 	// key    val
 	// 103    203
 	value, err := existingMap.Lookup(key1)
-	c.Assert(err, IsNil)
-	c.Assert(value, checker.DeepEquals, value1)
+	require.NoError(t, err)
+	require.EqualValues(t, value, value1)
 	value, err = existingMap.Lookup(key2)
-	c.Assert(err, Not(IsNil))
-	c.Assert(value, Equals, nil)
+	require.Error(t, err)
+	require.Nil(t, value)
 
 	// Check events buffer, ensure it doesn't change.
-	c.Assert(len(dumpEvents()), Equals, 1)
-	c.Assert(event(0).cacheEntry.Key.String(), Equals, "key=103")
-	c.Assert(event(0).cacheEntry.Value.String(), Equals, "value=203")
+	require.Len(t, dumpEvents(), 1)
+	require.Equal(t, "key=103", event(0).cacheEntry.Key.String())
+	require.Equal(t, "value=203", event(0).cacheEntry.Value.String())
 
 	err = existingMap.Update(key1, value2)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	// key    val
 	// 103    204
 	value, err = existingMap.Lookup(key1)
-	c.Assert(err, IsNil)
-	c.Assert(value, checker.DeepEquals, value2)
+	require.NoError(t, err)
+	require.EqualValues(t, value, value2)
 
 	// Check events buffer after second Update
-	c.Assert(len(dumpEvents()), Equals, 2)
+	require.Len(t, dumpEvents(), 2)
 	assertEvent(0, "key=103", "value=203", "sync", "update")
-	c.Assert(event(0).cacheEntry.Key.String(), Equals, "key=103")
-	c.Assert(event(0).cacheEntry.Value.String(), Equals, "value=203")
-	c.Assert(event(0).cacheEntry.DesiredAction.String(), Equals, "sync")
-	c.Assert(event(1).cacheEntry.Key.String(), Equals, "key=103") // we used key1 again
-	c.Assert(event(1).cacheEntry.Value.String(), Equals, "value=204")
-	c.Assert(event(1).cacheEntry.DesiredAction.String(), Equals, "sync")
+	require.Equal(t, "key=103", event(0).cacheEntry.Key.String())
+	require.Equal(t, "value=203", event(0).cacheEntry.Value.String())
+	require.Equal(t, "sync", event(0).cacheEntry.DesiredAction.String())
+	require.Equal(t, "key=103", event(1).cacheEntry.Key.String()) // we used key1 again
+	require.Equal(t, "value=204", event(1).cacheEntry.Value.String())
+	require.Equal(t, "sync", event(1).cacheEntry.DesiredAction.String())
 
 	err = existingMap.Update(key2, value2)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	// key    val
 	// 103    204
 	// 104    204
 	value, err = existingMap.Lookup(key1)
-	c.Assert(err, IsNil)
-	c.Assert(value, checker.DeepEquals, value2)
+	require.NoError(t, err)
+	require.EqualValues(t, value, value2)
 	value, err = existingMap.Lookup(key2)
-	c.Assert(err, IsNil)
-	c.Assert(value, checker.DeepEquals, value2)
+	require.NoError(t, err)
+	require.EqualValues(t, value, value2)
 
-	c.Assert(len(dumpEvents()), Equals, 3)
+	require.Len(t, dumpEvents(), 3)
 	assertEvent(0, "key=103", "value=203", "sync", "update")
 	assertEvent(1, "key=103", "value=204", "sync", "update")
 	assertEvent(2, "key=104", "value=204", "sync", "update")
 
 	err = existingMap.Delete(key1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	// key    val
 	// 104    204
 	value, err = existingMap.Lookup(key1)
-	c.Assert(err, Not(IsNil))
-	c.Assert(value, Equals, nil)
+	require.Error(t, err)
+	require.Nil(t, value)
 
 	err = existingMap.Delete(key1)
-	c.Assert(err, Not(IsNil))
+	require.Error(t, err)
 
-	c.Assert(len(dumpEvents()), Equals, 5)
+	require.Len(t, dumpEvents(), 5)
 	assertEvent(0, "key=103", "value=203", "sync", "update")
 	assertEvent(1, "key=103", "value=204", "sync", "update")
 	assertEvent(2, "key=104", "value=204", "sync", "update")
 	assertEvent(3, "key=103", "<nil>", Delete.String(), "delete")
 	assertEvent(4, "key=103", "<nil>", Delete.String(), "delete")
-	c.Assert(event(3).GetLastError(), IsNil)
-	c.Assert(event(4).GetLastError(), Not(IsNil))
+
+	require.NoError(t, event(3).GetLastError())
+	require.Error(t, event(4).GetLastError())
 
 	deleted, err := existingMap.SilentDelete(key1)
-	c.Assert(err, IsNil)
-	c.Assert(deleted, Equals, false)
+	require.NoError(t, err)
+	require.False(t, deleted)
 
-	c.Assert(len(dumpEvents()), Equals, 6)
+	require.Len(t, dumpEvents(), 6)
 	assertEvent(5, "key=103", "<nil>", Delete.String(), "delete")
-	c.Assert(event(5).GetLastError(), IsNil)
+	require.NoError(t, event(5).GetLastError())
 
 	err = existingMap.Update(key1, value1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
-	c.Assert(len(dumpEvents()), Equals, 7)
+	require.Len(t, dumpEvents(), 7)
 	assertEvent(6, "key=103", "value=203", OK.String(), "update")
 
 	deleted, err = existingMap.SilentDelete(key1)
-	c.Assert(err, IsNil)
-	c.Assert(deleted, Equals, true)
+	require.NoError(t, err)
+	require.True(t, deleted)
 
-	c.Assert(len(dumpEvents()), Equals, 8)
+	require.Len(t, dumpEvents(), 8)
 	assertEvent(7, "key=103", "<nil>", Delete.String(), "delete")
 
 	value, err = existingMap.Lookup(key1)
-	c.Assert(err, Not(IsNil))
-	c.Assert(value, Equals, nil)
+	require.Error(t, err)
+	require.Nil(t, value)
 
 	err = existingMap.DeleteAll()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	value, err = existingMap.Lookup(key1)
-	c.Assert(err, Not(IsNil))
-	c.Assert(value, Equals, nil)
+	require.Error(t, err)
+	require.Nil(t, value)
 	value, err = existingMap.Lookup(key2)
-	c.Assert(err, Not(IsNil))
-	c.Assert(value, Equals, nil)
+	require.Error(t, err)
+	require.Nil(t, value)
 
-	c.Assert(len(dumpEvents()), Equals, 9)
+	require.Len(t, dumpEvents(), 9)
 	assertEvent(8, "key=104", "<nil>", "sync", "delete-all")
 
-	c.Assert(event(0).cacheEntry.Key.String(), Equals, "key=103")
-	c.Assert(event(0).cacheEntry.Value.String(), Equals, "value=203")
+	require.Equal(t, "key=103", event(0).cacheEntry.Key.String())
+	require.Equal(t, "value=203", event(0).cacheEntry.Value.String())
 
-	c.Assert(event(0).cacheEntry.Key.String(), Equals, "key=103") // we used key1 again
+	require.Equal(t, "key=103", event(1).cacheEntry.Key.String()) // we used key1 again
 
 	err = existingMap.Update(key2, value2)
-	c.Assert(err, IsNil)
-	c.Assert(len(dumpEvents()), Equals, 10) // full buffer
+	require.NoError(t, err)
+	require.Len(t, dumpEvents(), 10)
 	assertEvent(9, "key=104", "value=204", OK.String(), "update")
 
 	key3 := &TestKey{Key: 999}
 	err = existingMap.Update(key3, value2)
-	c.Assert(err, IsNil)
-	c.Assert(len(dumpEvents()), Equals, 10) // full buffer
+	require.NoError(t, err)
+	require.Len(t, dumpEvents(), 10) // full buffer
 	assertEvent(0, "key=103", "value=204", OK.String(), "update")
 	assertEvent(9, "key=999", "value=204", OK.String(), "update")
 
 	key4 := &TestKey{Key: 1000}
 	err = existingMap.Update(key4, value2)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	err = existingMap.DeleteAll()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	assertEvent(9, "<nil>", "<nil>", OK.String(), MapDeleteAll.String())
 
 	// cleanup
 	err = existingMap.DeleteAll()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 }
 
-func (s *BPFPrivilegedTestSuite) TestSubscribe(c *C) {
+func TestPrivilegedSubscribe(t *testing.T) {
+	setup(t)
+
 	existingMap := NewMap("cilium_test",
 		ebpf.Hash,
 		&TestKey{},
 		&TestValue{},
 		maxEntries,
-		BPF_F_NO_PREALLOC).
+		unix.BPF_F_NO_PREALLOC).
 		WithCache().
 		WithEvents(option.BPFEventBufferConfig{Enabled: true, MaxSize: 10})
 
 	subHandle, err := existingMap.DumpAndSubscribe(nil, true)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	collect := 0
 	done := make(chan struct{})
@@ -424,69 +450,71 @@ func (s *BPFPrivilegedTestSuite) TestSubscribe(c *C) {
 	key1 := &TestKey{Key: 103}
 	value1 := &TestValue{Value: 203}
 	err = existingMap.Update(key1, value1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	err = existingMap.Update(key1, value1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	err = existingMap.Delete(key1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	subHandle.Close()
 	<-done
-	c.Assert(collect, Equals, 3)
+	require.Equal(t, 3, collect)
 
 	// cleanup
 	err = existingMap.DeleteAll()
 	existingMap.events = nil
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 }
 
-func (s *BPFPrivilegedTestSuite) TestDump(c *C) {
+func TestPrivilegedDump(t *testing.T) {
+	testMap := setup(t)
+
 	key1 := &TestKey{Key: 105}
 	value1 := &TestValue{Value: 205}
 	key2 := &TestKey{Key: 106}
 	value2 := &TestValue{Value: 206}
 
 	err := testMap.Update(key1, value1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	err = testMap.Update(key2, value1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	err = testMap.Update(key2, value2)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	dump1 := map[string][]string{}
 	testMap.Dump(dump1)
-	c.Assert(dump1, checker.DeepEquals, map[string][]string{
+	require.Equal(t, map[string][]string{
 		"key=105": {"value=205"},
 		"key=106": {"value=206"},
-	})
+	}, dump1)
 
 	dump2 := map[string][]string{}
 	customCb := func(key MapKey, value MapValue) {
 		dump2[key.String()] = append(dump2[key.String()], "custom-"+value.String())
 	}
 	testMap.DumpWithCallback(customCb)
-	c.Assert(dump2, checker.DeepEquals, map[string][]string{
+	require.Equal(t, map[string][]string{
 		"key=105": {"custom-value=205"},
 		"key=106": {"custom-value=206"},
-	})
+	}, dump2)
 
 	dump3 := map[string][]string{}
 	noSuchMap := NewMap("cilium_test_no_exist",
 		ebpf.Hash, &TestKey{}, &TestValue{}, maxEntries, 0)
 	err = noSuchMap.DumpIfExists(dump3)
-	c.Assert(err, IsNil)
-	c.Assert(len(dump3), Equals, 0)
+	require.NoError(t, err)
+	require.Empty(t, dump3)
 
 	dump2 = map[string][]string{}
 	err = noSuchMap.DumpWithCallbackIfExists(customCb)
-	c.Assert(err, IsNil)
-	c.Assert(len(dump2), Equals, 0)
+	require.NoError(t, err)
+	require.Empty(t, dump2)
 
 	// Validate that if the key is zero, it shows up in dump output.
 	keyZero := &TestKey{Key: 0}
 	valueZero := &TestValue{Value: 0}
 	err = testMap.Update(keyZero, valueZero)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	dump4 := map[string][]string{}
 	customCb = func(key MapKey, value MapValue) {
@@ -494,30 +522,81 @@ func (s *BPFPrivilegedTestSuite) TestDump(c *C) {
 	}
 	ds := NewDumpStats(testMap)
 	err = testMap.DumpReliablyWithCallback(customCb, ds)
-	c.Assert(err, IsNil)
-	c.Assert(dump4, checker.DeepEquals, map[string][]string{
+	require.NoError(t, err)
+	require.Equal(t, map[string][]string{
 		"key=0":   {"custom-value=0"},
 		"key=105": {"custom-value=205"},
 		"key=106": {"custom-value=206"},
-	})
+	}, dump4)
 
 	dump5 := map[string][]string{}
 	err = testMap.Dump(dump5)
-	c.Assert(err, IsNil)
-	c.Assert(dump5, checker.DeepEquals, map[string][]string{
+	require.NoError(t, err)
+	require.Equal(t, map[string][]string{
 		"key=0":   {"value=0"},
 		"key=105": {"value=205"},
 		"key=106": {"value=206"},
-	})
+	}, dump5)
 }
 
-// TestDumpReliablyWithCallbackOveralapping attempts to test that DumpReliablyWithCallback
+func TestPrivilegedDumpPerCPU(t *testing.T) {
+	testMap := setupPerCPU(t)
+
+	key1 := &TestKey{Key: 0}
+	value1 := &TestValue{Value: 205}
+	key2 := &TestKey{Key: 2}
+	value2 := &TestValue{Value: 206}
+
+	func() {
+		testMap.lock.Lock()
+		defer testMap.lock.Unlock()
+		err := testMap.m.Update(key1, []any{value1}, ebpf.UpdateAny)
+		require.NoError(t, err)
+		err = testMap.m.Update(key2, []any{value1}, ebpf.UpdateAny)
+		require.NoError(t, err)
+		err = testMap.m.Update(key2, []any{value2}, ebpf.UpdateAny)
+		require.NoError(t, err)
+	}()
+
+	dump := map[string][]uint32{}
+	customCb := func(key MapKey, values any) {
+		var value uint32
+		for _, v := range *values.(*TestValues) {
+			if value == 0 && v.Value != 0 {
+				value = v.Value
+			} else if value != 0 {
+				require.Equal(t, uint32(0), v.Value)
+			}
+		}
+		dump[key.String()] = append(dump[key.String()], value)
+	}
+	testMap.DumpPerCPUWithCallback(customCb)
+	require.Equal(t, map[string][]uint32{
+		"key=0": {205},
+		"key=1": {0},
+		"key=2": {206},
+	}, dump)
+
+	require.NoError(t, testMap.ClearAll())
+
+	dump = map[string][]uint32{}
+	testMap.DumpPerCPUWithCallback(customCb)
+	require.Equal(t, map[string][]uint32{
+		"key=0": {0},
+		"key=1": {0},
+		"key=2": {0},
+	}, dump)
+}
+
+// TestPrivilegedDumpReliablyWithCallbackOverlapping attempts to test that DumpReliablyWithCallback
 // will reliably iterate all keys that are known to be in a map, even if keys that are ahead
 // of the current iteration can be deleted or updated concurrently.
 // This test is not deterministic, it establishes a condition where we have keys that are known
 // to be in the map and other keys which are volatile.  The test passes if the dump can reliably
 // iterate all keys that are not volatile.
-func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallbackOveralapping(c *C) {
+func TestPrivilegedDumpReliablyWithCallbackOverlapping(t *testing.T) {
+	setup(t)
+
 	iterations := 10000
 	maxEntries := uint32(128)
 	m := NewMap("cilium_dump_test2",
@@ -525,9 +604,9 @@ func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallbackOveralapping(c *C) 
 		&TestKey{},
 		&TestValue{},
 		int(maxEntries),
-		BPF_F_NO_PREALLOC).WithCache()
+		unix.BPF_F_NO_PREALLOC).WithCache()
 	err := m.OpenOrCreate()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	defer func() {
 		path, _ := m.Path()
 		os.Remove(path)
@@ -535,9 +614,9 @@ func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallbackOveralapping(c *C) 
 	defer m.Close()
 
 	// Prepopulate the map.
-	for i := uint32(0); i < maxEntries; i++ {
+	for i := range uint32(maxEntries) {
 		err := m.Update(&TestKey{Key: i}, &TestValue{Value: i + 200})
-		c.Check(err, IsNil)
+		require.NoError(t, err)
 	}
 
 	// used to block the update/delete goroutine so that both start at aprox the same time.
@@ -562,7 +641,7 @@ func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallbackOveralapping(c *C) 
 			for i := uint32(0); i < maxEntries; i += 2 {
 				m.Delete(&TestKey{Key: i})
 				err := m.Update(&TestKey{Key: i}, &TestValue{Value: i + 200})
-				c.Check(err, IsNil)
+				require.NoError(t, err)
 			}
 		}
 	}()
@@ -576,7 +655,7 @@ func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallbackOveralapping(c *C) 
 		}
 	}
 	close(start) // start testing.
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		dump := map[string]string{}
 		ds := NewDumpStats(m)
 		err := m.DumpReliablyWithCallback(func(key MapKey, value MapValue) {
@@ -585,35 +664,37 @@ func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallbackOveralapping(c *C) 
 				k := key.(*TestKey).Key
 				ks := dump[fmt.Sprintf("key=%d", k)]
 				if _, ok := dump[ks]; ok {
-					c.FailNow()
+					t.FailNow()
 				}
 				dump[fmt.Sprintf("key=%d", key.(*TestKey).Key)] = fmt.Sprintf("value=%d", value.(*TestValue).Value)
 			}
 		}, ds)
 		if err == nil {
-			c.Check(dump, checker.DeepEquals, expect)
+			require.Equal(t, expect, dump)
 		} else {
-			c.Check(err, Equals, ErrMaxLookup)
+			require.Equal(t, ErrMaxLookup, err)
 		}
 	}
 	cancel()
 	wg.Wait()
 }
 
-// TestDumpReliablyWithCallback tests that DumpReliablyWithCallback by concurrently
+// TestPrivilegedDumpReliablyWithCallback tests that DumpReliablyWithCallback by concurrently
 // upserting/removing keys in range [0, 4) in the map and then continuously dumping
 // the map.
 // The test validates that all keys that are not being removed/added are contained in the dump.
-func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallback(c *C) {
+func TestPrivilegedDumpReliablyWithCallback(t *testing.T) {
+	setup(t)
+
 	maxEntries := uint32(256)
 	m := NewMap("cilium_dump_test",
 		ebpf.Hash,
 		&TestKey{},
 		&TestValue{},
 		int(maxEntries),
-		BPF_F_NO_PREALLOC).WithCache()
+		unix.BPF_F_NO_PREALLOC).WithCache()
 	err := m.OpenOrCreate()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	defer func() {
 		path, _ := m.Path()
 		os.Remove(path)
@@ -622,7 +703,7 @@ func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallback(c *C) {
 
 	for i := uint32(4); i < maxEntries; i++ {
 		err := m.Update(&TestKey{Key: i}, &TestValue{Value: i + 100})
-		c.Check(err, IsNil) // we want to run the deferred calls
+		require.NoError(t, err) // we want to run the deferred calls
 	}
 	// start a goroutine that continuously updates the map
 	started := make(chan struct{}, 1)
@@ -637,12 +718,12 @@ func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallback(c *C) {
 				if i < 3 {
 					err := m.Update(&TestKey{Key: i}, &TestValue{Value: i + 100})
 					// avoid assert to ensure we call wg.Done
-					c.Check(err, IsNil)
+					require.NoError(t, err)
 				}
 				if i > 0 {
 					err := m.Delete(&TestKey{Key: i - 1})
 					// avoid assert to ensure we call wg.Done
-					c.Check(err, IsNil)
+					require.NoError(t, err)
 				}
 			}
 			select {
@@ -660,11 +741,11 @@ func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallback(c *C) {
 		for i := uint32(4); i < maxEntries; i++ {
 			expect[fmt.Sprintf("key=%d", i)] = fmt.Sprintf("custom-value=%d", i+100)
 		}
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			dump := map[string]string{}
 			customCb := func(key MapKey, value MapValue) {
 				k, err := strconv.ParseUint(strings.TrimPrefix(key.String(), "key="), 10, 32)
-				c.Check(err, IsNil)
+				require.NoError(t, err)
 				if uint32(k) >= 4 {
 					dump[key.String()] = "custom-" + value.String()
 				}
@@ -677,10 +758,10 @@ func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallback(c *C) {
 			}
 			if err := m.DumpReliablyWithCallback(customCb, ds); err != nil {
 				// avoid Assert to ensure the done signal is sent
-				c.Check(err, Equals, ErrMaxLookup)
+				require.Equal(t, ErrMaxLookup, err)
 			} else {
 				// avoid Assert to ensure the done signal is sent
-				c.Check(dump, checker.DeepEquals, expect)
+				require.Equal(t, expect, dump)
 			}
 		}
 		done <- struct{}{}
@@ -688,137 +769,112 @@ func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallback(c *C) {
 	wg.Wait()
 }
 
-func (s *BPFPrivilegedTestSuite) TestDeleteAll(c *C) {
+func TestPrivilegedDeleteAll(t *testing.T) {
+	testMap := setup(t)
+
 	key1 := &TestKey{Key: 105}
 	value1 := &TestValue{Value: 205}
 	key2 := &TestKey{Key: 106}
 	value2 := &TestValue{Value: 206}
 
 	err := testMap.Update(key1, value1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	err = testMap.Update(key2, value1)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	err = testMap.Update(key2, value2)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	keyZero := &TestKey{Key: 0}
 	valueZero := &TestValue{Value: 0}
 	err = testMap.Update(keyZero, valueZero)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	dump1 := map[string][]string{}
 	err = testMap.Dump(dump1)
-	c.Assert(err, IsNil)
-	c.Assert(dump1, checker.DeepEquals, map[string][]string{
+	require.NoError(t, err)
+	require.Equal(t, map[string][]string{
 		"key=0":   {"value=0"},
 		"key=105": {"value=205"},
 		"key=106": {"value=206"},
-	})
+	}, dump1)
 
 	err = testMap.DeleteAll()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	dump2 := map[string][]string{}
 	err = testMap.Dump(dump2)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 }
 
-func (s *BPFPrivilegedTestSuite) TestGetModel(c *C) {
+func TestPrivilegedGetModel(t *testing.T) {
+	testMap := setup(t)
+
 	model := testMap.GetModel()
-	c.Assert(model, Not(IsNil))
+	require.NotNil(t, model)
 }
 
-func (s *BPFPrivilegedTestSuite) TestCheckAndUpgrade(c *C) {
-	// CheckAndUpgrade removes map file if upgrade is needed
-	// so we setup and use another map.
-	upgradeMap := NewMap("cilium_test_upgrade",
-		ebpf.Hash,
-		&TestKey{},
-		&TestValue{},
-		maxEntries,
-		BPF_F_NO_PREALLOC).WithCache()
-	err := upgradeMap.OpenOrCreate()
-	c.Assert(err, IsNil)
-	defer func() {
-		_ = upgradeMap.Unpin()
-		upgradeMap.Close()
-	}()
+func TestPrivilegedUnpin(t *testing.T) {
+	setup(t)
 
-	// Exactly the same MapInfo so it won't be upgraded.
-	upgrade := upgradeMap.CheckAndUpgrade(upgradeMap)
-	c.Assert(upgrade, Equals, false)
-
-	// preallocMap unsets BPF_F_NO_PREALLOC so upgrade is needed.
-	EnableMapPreAllocation()
-	preallocMap := NewMap("cilium_test_upgrade",
-		ebpf.Hash,
-		&TestKey{},
-		&TestValue{},
-		maxEntries,
-		0).WithCache()
-	upgrade = upgradeMap.CheckAndUpgrade(preallocMap)
-	c.Assert(upgrade, Equals, true)
-	DisableMapPreAllocation()
-}
-
-func (s *BPFPrivilegedTestSuite) TestUnpin(c *C) {
 	var exist bool
 	unpinMap := NewMap("cilium_test_unpin",
 		ebpf.Hash,
 		&TestKey{},
 		&TestValue{},
 		maxEntries,
-		BPF_F_NO_PREALLOC).WithCache()
+		unix.BPF_F_NO_PREALLOC).WithCache()
 	err := unpinMap.OpenOrCreate()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	exist, err = unpinMap.exist()
-	c.Assert(err, IsNil)
-	c.Assert(exist, Equals, true)
+	require.NoError(t, err)
+	require.True(t, exist)
 
 	err = unpinMap.Unpin()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	exist, err = unpinMap.exist()
-	c.Assert(err, IsNil)
-	c.Assert(exist, Equals, false)
+	require.NoError(t, err)
+	require.False(t, exist)
 
 	err = unpinMap.UnpinIfExists()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	exist, err = unpinMap.exist()
-	c.Assert(err, IsNil)
-	c.Assert(exist, Equals, false)
+	require.NoError(t, err)
+	require.False(t, exist)
 
 	err = unpinMap.Unpin()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	err = unpinMap.OpenOrCreate()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	err = unpinMap.Unpin()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	exist, err = unpinMap.exist()
-	c.Assert(err, IsNil)
-	c.Assert(exist, Equals, false)
+	require.NoError(t, err)
+	require.False(t, exist)
 }
 
-func (s *BPFPrivilegedTestSuite) TestCreateUnpinned(c *C) {
+func TestPrivilegedCreateUnpinned(t *testing.T) {
+	setup(t)
+
 	m := NewMap("cilium_test_create_unpinned",
 		ebpf.Hash,
 		&TestKey{},
 		&TestValue{},
 		maxEntries,
-		BPF_F_NO_PREALLOC).WithCache()
+		unix.BPF_F_NO_PREALLOC).WithCache()
 	err := m.CreateUnpinned()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	exist, err := m.exist()
-	c.Assert(err, IsNil)
-	c.Assert(exist, Equals, false)
+	require.NoError(t, err)
+	require.False(t, exist)
 
 	k := &TestKey{Key: 105}
 	v := &TestValue{Value: 205}
 	err = m.Update(k, v)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	got, err := m.Lookup(k)
-	c.Assert(err, IsNil)
-	c.Assert(got, checker.DeepEquals, v)
+	require.NoError(t, err)
+	require.EqualValues(t, v, got)
 }
 
 func BenchmarkMapLookup(b *testing.B) {
@@ -829,7 +885,7 @@ func BenchmarkMapLookup(b *testing.B) {
 		&TestKey{},
 		&TestValue{},
 		1,
-		BPF_F_NO_PREALLOC)
+		unix.BPF_F_NO_PREALLOC)
 
 	if err := m.CreateUnpinned(); err != nil {
 		b.Fatal(err)
@@ -840,18 +896,17 @@ func BenchmarkMapLookup(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	b.ResetTimer()
-
-	for n := 0; n < b.N; n++ {
+	for b.Loop() {
 		if _, err := m.Lookup(&k); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
-func TestErrorResolver(t *testing.T) {
+func TestPrivilegedErrorResolver(t *testing.T) {
 	testutils.PrivilegedTest(t)
-	CheckOrMountFS("")
+	logger := hivetest.Logger(t)
+	CheckOrMountFS(logger, "")
 	require.NoError(t, rlimit.RemoveMemlock())
 
 	var (
@@ -886,7 +941,7 @@ func TestErrorResolver(t *testing.T) {
 				&TestKey{},
 				&TestValue{},
 				1, // Only one entry, so that the second insertion will fail
-				BPF_F_NO_PREALLOC,
+				unix.BPF_F_NO_PREALLOC,
 			).WithCache()
 
 			t.Cleanup(func() {
@@ -897,7 +952,7 @@ func TestErrorResolver(t *testing.T) {
 			require.NoError(t, m.CreateUnpinned(), "Failed to create map")
 			require.NoError(t, m.Update(&key1, &val1), "Failed to insert element in map")
 
-			// Let's attempt to insert a second element in the map, which will fail because the map can only hold one
+			// Let's attempt to insert a second element in the map, which will fail because the map can only hold one.
 			require.Error(t, m.Update(&key2, &val2), "Map insertion should have failed")
 
 			// Let's now remove one of the two elements (the actual assertion depends on which element is to be removed)
@@ -926,5 +981,118 @@ func TestErrorResolver(t *testing.T) {
 				assert.Fail(c, "Expected controller status not found")
 			}, timeout, tick)
 		})
+	}
+}
+
+func TestBatchIteratorTypes(t *testing.T) {
+	m := NewMap("cilium_test",
+		ebpf.Array,
+		&TestKey{},
+		&TestValue{}, 1, 0)
+	iter := NewBatchIterator[TestKey, TestValue](m)
+	iter.IterateAll(context.TODO())
+	assert.Error(t, iter.Err())
+	assert.NotNil(t, iter)
+}
+
+func TestPrivilegedBatchIterator(t *testing.T) {
+	testutils.PrivilegedTest(t)
+
+	runTest := func(mapType ebpf.MapType, size, mapSize int, t *testing.T, opts ...BatchIteratorOpt[TestLPMKey, TestValue, *TestLPMKey, *TestValue]) {
+		makeKey := func(i int) MapKey {
+			// Note: We use a lpm key type as it is compatible with lpmtrie map tests
+			// and works fine for other tests.
+			return &TestLPMKey{
+				PrefixLen: 32,
+				Key:       uint32(i),
+			}
+		}
+		m := NewMap("cilium_test",
+			mapType,
+			makeKey(0),
+			&TestValue{},
+			mapSize,
+			0,
+		)
+		require.NoError(t, m.OpenOrCreate())
+		defer assert.NoError(t, m.UnpinIfExists())
+		for i := range size {
+			mapKey := makeKey(i)
+			mapValue := &TestValue{Value: uint32(i)}
+			err := m.Update(mapKey, mapValue)
+			assert.NoError(t, err)
+		}
+		ks := sets.New[int]()
+		vs := sets.New[int]()
+
+		iter := NewBatchIterator[TestLPMKey, TestValue](m)
+		count := 0
+		for k, v := range iter.IterateAll(context.TODO(), opts...) {
+			count++
+			ks.Insert(int(k.Key))
+			vs.Insert(int(v.Value))
+		}
+		require.NoError(t, iter.Err())
+		assert.Equal(t, size, count)
+
+		for i := range int(size) {
+			require.Contains(t, ks, i, "expect iterate to return key="+strconv.Itoa(i))
+			require.Contains(t, vs, i, "expect iterate to return val="+strconv.Itoa(i))
+		}
+		assert.Len(t, ks, int(size))
+		assert.Len(t, vs, int(size))
+		assert.Equal(t, size, count)
+
+		count, err := m.BatchCount()
+		require.NoError(t, err, "BatchCount")
+		assert.Equal(t, size, count)
+	}
+
+	for _, test := range []struct {
+		mapSize int
+		size    int
+		opts    []BatchIteratorOpt[TestLPMKey, TestValue, *TestLPMKey, *TestValue]
+		// LRU hash maps aren't totally safe to test like this, even if you're
+		// within the max map size number of elements, in practice the kernel
+		// will occasionally do a LRU eviction causing failures.
+		// Setting the max size appears to make this safe enough (test up to a
+		// test million runs) that we can run a subset of tests on LRU.
+		unsafeLRU bool
+	}{
+		{10, 10, nil, true},
+		{1024, 1024, nil, true},
+		{1048576, 1024, nil, false}, // Max map size much larger means no chance of LRU eviction.
+		// Setup iteration that starts with batch size of 1, this is bound to fail at some point
+		// so this will test if the chunk size growth retry loop works correctly.
+		{
+			size:    1 << 12,
+			mapSize: 1 << 13,
+			opts: []BatchIteratorOpt[TestLPMKey, TestValue, *TestLPMKey, *TestValue]{
+				WithMaxRetries[TestLPMKey, TestValue](13), WithStartingChunkSize[TestLPMKey, TestValue](1)},
+			unsafeLRU: true,
+		},
+		{
+			size:    1,
+			mapSize: 1 << 12,
+		},
+		{
+			size:    1 << 12,
+			mapSize: 1 << 12,
+			opts: []BatchIteratorOpt[TestLPMKey, TestValue, *TestLPMKey, *TestValue]{
+				WithMaxRetries[TestLPMKey, TestValue](1), WithStartingChunkSize[TestLPMKey, TestValue](1 << 13)},
+			unsafeLRU: true,
+		},
+	} {
+		t.Run(fmt.Sprintf("hash size=%d mapSize=%d", test.size, test.mapSize), func(t *testing.T) {
+			runTest(ebpf.Hash, test.size, test.mapSize, t, test.opts...)
+		})
+		t.Run(fmt.Sprintf("lpmtrie size=%d mapSize=%d", test.size, test.mapSize), func(t *testing.T) {
+			runTest(ebpf.LPMTrie, test.size, test.mapSize, t, test.opts...)
+		})
+		if !test.unsafeLRU {
+			t.Run(fmt.Sprintf("hashlru size=%d mapSize=%d", test.size, test.mapSize), func(t *testing.T) {
+				runTest(ebpf.LRUHash, test.size, test.mapSize, t, test.opts...)
+			})
+		}
 	}
 }

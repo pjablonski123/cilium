@@ -1,5 +1,5 @@
 name: Close stale issues
-  
+
 on:
   schedule:
   - cron: "30 1 * * *"
@@ -11,16 +11,16 @@ permissions:
 jobs:
   stale:
     name: Close Stale Issues
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     # https://github.com/marketplace/actions/close-stale-issues
     - name: Close stale issues
-      uses: actions/stale@28ca1036281a5e5922ead5184a1bbf96e5fc984e # v9.0.0
+      uses: actions/stale@997185467fa4f803885201cee163a9f38240193d # v10.1.1
       with:
         operations-per-run: 1000
         stale-issue-label: stale
         exempt-all-issue-assignees: true
-        exempt-issue-labels: pinned,security,good-first-issue
+        exempt-issue-labels: pinned,security,good-first-issue,help-wanted
 
         days-before-issue-stale: 60
         stale-issue-message: |
@@ -32,7 +32,7 @@ jobs:
           Closing.
 
         stale-pr-label: stale
-        exempt-pr-labels: pinned,security,good-first-issue
+        exempt-pr-labels: pinned,security,good-first-issue,help-wanted
 
         days-before-pr-stale: 30
         stale-pr-message: |

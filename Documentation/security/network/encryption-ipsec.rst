@@ -12,14 +12,41 @@ IPsec Transparent Encryption
 
 This guide explains how to configure Cilium to use IPsec based transparent
 encryption using Kubernetes secrets to distribute the IPsec keys. After this
-configuration is complete all traffic between Cilium-managed endpoints, as well
-as Cilium-managed host traffic, will be encrypted using IPsec. This guide uses
-Kubernetes secrets to distribute keys. Alternatively, keys may be manually
-distributed, but that is not shown here.
+configuration is complete, all traffic between Cilium-managed endpoints will be
+encrypted using IPsec. This guide uses Kubernetes secrets to distribute keys.
+Alternatively, keys may be manually distributed, but that is not shown here.
 
 Packets are not encrypted when they are destined to the same node from which
 they were sent. This behavior is intended. Encryption would provide no benefits
 in that case, given that the raw traffic can be observed on the node anyway.
+
+v1.18 Encrypted Overlay
+=========================
+Prior to v1.18, IPsec encryption was performed before tunnel encapsulation.
+From Cilium v1.18 and forward, Cilium's IPsec encryption datapath will send
+traffic for overlay encapsulation prior to IPsec encryption when tunnel mode is
+enabled.
+
+With this change, the security identities used for policy enforcement are
+encrypted on the wire. This is a security benefit.
+
+A disruption-less upgrade from v1.17 to v1.18 can only be achieved by fully
+patching v1.17 to its latest version. Migration specific code was added to
+newer v1.17 releases to support a disruption-less upgrade to v1.18.
+
+Once patched to the newest v1.17 stable release, a normal upgrade to v1.18 can
+be performed.
+
+.. note::
+
+   Because VXLAN is encrypted before being sent, operators see ESP
+   traffic between Kubernetes nodes.
+
+   This may result in the need to update firewall rules to allow ESP traffic
+   between nodes.
+   This is especially important in Google Cloud GKE environments.
+   The default firewall rules for the cluster's subnet may not allow ESP.
+
 
 Generate & Import the PSK
 =========================
@@ -29,7 +56,7 @@ example below demonstrates generation of the necessary IPsec configuration
 which will be distributed as a Kubernetes secret called ``cilium-ipsec-keys``.
 A Kubernetes secret should consist of one key-value pair where the key is the
 name of the file to be mounted as a volume in cilium-agent pods, and the
-value is an IPSec configuration in the following format::
+value is an IPsec configuration in the following format::
 
     key-id encryption-algorithms PSK-in-hex-format key-size
 
@@ -42,10 +69,30 @@ In the example below, GCM-128-AES is used. However, any of the algorithms
 supported by Linux may be used. To generate the secret, you may use the
 following command:
 
-.. code-block:: shell-session
+.. tabs::
 
-    $ kubectl create -n kube-system secret generic cilium-ipsec-keys \
-        --from-literal=keys="3 rfc4106(gcm(aes)) $(echo $(dd if=/dev/urandom count=20 bs=1 2> /dev/null | xxd -p -c 64)) 128"
+    .. group-tab:: Cilium CLI
+
+       .. parsed-literal::
+
+          $ cilium encrypt create-key --auth-algo rfc4106-gcm-aes
+
+    .. group-tab:: Kubectl CLI
+
+       .. parsed-literal::
+
+          $ kubectl create -n kube-system secret generic cilium-ipsec-keys \
+              --from-literal=keys="3+ rfc4106(gcm(aes)) $(dd if=/dev/urandom count=20 bs=1 2> /dev/null | xxd -p -c 64) 128"
+
+       .. attention::
+
+           The ``+`` sign in the secret is strongly recommended. It will force the use
+           of per-tunnel IPsec keys. The former global IPsec keys are considered
+           insecure (cf. `GHSA-pwqm-x5x6-5586`_) and were deprecated in v1.16. When
+           using ``+``, the per-tunnel keys will be derived from the secret you
+           generated.
+
+.. _GHSA-pwqm-x5x6-5586: https://github.com/cilium/cilium/security/advisories/GHSA-pwqm-x5x6-5586
 
 The secret can be seen with ``kubectl -n kube-system get secrets`` and will be
 listed as ``cilium-ipsec-keys``.
@@ -77,12 +124,10 @@ Enable Encryption in Cilium
        If you are deploying Cilium with Helm by following
        :ref:`k8s_install_helm`, pass the following options:
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set encryption.enabled=true \\
-             --set encryption.type=ipsec
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: encryption.enabled=true
+                encryption.type=ipsec
 
        ``encryption.enabled`` enables encryption of the traffic between
        Cilium-managed pods. ``encryption.type`` specifies the encryption method
@@ -97,6 +142,12 @@ Enable Encryption in Cilium
 
 At this point the Cilium managed nodes will be using IPsec for all traffic. For further
 information on Cilium's transparent encryption, see :ref:`ebpf_datapath`.
+
+Dependencies
+============
+
+When L7 proxy support is enabled (``--enable-l7-proxy=true``), IPsec requires that the
+DNS proxy operates in transparent mode (``--dnsproxy-enable-transparent-mode=true``).
 
 Encryption interface
 --------------------
@@ -162,13 +213,26 @@ commands:
 Key Rotation
 ============
 
+.. attention::
+
+   Key rotations should not be performed during upgrades and downgrades. That
+   is, all nodes in the cluster (or clustermesh) should be on the same Cilium
+   version before rotating keys.
+
+.. attention::
+
+   It is not recommended to change algorithms that involve different authentication
+   key lengths during key rotations. If this is attempted, Cilium will delay the
+   application of the new key until the agent restarts and will continue using the
+   previous key. This is designed to maintain uninterrupted IPv6 pod-to-pod connectivity.
+
 To replace cilium-ipsec-keys secret with a new key:
 
 .. code-block:: shell-session
 
-    KEYID=$(kubectl get secret -n kube-system cilium-ipsec-keys -o go-template --template={{.data.keys}} | base64 -d | cut -c 1)
+    KEYID=$(kubectl get secret -n kube-system cilium-ipsec-keys -o go-template --template={{.data.keys}} | base64 -d | grep -oP "^\d+")
     if [[ $KEYID -ge 15 ]]; then KEYID=0; fi
-    data=$(echo "{\"stringData\":{\"keys\":\"$((($KEYID+1))) "rfc4106\(gcm\(aes\)\)" $(echo $(dd if=/dev/urandom count=20 bs=1 2> /dev/null| xxd -p -c 64)) 128\"}}")
+    data=$(echo "{\"stringData\":{\"keys\":\"$((($KEYID+1)))+ "rfc4106\(gcm\(aes\)\)" $(dd if=/dev/urandom count=20 bs=1 2> /dev/null | xxd -p -c 64) 128\"}}")
     kubectl patch secret -n kube-system cilium-ipsec-keys -p="${data}" -v=1
 
 During transition the new and old keys will be in use. The Cilium agent keeps
@@ -187,11 +251,39 @@ to all clusters in the mesh. You might need to increase the transition time to
 allow for the new keys to be deployed and applied across all clusters,
 which you can do with the agent flag ``ipsec-key-rotation-duration``.
 
+Monitoring
+==========
+
+When monitoring network traffic on a node with IPSec enabled, it is normal to observe
+in the same interface both the outer packet (node-to-node) carrying the ESP-encrypted
+payload and then the decrypted inner packet (pod-to-pod). This occurs as, once a packet
+is decrypted, it is recirculated back to the same interface for further processing.
+Therefore, depending on the ``tcpdump`` filter applied, the capture might differ, but this
+**does not** indicate that encryption is not functioning correctly. In particular, to observe:
+
+1. Only the encrypted packet: use the filter ``esp``.
+2. Only the decrypted packet: use a specific filter for the protocol used by the pods (such as ``icmp`` for ping).
+3. Both encrypted and decrypted packets: use no filter or combine the filters for both (such as ``esp or icmp``).
+
+The following capture was taken on a Kind cluster with no filter applied (replace ``eth0``
+with ``cilium_vxlan`` if tunneling is enabled). The nodes have IP addresses ``10.244.2.92``
+and ``10.244.1.148``, while the pods have IP addresses ``10.244.2.189`` and ``10.244.1.7``,
+using ping (ICMP) for communication.
+
+.. code-block:: shell-session
+
+  tcpdump -l -n -i eth0
+  tcpdump: verbose output suppressed, use -v[v]... for full protocol decode
+  listening on cilium_vxlan, link-type EN10MB (Ethernet), snapshot length 262144 bytes
+  09:22:16.379908 IP 10.244.2.92 > 10.244.1.148: ESP(spi=0x00000003,seq=0x8), length 120
+  09:22:16.379908 IP 10.244.2.189 > 10.244.1.7: ICMP echo request, id 33, seq 1, length 64
+
+
 Troubleshooting
 ===============
 
  * If the ``cilium`` Pods fail to start after enabling encryption, double-check if
-   the IPSec ``Secret`` and Cilium are deployed in the same namespace together.
+   the IPsec ``Secret`` and Cilium are deployed in the same namespace together.
 
  * Check for ``level=warning`` and ``level=error`` messages in the Cilium log files
 
@@ -206,27 +298,29 @@ Troubleshooting
        $ cilium-dbg encrypt status
        Encryption: IPsec
        Decryption interface(s): eth0, eth1, eth2
-       Keys in use: 1
-       Max Seq. Number: 0x1e3/0xffffffff
+       Keys in use: 4
+       Max Seq. Number: 0x1e3/0xffffffffffffffff
        Errors: 0
 
    If the error counter is non-zero, additional information will be displayed
-   with the specific errors the kernel encountered. If the sequence number
-   reaches its maximum value, it will also result in errors. The number of
-   keys in use should be 2 during a key rotation and always 1 otherwise. The
-   list of decryption interfaces should have all native devices that may
+   with the specific errors the kernel encountered.
+
+   The number of keys in use should be 2 per remote node per enabled IP family.
+   During a key rotation, it can double to 4 per remote node per IP family. For
+   example, in a 3-nodes cluster, if both IPv4 and IPv6 are enabled and no key
+   rotation is ongoing, there should be 8 keys in use on each node.
+
+   The list of decryption interfaces should have all native devices that may
    receive pod traffic (for example, ENI interfaces).
 
- * All XFRM errors correspond to a packet drop in the kernel. Except for
-   ``XfrmFwdHdrError`` and ``XfrmInError``, all XFRM errors indicate a bug in
-   Cilium or an operational mistake. ``XfrmOutStateSeqError``,
-   ``XfrmInStateProtoError``, and ``XfrmInNoStates`` may be caused by
-   operational mistakes, as detailed in the following points.
+All XFRM errors correspond to a packet drop in the kernel. The following
+details operational mistakes and expected behaviors that can cause those
+errors.
 
- * If the sequence number reaches its maximum value for any XFRM OUT state, it
-   will result in packet drops and XFRM errors of type
-   ``XfrmOutStateSeqError``. A key rotation resets all sequence numbers.
-   Rotate keys frequently to avoid this issue.
+ * When a node reboots, the key used to communicate with it is expected to
+   change on other nodes. You may notice the ``XfrmInNoStates`` and
+   ``XfrmOutNoStates`` counters increase while the new node key is being
+   deployed.
 
  * After a key rotation, if the old key is cleaned up before the
    configuration of the new key is installed on all nodes, it results in
@@ -238,16 +332,23 @@ Troubleshooting
    Cluster Mesh where several clusters need to be updated), you can increase the
    delay before cleanup with agent flag ``ipsec-key-rotation-duration``.
 
- * ``XfrmInStateProtoError`` errors can happen if the key is updated without
-   incrementing the SPI (also called ``KEYID`` in :ref:`ipsec_key_rotation`
-   instructions above). It can be fixed by performing a new key rotation,
-   properly.
+ * ``XfrmInStateProtoError`` errors can happen for the following reasons:
+   1. If the key is updated without incrementing the SPI (also called ``KEYID``
+   in :ref:`ipsec_key_rotation` instructions above). It can be fixed by
+   performing a new key rotation, properly.
+   2. If the source node encrypts the packets using a different anti-replay seq
+   from the anti-reply oseq on the destination node. This can be fixed by
+   properly performing a new key rotation.
 
  * ``XfrmFwdHdrError`` and ``XfrmInError`` happen when the kernel fails to
    lookup the route for a packet it decrypted. This can legitimately happen
    when a pod was deleted but some packets are still in transit. Note these
    errors can also happen under memory pressure when the kernel fails to
    allocate memory.
+
+ * ``XfrmInStateInvalid`` can happen on rare occasions if packets are received
+   while an XFRM state is being deleted. XFRM states get deleted as part of
+   node scale-downs and for some upgrades and downgrades.
 
  * The following table documents the known explanations for several XFRM errors
    that were observed in the past. Many other error types exist, but they are
@@ -261,7 +362,10 @@ Troubleshooting
                             packet for a pod that was deleted or (2) failed to
                             allocate memory.
    XfrmInNoStates           Bug in the XFRM configuration for decryption.
-   XfrmInStateProtoError    There is a key mismatch between nodes.
+   XfrmInStateProtoError    There is a key or anti-replay seq mismatch between
+                            nodes.
+   XfrmInStateInvalid       A received packet matched an XFRM state that is
+                            being deleted.
    XfrmInTmplMismatch       Bug in the XFRM configuration for decryption.
    XfrmInNoPols             Bug in the XFRM configuration for decryption.
    XfrmInPolBlock           Explicit drop, not used by Cilium.
@@ -278,12 +382,48 @@ Troubleshooting
  * In addition to the above XFRM errors, packet drops of type ``No node ID
    found`` (code 197) may also occur under normal operations. These drops can
    happen if a pod attempts to send traffic to a pod on a new node for which
-   the Cilium agent didn't yet receive the CiliumNode object. It can also
-   happen if the IP address of the destination node changed and the agent
-   didn't receive the updated CiliumNode object yet. In both cases, the IPsec
-   configuration in the kernel isn't ready yet, so Cilium drops the packets at
-   the source. These drops will stop once the CiliumNode information is
-   propagated across the cluster.
+   the Cilium agent didn't yet receive the CiliumNode object or to a pod on a
+   node that was recently deleted. It can also happen if the IP address of the
+   destination node changed and the agent didn't receive the updated CiliumNode
+   object yet. In both cases, the IPsec configuration in the kernel isn't ready
+   yet, so Cilium drops the packets at the source. These drops will stop once
+   the CiliumNode information is propagated across the cluster.
+
+.. _xfrm_state_staling_in_cilium:
+
+XFRM State Staling in Cilium
+============================
+
+Control plane disruptions can lead to connectivity issues due to stale XFRM
+states with out-of-sync IPsec anti-replay counters. This typically results in
+permanent connectivity disruptions between pods managed by Cilium. This section
+explains how these issues occur and what you can do about them.
+
+Identified Causes
+-----------------
+
+In KVStore Mode (e.g., etcd), you might encounter stale XFRM states:
+
+  * If a Cilium agent is down for prolonged time, the corresponding node entry
+    in the kvstore will be deleted due to lease expiration (see
+    :ref:`kvstore_leases`), resulting in stale XFRM states.
+
+  * If you manually recreate your key-value store, a Cilium agent might connect
+    too late to the new instance. This delay can cause the agent to miss crucial
+    node delete and create events, leading Cilium to retain outdated XFRM states
+    for those nodes.
+
+In CRD Mode, stale XFRM states can occur if you delete a CiliumNode resource and
+restart the Cilium agent DaemonSet. While other agents create fresh XFRM states
+for the new CiliumNode, the agent on that new node may retain obsolete XFRM
+states for all the other peer nodes.
+
+Mitigation
+----------
+
+To restore connectivity in those cases, perform a key rotation (see
+:ref:`ipsec_key_rotation`). This action ensures new consistent and valid XFRM
+states across all your nodes.
 
 Disabling Encryption
 ====================
@@ -297,7 +437,6 @@ Limitations
     * Transparent encryption is not currently supported when chaining Cilium on
       top of other CNI plugins. For more information, see :gh-issue:`15596`.
     * :ref:`HostPolicies` are not currently supported with IPsec encryption.
-    * IPsec encryption is not currently supported in combination with IPv6-only clusters.
     * IPsec encryption is not supported on clusters or clustermeshes with more
       than 65535 nodes.
     * Decryption with Cilium IPsec is limited to a single CPU core per IPsec

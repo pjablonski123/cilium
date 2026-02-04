@@ -6,8 +6,8 @@
  * modify it under the terms of version 2 of the GNU General Public
  * License as published by the Free Software Foundation.
  */
-#ifndef _UAPI__LINUX_BPF_H__
-#define _UAPI__LINUX_BPF_H__
+
+#pragma once
 
 #include <linux/types.h>
 #include <linux/bpf_common.h>
@@ -5895,6 +5895,7 @@ enum {
 	BPF_F_PSEUDO_HDR		= (1ULL << 4),
 	BPF_F_MARK_MANGLED_0		= (1ULL << 5),
 	BPF_F_MARK_ENFORCE		= (1ULL << 6),
+	BPF_F_IPV6			= (1ULL << 7),
 };
 
 /* BPF_FUNC_clone_redirect and BPF_FUNC_redirect flags. */
@@ -7313,5 +7314,3 @@ struct bpf_iter_num {
 	 */
 	__u64 __opaque[1];
 } __attribute__((aligned(8)));
-
-#endif /* _UAPI__LINUX_BPF_H__ */

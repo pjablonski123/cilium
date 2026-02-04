@@ -34,51 +34,45 @@ file.
 .. tabs::
   .. group-tab:: kubectl
 
-    .. parsed-literal::
-
-      helm template |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        --set preflight.enabled=true \\
-        --set agent=false \\
-        --set operator.enabled=false \\
-        > cilium-preflight.yaml
-      kubectl create -f cilium-preflight.yaml
+    .. cilium-helm-template::
+       :namespace: kube-system
+       :set: preflight.enabled=true
+             agent=false
+             operator.enabled=false
+       :post-helm-commands: > cilium-preflight.yaml
+       :post-commands: kubectl create -f cilium-preflight.yaml
 
   .. group-tab:: Helm
 
-    .. parsed-literal::
-
-      helm install cilium-preflight |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        --set preflight.enabled=true \\
-        --set agent=false \\
-        --set operator.enabled=false
+    .. cilium-helm-install::
+       :name: cilium-preflight
+       :namespace: kube-system
+       :set: preflight.enabled=true
+             agent=false
+             operator.enabled=false
 
   .. group-tab:: kubectl (kubeproxy-free)
 
-    .. parsed-literal::
-
-      helm template |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        --set preflight.enabled=true \\
-        --set agent=false \\
-        --set operator.enabled=false \\
-        --set k8sServiceHost=API_SERVER_IP \\
-        --set k8sServicePort=API_SERVER_PORT \\
-        > cilium-preflight.yaml
-      kubectl create -f cilium-preflight.yaml
+    .. cilium-helm-template::
+       :namespace: kube-system
+       :set: preflight.enabled=true
+             agent=false
+             operator.enabled=false
+             k8sServiceHost=API_SERVER_IP
+             k8sServicePort=API_SERVER_PORT
+       :post-helm-commands: > cilium-preflight.yaml
+       :post-commands: kubectl create -f cilium-preflight.yaml
 
   .. group-tab:: Helm (kubeproxy-free)
 
-    .. parsed-literal::
-
-      helm install cilium-preflight |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        --set preflight.enabled=true \\
-        --set agent=false \\
-        --set operator.enabled=false \\
-        --set k8sServiceHost=API_SERVER_IP \\
-        --set k8sServicePort=API_SERVER_PORT
+    .. cilium-helm-install::
+       :name: cilium-preflight
+       :namespace: kube-system
+       :set: preflight.enabled=true
+             agent=false
+             operator.enabled=false
+             k8sServiceHost=API_SERVER_IP
+             k8sServicePort=API_SERVER_PORT
 
 After applying the ``cilium-preflight.yaml``, ensure that the number of READY
 pods is the same number of Cilium pods running.
@@ -140,9 +134,8 @@ Step 1: Upgrade to latest patch version
 ---------------------------------------
 
 When upgrading from one minor release to another minor release, for example
-1.x to 1.y, it is recommended to upgrade to the latest patch release for a
-Cilium release series first. The latest patch releases for each supported
-version of Cilium are `here <https://github.com/cilium/cilium#stable-releases>`_.
+1.x to 1.y, it is recommended to upgrade to the `latest patch release
+<https://github.com/cilium/cilium#stable-releases>`__ for a Cilium release series first.
 Upgrading to the latest patch release ensures the most seamless experience if a
 rollback is required following the minor release upgrade. The upgrade guides
 for previous versions can be found for each minor version at the bottom left
@@ -170,23 +163,19 @@ version which was installed in this cluster.
 
     Generate the required YAML file and deploy it:
 
-    .. parsed-literal::
-
-      helm template |CHART_RELEASE| \\
-        --set upgradeCompatibility=1.X \\
-        --namespace kube-system \\
-        > cilium.yaml
-      kubectl apply -f cilium.yaml
+    .. cilium-helm-template::
+       :namespace: kube-system
+       :set: upgradeCompatibility=1.X
+       :post-helm-commands: > cilium.yaml
+       :post-commands: kubectl apply -f cilium.yaml
 
   .. group-tab:: Helm
 
     Deploy Cilium release via Helm:
 
-    .. parsed-literal::
-
-      helm upgrade cilium |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        --set upgradeCompatibility=1.X
+    .. cilium-helm-upgrade::
+       :namespace: kube-system
+       :set: upgradeCompatibility=1.X
 
 .. note::
 
@@ -209,11 +198,9 @@ version which was installed in this cluster.
 
    You can then upgrade using this values file by running:
 
-   .. parsed-literal::
-
-      helm upgrade cilium |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        -f my-values.yaml
+   .. cilium-helm-upgrade::
+      :namespace: kube-system
+      :extra-args: -f my-values.yaml
 
 When upgrading from one minor release to another minor release using
 ``helm upgrade``, do *not* use Helm's ``--reuse-values`` flag.
@@ -271,178 +258,108 @@ Cilium to the state it was in prior to the upgrade.
 Version Specific Notes
 ======================
 
-This section documents the specific steps required for upgrading from one
-version of Cilium to another version of Cilium. There are particular version
-transitions which are suggested by the Cilium developers to avoid known issues
-during upgrade, then subsequently there are sections for specific upgrade
-transitions, ordered by version.
+This section details the upgrade notes specific to |CURRENT_RELEASE|. Read them
+carefully and take the suggested actions before upgrading Cilium to |CURRENT_RELEASE|.
+For upgrades to earlier releases, see the
+:prev-docs:`upgrade notes to the previous version <operations/upgrade/#upgrade-notes>`.
 
-The table below lists suggested upgrade transitions, from a specified current
-version running in a cluster to a specified target version. If a specific
-combination is not listed in the table below, then it may not be safe. In that
-case, consider performing incremental upgrades between versions (e.g. upgrade
-from ``1.12.x`` to ``1.13.y`` first, and to ``1.14.z`` only afterwards).
+The only tested upgrade and rollback path is between consecutive minor releases.
+Always perform upgrades and rollbacks between one minor release at a time.
+Additionally, always update to the latest patch release of your current version
+before attempting an upgrade.
 
-+-----------------------+-----------------------+-------------------------+---------------------------+
-| Current version       | Target version        | L3/L4 impact            | L7 impact                 |
-+=======================+=======================+=========================+===========================+
-| ``1.13.x``            | ``1.14.y``            | Minimal to None         | Clients must reconnect[1] |
-+-----------------------+-----------------------+-------------------------+---------------------------+
-| ``1.12.x``            | ``1.13.y``            | Minimal to None         | Clients must reconnect[1] |
-+-----------------------+-----------------------+-------------------------+---------------------------+
-| ``1.11.x``            | ``1.12.y``            | Minimal to None         | Clients must reconnect[1] |
-+-----------------------+-----------------------+-------------------------+---------------------------+
-
-Annotations:
-
-#. **Clients must reconnect**: Any traffic flowing via a proxy (for example,
-   because an L7 policy is in place) will be disrupted during upgrade.
-   Endpoints communicating via the proxy must reconnect to re-establish
-   connections.
+Tested upgrades are expected to have minimal to no impact on new and existing
+connections matched by either no Network Policies, or L3/L4 Network Policies only.
+Any traffic flowing via user space proxies (for example, because an L7 policy is
+in place, or using Ingress/Gateway API) will be disrupted during upgrade. Endpoints
+communicating via the proxy must reconnect to re-establish connections.
 
 .. _current_release_required_changes:
 
-.. _1.15_upgrade_notes:
+.. _1.20_upgrade_notes:
 
-1.15 Upgrade Notes
+1.20 Upgrade Notes
 ------------------
-* If you configured Cilium with both IPv4 and IPv6 support enabled, and you have
-  a network policy with a ``ToCIDR`` or ``ToCIDRSet`` rule matching a full
-  IP range such as ``0.0.0.0/0`` or ``::/0``, then you may experience
-  connection breakage when switching Cilium versions. When this problem
-  occurs, existing connections allowed by the network policy may be denied
-  until the application reconnects. New connections are not impacted.
-  Upgrading from Cilium 1.14.x or earlier to 1.15.y or later does not
-  trigger this problem. Downgrading from Cilium 1.15.y or later to Cilium
-  1.14.x or earlier may trigger this problem.
-* ``CiliumNetworkPolicy`` cannot match the ``reserved:init`` labels any more.
-  If you have ``CiliumNetworkPolicy`` resources that have a match for
-  labels ``reserved:init``, these policies must be converted to
-  ``CiliumClusterwideNetworkPolicy`` by changing the resource type for the
-  policy.
-* Cluster name and ID are no longer automatically inferred by Cilium agents
-  running on :ref:`external workloads <external_workloads>`.
-  If the cluster name and ID are different from the default values, you must
-  specify them as parameters.
-  Generate the installation script using Cilium CLI >=v0.15.8 to automatically
-  include these parameters.
-* ``enable-endpoint-routes`` now automatically sets ``enable-local-node-route``
-  to false, as local node routes are redundant when per-endpoint routes are enabled.
-* L7 visibility using Pod annotations (``policy.cilium.io/proxy-visibility``) is
-  no longer supported.
-  We recommend users to switch to L7 policies instead (see :ref:`proxy_visibility`).
-* If you are using Gateway API, please make sure that new v1 CRDs are installed.
-  The existing Gateway API resources will continue to work as usual, however, it is
-  better to migrate your resources from v1beta1 to v1 for GatewayClass, Gateway and
-  HTTPRoute resources.
-* The tunnel protocol is no longer automatically set to ``geneve`` when Cilium
-  is configured in native routing mode and :ref:`DSR mode with Geneve` is enabled.
-  Explicitly configure ``--tunnel-protocol=geneve`` (or the equivalent
-  ``tunnelProtocol=geneve`` helm value) when DSR with Geneve is enabled.
-* The ``CILIUM_PREPEND_IPTABLES_CHAIN`` environment variable has been renamed
-  to ``CILIUM_PREPEND_IPTABLES_CHAINS`` (note the trailing ``S``) to more accurately
-  match the name of the associated command line flag ``--prepend-iptables-chains``.
 
-.. _upgrade_cilium_cli_helm_mode:
+Action Required
+~~~~~~~~~~~~~~~
 
-Cilium CLI
-~~~~~~~~~~
+If you are using the following features in your environment, then you may need
+to take action because of changes to the behavior of these features. Read the
+notes carefully below to understand what to do during upgrade.
 
-Upgrade Cilium CLI to `v0.15.0 <https://github.com/cilium/cilium-cli/releases/tag/v0.15.0>`_
-or later to switch to `Helm installation mode <https://github.com/cilium/cilium-cli#helm-installation-mode>`_
-to install and manage Cilium v1.14. Classic installation mode is **not**
-supported with Cilium v1.14.
+* TODO
 
-Helm and classic mode installations are not compatible with each other. Do not
-use Cilium CLI in Helm mode to manage classic mode installations, and vice versa.
+Informational Notes
+~~~~~~~~~~~~~~~~~~~
 
-To migrate a classic mode Cilium installation to Helm mode, you need to
-uninstall Cilium using classic mode Cilium CLI, and then re-install Cilium
-using Helm mode Cilium CLI.
+* TODO
+
+Changes to Features
+~~~~~~~~~~~~~~~~~~~
+
+New Options
+###########
+
+The following options have been introduced in this version of Cilium:
+
+* ``bpf.datapathMode=auto`` config option has been introduced. If set, Cilium will probe
+  the underlying host for netkit support and, if found, netkit mode will be selected at
+  runtime. Otherwise, Cilium will default back to the standard veth mode. This has the
+  side effect of splitting the datapath-mode into "configured mode" and "operational mode"
+  in status outputs, where they differ. The default remains ``bpf.datapathMode=veth``
+  but may change in future releases.
+* ``bpf.tproxy=true`` is incompatible with netkit datapath mode. If netkit is also enabled,
+  Cilium will fail to start. If auto-detect datapath mode is used, Cilium will revert to
+  veth mode, even if netkit support is present.
+
+Changed Options
+###############
+
+The following options have been modified in this version of Cilium to behave
+differently than in prior releases:
+
+* TODO
+
+Deprecated Options
+##################
+
+The following options have been deprecated in this version of Cilium. A future
+version of Cilium will remove these options, so if you use these options then
+you may need to take action to migrate to an alternative.
+
+* TODO
 
 Removed Options
-~~~~~~~~~~~~~~~
+###############
 
-* The previously deprecated ``cluster-pool-v2beta`` IPAM mode has been removed.
-  The functionality to dynamically allocate Pod CIDRs is now provided by the more
-  flexible ``multi-pool`` IPAM mode.
+The following options were previously deprecated, and they are now removed
+from Cilium.
 
-* The ``install-egress-gateway-routes`` flag has been deprecated because the
-  datapath has been improved to not require any additional routes in
-  ENI environments.
+* TODO
 
-* The ``tunnel`` option (deprecated in Cilium 1.14) has been removed. To
-  enable native-routing mode, set ``routing-mode=native`` (previously
-  ``tunnel=disabled``). To configure the tunneling protocol, set
-  ``tunnel-protocol=vxlan|geneve`` (previously ``tunnel=vxlan|geneve``).
-
-* The long defunct and undocumented ``single-cluster-route`` flag has been removed.
-
-* The ``dnsproxy-lock-count`` and ``dnsproxy-lock-timeout`` flags no longer have
-  any effect and are deprecated. They will be removed in v1.16.
-
-* Deprecated options ``enable-k8s-event-handover`` and ``cnp-status-update-interval`` has been removed.
-
-Helm Options
-~~~~~~~~~~~~
-
-* Values ``clustermesh.apiserver.tls.ca.cert`` and ``clustermesh.apiserver.tls.ca.key``
-  were deprecated in Cilium 1.14 in favor of ``tls.ca.cert`` and ``tls.ca.key`` respectively,
-  and have been removed. The ```clustermesh-apiserver-ca-cert`` secret is no longer generated.
-
-* Values ``authentication.mutual.spire.install.agent.image`` and ``authentication.mutual.spire.install.server.image``
-  changed their type from a string to a structured definition that decouples repository and tag. This improves the
-  usage in offline environments.
-
-* Prometheus metrics for cilium-operator and clustermesh's kvstore are now enabled by default.
-  If you want to disable these prometheus metrics, set ``operator.prometheus.enabled=false``
-  and ``clustermesh.apiserver.metrics.etcd.enabled=false`` respectively.
-
-* ``egressGateway.installRoutes`` has been deprecated because the setting is no
-  longer necessary.
-
-* Value ``tunnel`` was deprecated in Cilium 1.14 in favor of ``routingMode`` and
-  ``tunnelProtocol``, and has been removed.
-
-* Values  ``enableK8sEventHandover`` and ``enableCnpStatusUpdates`` have been removed.
+Changes to Metrics
+~~~~~~~~~~~~~~~~~~
 
 Added Metrics
-~~~~~~~~~~~~~
+#############
 
-* ``cilium_ipam_capacity``
-* ``cilium_endpoint_max_ifindex`` See `#27953 <https://github.com/cilium/cilium/pull/27953>`_ for configuration and usage information
-
-Removed Metrics
-~~~~~~~~~~~~~~~
-
-The following deprecated metrics were removed:
-
-* ``cilium_policy_l7_parse_errors_total``, ``cilium_policy_l7_forwarded_total``, ``cilium_policy_l7_denied_total``, ``cilium_policy_l7_received_total`` (replaced by ``cilium_policy_l7_total``)
-* ``cilium_policy_import_errors_total`` (replaced by ``cilium_policy_change_total``).
+* TODO
 
 Changed Metrics
-~~~~~~~~~~~~~~~
+###############
 
-* ``cilium_kvstore_operations_duration_seconds``,
-  ``cilium_clustermesh_apiserver_kvstore_operations_duration_seconds``
-  and ``cilium_kvstoremesh_kvstore_operations_duration_seconds``
-  do not include client-side rate-limiting latency anymore.
-  For checking client-side rate-limiting you can use corresponding
-  ``*_api_limiter_wait_duration_seconds`` metrics.
-* The ``cilium_bpf_map_pressure`` for policy maps is now exposed as a single
-  label ``cilium_policy_*``, rather than a label per policy map of an endpoint.
-* ``cilium_policy_l7_total`` now has label ``proxy_type`` to distinguish between fqdn and envoy proxy requests.
-* The ``cilium_cidrgroup_policies`` metric has been renamed to
-  ``cilium_cidrgroups_referenced`` for better clarity.
-* The ``cilium_cidrgroup_translation_time_stats_seconds`` metric has been disabled by default.
+* TODO
 
-.. _earlier_upgrade_notes:
+Deprecated Metrics
+##################
 
-Earlier Upgrade Notes
----------------------
+* TODO
 
-For upgrades from earlier releases, see the
-:prev-docs:`upgrade notes from the previous version <operations/upgrade/#upgrade-notes>`.
+Removed Metrics
+###############
+
+* TODO
 
 Advanced
 ========
@@ -469,171 +386,65 @@ available during the upgrade:
   events will be lost.
 
 
-.. _upgrade_configmap:
-
-Rebasing a ConfigMap
---------------------
-
-This section describes the procedure to rebase an existing :term:`ConfigMap` to the
-template of another version.
-
-Export the current ConfigMap
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-::
-
-        $ kubectl get configmap -n kube-system cilium-config -o yaml --export > cilium-cm-old.yaml
-        $ cat ./cilium-cm-old.yaml
-        apiVersion: v1
-        data:
-          clean-cilium-state: "false"
-          debug: "true"
-          disable-ipv4: "false"
-          etcd-config: |-
-            ---
-            endpoints:
-            - https://192.168.60.11:2379
-            #
-            # In case you want to use TLS in etcd, uncomment the 'trusted-ca-file' line
-            # and create a kubernetes secret by following the tutorial in
-            # https://cilium.link/etcd-config
-            trusted-ca-file: '/var/lib/etcd-secrets/etcd-client-ca.crt'
-            #
-            # In case you want client to server authentication, uncomment the following
-            # lines and add the certificate and key in cilium-etcd-secrets below
-            key-file: '/var/lib/etcd-secrets/etcd-client.key'
-            cert-file: '/var/lib/etcd-secrets/etcd-client.crt'
-        kind: ConfigMap
-        metadata:
-          creationTimestamp: null
-          name: cilium-config
-          selfLink: /api/v1/namespaces/kube-system/configmaps/cilium-config
-
-
-In the :term:`ConfigMap` above, we can verify that Cilium is using ``debug`` with
-``true``, it has a etcd endpoint running with `TLS <https://etcd.io/docs/latest/op-guide/security/>`_,
-and the etcd is set up to have `client to server authentication <https://etcd.io/docs/latest/op-guide/security/#example-2-client-to-server-authentication-with-https-client-certificates>`_.
-
-Generate the latest ConfigMap
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: shell-session
-
-    helm template cilium \
-      --namespace=kube-system \
-      --set agent.enabled=false \
-      --set config.enabled=true \
-      --set operator.enabled=false \
-      > cilium-configmap.yaml
-
-Add new options
-~~~~~~~~~~~~~~~
-
-Add the new options manually to your old :term:`ConfigMap`, and make the necessary
-changes.
-
-In this example, the ``debug`` option is meant to be kept with ``true``, the
-``etcd-config`` is kept unchanged, and ``monitor-aggregation`` is a new
-option, but after reading the :ref:`version_notes` the value was kept unchanged
-from the default value.
-
-After making the necessary changes, the old :term:`ConfigMap` was migrated with the
-new options while keeping the configuration that we wanted:
-
-::
-
-        $ cat ./cilium-cm-old.yaml
-        apiVersion: v1
-        data:
-          debug: "true"
-          disable-ipv4: "false"
-          # If you want to clean cilium state; change this value to true
-          clean-cilium-state: "false"
-          monitor-aggregation: "medium"
-          etcd-config: |-
-            ---
-            endpoints:
-            - https://192.168.60.11:2379
-            #
-            # In case you want to use TLS in etcd, uncomment the 'trusted-ca-file' line
-            # and create a kubernetes secret by following the tutorial in
-            # https://cilium.link/etcd-config
-            trusted-ca-file: '/var/lib/etcd-secrets/etcd-client-ca.crt'
-            #
-            # In case you want client to server authentication, uncomment the following
-            # lines and add the certificate and key in cilium-etcd-secrets below
-            key-file: '/var/lib/etcd-secrets/etcd-client.key'
-            cert-file: '/var/lib/etcd-secrets/etcd-client.crt'
-        kind: ConfigMap
-        metadata:
-          creationTimestamp: null
-          name: cilium-config
-          selfLink: /api/v1/namespaces/kube-system/configmaps/cilium-config
-
-Apply new ConfigMap
-~~~~~~~~~~~~~~~~~~~
-
-After adding the options, manually save the file with your changes and install
-the :term:`ConfigMap` in the ``kube-system`` namespace of your cluster.
-
-.. code-block:: shell-session
-
-        $ kubectl apply -n kube-system -f ./cilium-cm-old.yaml
-
-As the :term:`ConfigMap` is successfully upgraded we can start upgrading Cilium
-``DaemonSet`` and ``RBAC`` which will pick up the latest configuration from the
-:term:`ConfigMap`.
-
-
 Migrating from kvstore-backed identities to Kubernetes CRD-backed identities
 ----------------------------------------------------------------------------
 
-Beginning with cilium 1.6, Kubernetes CRD-backed security identities can be
-used for smaller clusters. Along with other changes in 1.6 this allows
+Beginning with Cilium 1.6, Kubernetes CRD-backed security identities can be
+used for smaller clusters. Along with other changes in 1.6, this allows
 kvstore-free operation if desired. It is possible to migrate identities from an
 existing kvstore deployment to CRD-backed identities. This minimizes
 disruptions to traffic as the update rolls out through the cluster.
 
-Affected versions
-~~~~~~~~~~~~~~~~~
+Migration
+~~~~~~~~~
 
-* Cilium 1.6 deployments using kvstore-backend identities
-
-Mitigation
-~~~~~~~~~~
-
-When identities change, existing connections can be disrupted while cilium
+When identities change, existing connections can be disrupted while Cilium
 initializes and synchronizes with the shared identity store. The disruption
 occurs when new numeric identities are used for existing pods on some instances
 and others are used on others. When converting to CRD-backed identities, it is
 possible to pre-allocate CRD identities so that the numeric identities match
-those in the kvstore. This allows new and old cilium instances in the rollout
+those in the kvstore. This allows new and old Cilium instances in the rollout
 to agree.
 
-The steps below show an example of such a migration. It is safe to re-run the
-command if desired. It will identify already allocated identities or ones that
+There are two ways to achieve this: you can either run a one-off ``cilium preflight migrate-identity`` script
+which will perform a point-in-time copy of all identities from the kvstore to CRDs (added in Cilium 1.6), or use the "Double Write" identity
+allocation mode which will have Cilium manage identities in both the kvstore and CRD at the same time for a seamless migration (added in Cilium 1.17).
+
+Migration with the ``cilium preflight migrate-identity`` script
+###############################################################
+
+The ``cilium preflight migrate-identity`` script is a one-off tool that can be used to copy identities from the kvstore into CRDs.
+It has a couple of limitations:
+
+* If an identity is created in the kvstore after the one-off migration has been completed, it will not be copied into a CRD.
+  This means that you need to perform the migration on a cluster with no identity churn.
+* There is no easy way to revert back to ``--identity-allocation-mode=kvstore`` if something goes wrong after
+  Cilium has been migrated to ``--identity-allocation-mode=crd``
+
+If these limitations are not acceptable, it is recommended to use the ":ref:`Double Write <double_write_migration>`" identity allocation mode instead.
+
+The following steps show an example of performing the migration using the ``cilium preflight migrate-identity`` script.
+It is safe to re-run the command if desired. It will identify already allocated identities or ones that
 cannot be migrated. Note that identity ``34815`` is migrated, ``17003`` is
 already migrated, and ``11730`` has a conflict and a new ID allocated for those
 labels.
 
 The steps below assume a stable cluster with no new identities created during
-the rollout. Once a cilium using CRD-backed identities is running, it may begin
+the rollout. Once Cilium using CRD-backed identities is running, it may begin
 allocating identities in a way that conflicts with older ones in the kvstore.
 
 The cilium preflight manifest requires etcd support and can be built with:
 
-.. code-block:: shell-session
-
-    helm template cilium \
-      --namespace=kube-system \
-      --set preflight.enabled=true \
-      --set agent.enabled=false \
-      --set config.enabled=false \
-      --set operator.enabled=false \
-      --set etcd.enabled=true \
-      --set etcd.ssl=true \
-      > cilium-preflight.yaml
-    kubectl create -f cilium-preflight.yaml
+.. cilium-helm-template::
+   :namespace: kube-system
+   :set: preflight.enabled=true
+         agent=false
+         config.enabled=false
+         operator.enabled=false
+         etcd.enabled=true
+         etcd.ssl=true
+   :post-helm-commands: > cilium-preflight.yaml
+   :post-commands: kubectl create -f cilium-preflight.yaml
 
 
 Example migration
@@ -688,11 +499,194 @@ Once the migration is complete, confirm the endpoint identities match by listing
 Clearing CRD identities
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-If a migration has gone wrong, it possible to start with a clean slate. Ensure that no cilium instances are running with identity-allocation-mode crd and execute:
+If a migration has gone wrong, it possible to start with a clean slate. Ensure that no Cilium instances are running with ``--identity-allocation-mode=crd`` and execute:
 
 .. code-block:: shell-session
 
       $ kubectl delete ciliumid --all
+
+.. _double_write_migration:
+
+Migration with the "Double Write" identity allocation mode
+##########################################################
+
+.. include:: ../beta.rst
+
+The "Double Write" Identity Allocation Mode allows Cilium to allocate identities as KVStore values *and* as CRDs at the
+same time. This mode also has two versions: one where the source of truth comes from the kvstore (``--identity-allocation-mode=doublewrite-readkvstore``),
+and one where the source of truth comes from CRDs (``--identity-allocation-mode=doublewrite-readcrd``).
+
+The high-level migration plan looks as follows:
+
+#. Starting state: Cilium is running in KVStore mode.
+#. Switch Cilium to "Double Write" mode with all reads happening from the KVStore. This is almost the same as the
+   pure KVStore mode with the only difference being that all identities are duplicated as CRDs but are not used.
+#. Switch Cilium to "Double Write" mode with all reads happening from CRDs. This is equivalent to Cilium running in
+   pure CRD mode but identities will still be updated in the KVStore to allow for the possibility of a fast rollback.
+#. Switch Cilium to CRD mode. The KVStore will no longer be used and will be ready for decommission.
+
+This will allow you to perform a gradual and seamless migration with the possibility of a fast rollback at steps two or three.
+
+Furthermore, when the "Double Write" mode is enabled, the Operator will emit additional metrics to help monitor the
+migration progress. These metrics can be used for alerting about identity inconsistencies between the KVStore and CRDs.
+
+Note that you can also use this to migrate from CRD to KVStore mode. All operations simply need to be repeated in reverse order.
+
+Rollout Instructions
+~~~~~~~~~~~~~~~~~~~~
+
+#. Re-deploy first the Operator and then the Agents with ``--identity-allocation-mode=doublewrite-readkvstore``.
+#. Monitor the Operator metrics and logs to ensure that all identities have converged between the KVStore and CRDs. The relevant metrics emitted by the Operator are:
+
+   * ``cilium_operator_identity_crd_total_count`` and ``cilium_operator_identity_kvstore_total_count`` report the total number of identities in CRDs and KVStore respectively.
+   * ``cilium_operator_identity_crd_only_count`` and ``cilium_operator_identity_kvstore_only_count`` report the number of
+     identities that are only in CRDs or only in the KVStore respectively, to help detect inconsistencies.
+
+   In case further investigation is needed, the Operator logs will contain detailed information about the discrepancies between KVStore and CRD identities.
+   Note that Garbage Collection for KVStore identities and CRD identities happens at slightly different times, so it is possible to see discrepancies in the metrics
+   for certain periods of time, depending on ``--identity-gc-interval`` and ``--identity-heartbeat-timeout`` settings.
+#. Once all identities have converged, re-deploy the Operator and the Agents with ``--identity-allocation-mode=doublewrite-readcrd``.
+   This will cause Cilium to read identities only from CRDs, but continue to write them to the KVStore.
+#. Once you are ready to decommission the KVStore, re-deploy first the Agents and then the Operator with ``--identity-allocation-mode=crd``.
+   This will make Cilium read and write identities only to CRDs.
+#. You can now decommission the KVStore.
+
+.. _change_policy_default_local_cluster:
+
+Preparing for a ``policy-default-local-cluster`` change
+#######################################################
+
+Cilium network policies used to implicitly select endpoints from all the clusters.
+Cilium 1.18 introduced a new option called ``policy-default-local-cluster`` which
+will be set by default in Cilium 1.19. This option restricts endpoints selection to
+the local cluster by default. If you are using ClusterMesh and network policies this
+will be a **breaking change** and you **need to take action** before upgrading to
+Cilium 1.19.
+
+This new option can be set in the ConfigMap or via the Helm value ``clustermesh.policyDefaultLocalCluster``.
+You can set ``policy-default-local-cluster`` to ``false`` in Cilium 1.19 to keep the existing behavior,
+however this option will be deprecated and eventually removed in a future release so you should plan your
+migration to set ``policy-default-local-cluster`` to ``true``.
+
+Migrating network policies in practice
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The command ``cilium clustermesh inspect-policy-default-local-cluster --all-namespaces`` can help you
+discover all the policies that will change as a result of changing ``policy-default-local-cluster``.
+You can also replace ``--all-namespaces`` with ``-n my-namespace`` if you want to only inspect
+policies from a particular namespace.
+
+Below is an example where there is one network policy that needs to be updated:
+
+.. code-block:: shell-session
+
+    $ cilium clustermesh inspect-policy-default-local-cluster --all-namespaces
+
+    ⚠️ CiliumNetworkPolicy 0/1
+            ⚠️ default/allow-from-bar
+
+    ✅ CiliumClusterWideNetworkPolicy 0/0
+
+    ✅ NetworkPolicy 0/0
+
+
+In this situation you have only one CiliumNetworkPolicy which is affected by a
+``policy-default-local-cluster`` change. Let's take a look at the policy:
+
+.. code-block:: yaml
+
+    apiVersion: "cilium.io/v2"
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: allow-from-bar
+      namespace: default
+    spec:
+      description: "Allow ingress traffic from bar"
+      endpointSelector:
+        matchLabels:
+          name: foo
+      ingress:
+      - fromEndpoints:
+        - matchLabels:
+            name: bar
+
+This network policy does not explicitly select a cluster. This means that with ``policy-default-local-cluster``
+set to ``false`` it allows traffic coming from ``bar`` in any clusters connected in your ClusterMesh.
+With ``policy-default-local-cluster`` set to ``true``, this policy allows traffic from ``bar`` from only
+the local cluster instead.
+
+If ``foo`` and ``bar`` are always in the same cluster, no further action is necessary.
+
+In case you want to do this on this individual policy rather than at a global level or that
+``bar`` is located on a remote cluster you can update your policy like that:
+
+.. code-block:: yaml
+
+    apiVersion: "cilium.io/v2"
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: allow-from-bar
+      namespace: default
+    spec:
+      description: "Allow ingress traffic from bar"
+      endpointSelector:
+        matchLabels:
+          name: foo
+      ingress:
+      - fromEndpoints:
+        - matchLabels:
+            name: bar
+            io.cilium.k8s.policy.cluster: fixme-cluster-name
+
+If ``bar`` is located in multiple cluster you can also use a ``matchExpressions``
+selecting multiple clusters like that:
+
+.. code-block:: yaml
+
+    apiVersion: "cilium.io/v2"
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: allow-from-bar
+      namespace: default
+    spec:
+      description: "Allow ingress traffic from bar"
+      endpointSelector:
+        matchLabels:
+          name: foo
+      ingress:
+      - fromEndpoints:
+        - matchLabels:
+            name: bar
+          matchExpressions:
+            - key: io.cilium.k8s.policy.cluster
+              operator: In
+              values:
+                - fixme-cluster-name-1
+                - fixme-cluster-name-2
+
+Alternatively, you can also allow traffic from ``bar`` located in every cluster and restore
+the same behavior as setting ``policy-default-local-cluster`` to ``false`` but on this
+individual policy:
+
+.. code-block:: yaml
+
+    apiVersion: "cilium.io/v2"
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: allow-from-bar
+      namespace: default
+    spec:
+      description: "Allow ingress traffic from bar"
+      endpointSelector:
+        matchLabels:
+          name: foo
+      ingress:
+      - fromEndpoints:
+        - matchLabels:
+            name: bar
+          matchExpressions:
+            - key: io.cilium.k8s.policy.cluster
+              operator: Exists
 
 .. _cnp_validation:
 

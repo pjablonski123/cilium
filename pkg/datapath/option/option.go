@@ -5,10 +5,21 @@ package option
 
 // Available options for datapath mode.
 const (
+	// DatapathModeAuto specifies that Cilium should probe the underlying
+	// host kernel for supported features and select an appropriate mode.
+	DatapathModeAuto = "auto"
+
 	// DatapathModeVeth specifies veth datapath mode (i.e. containers are
 	// attached to a network via veth pairs).
 	DatapathModeVeth = "veth"
 
-	// DatapathModeLBOnly specifies lb-only datapath mode.
-	DatapathModeLBOnly = "lb-only"
+	// DatapathModeNetkit specifies netkit datapath mode (i.e. containers
+	// are attached to a network via netkit pairs). netkit is created in
+	// L3 mode.
+	DatapathModeNetkit = "netkit"
+
+	// DatapathModeNetkitL2 specifies netkit datapath mode (i.e. containers
+	// are attached to a network via netkit pairs). netkit is created in
+	// L2 mode.
+	DatapathModeNetkitL2 = "netkit-l2"
 )

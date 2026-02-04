@@ -1,3 +1,5 @@
+# check=error=true
+
 # Python version should match the one in use in Read The Docs
 FROM docker.io/library/python:3.11-alpine3.17 AS docs-base
 
@@ -11,6 +13,7 @@ RUN apk add --no-cache --virtual --update \
     ca-certificates \
     enchant2 \
     enchant2-dev \
+    imagemagick \
     git \
     libc6-compat \
     py-pip \
@@ -25,6 +28,7 @@ ADD ./requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
 
 ENV HOME=/tmp
+ARG READTHEDOCS_VERSION
 ENV READTHEDOCS_VERSION=$READTHEDOCS_VERSION
 ENV MAKE_GIT_REPO_SAFE=1
 

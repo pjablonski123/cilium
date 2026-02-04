@@ -7,8 +7,9 @@ package cidrset
 import (
 	"math/big"
 	"net"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestCIDRSetFullyAllocated(t *testing.T) {
@@ -218,7 +219,7 @@ func TestCIDRSet_RandomishAllocation(t *testing.T) {
 		// allocate all the CIDRs
 		var cidrs []*net.IPNet
 
-		for i := 0; i < 256; i++ {
+		for range 256 {
 			if c, err := a.AllocateNext(); err == nil {
 				cidrs = append(cidrs, c)
 			} else {
@@ -232,13 +233,13 @@ func TestCIDRSet_RandomishAllocation(t *testing.T) {
 			t.Fatalf("expected error because of fully-allocated range for %v", tc.description)
 		}
 		// release them all
-		for i := 0; i < len(cidrs); i++ {
+		for i := range cidrs {
 			a.Release(cidrs[i])
 		}
 
 		// allocate the CIDRs again
 		var rcidrs []*net.IPNet
-		for i := 0; i < 256; i++ {
+		for i := range 256 {
 			if c, err := a.AllocateNext(); err == nil {
 				rcidrs = append(rcidrs, c)
 			} else {
@@ -250,9 +251,7 @@ func TestCIDRSet_RandomishAllocation(t *testing.T) {
 			t.Fatalf("expected error because of fully-allocated range for %v", tc.description)
 		}
 
-		if !reflect.DeepEqual(cidrs, rcidrs) {
-			t.Fatalf("expected re-allocated cidrs are the same collection for %v", tc.description)
-		}
+		assert.Equal(t, cidrs, rcidrs, "expected re-allocated cidrs are the same collection for %v", tc.description)
 	}
 }
 
@@ -280,7 +279,7 @@ func TestCIDRSet_AllocationOccupied(t *testing.T) {
 		var cidrs []*net.IPNet
 		var numCIDRs = 256
 
-		for i := 0; i < numCIDRs; i++ {
+		for range numCIDRs {
 			if c, err := a.AllocateNext(); err == nil {
 				cidrs = append(cidrs, c)
 			} else {
@@ -294,7 +293,7 @@ func TestCIDRSet_AllocationOccupied(t *testing.T) {
 			t.Fatalf("expected error because of fully-allocated range for %v", tc.description)
 		}
 		// release them all
-		for i := 0; i < len(cidrs); i++ {
+		for i := range cidrs {
 			a.Release(cidrs[i])
 		}
 		// occupy the last 128 CIDRs
@@ -304,7 +303,7 @@ func TestCIDRSet_AllocationOccupied(t *testing.T) {
 
 		// allocate the first 128 CIDRs again
 		var rcidrs []*net.IPNet
-		for i := 0; i < numCIDRs/2; i++ {
+		for i := range numCIDRs / 2 {
 			if c, err := a.AllocateNext(); err == nil {
 				rcidrs = append(rcidrs, c)
 			} else {
@@ -320,9 +319,7 @@ func TestCIDRSet_AllocationOccupied(t *testing.T) {
 		for i := numCIDRs / 2; i < numCIDRs; i++ {
 			rcidrs = append(rcidrs, cidrs[i])
 		}
-		if !reflect.DeepEqual(cidrs, rcidrs) {
-			t.Fatalf("expected re-allocated cidrs are the same collection for %v", tc.description)
-		}
+		assert.Equal(t, cidrs, rcidrs, "expected re-allocated cidrs are the same collection for %v", tc.description)
 	}
 }
 

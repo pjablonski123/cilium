@@ -12,13 +12,19 @@ inputs:
     default: 'disabled'
   endpoint-routes:
     description: 'Enable endpoint routes'
-    default: false
+    default: 'false'
+  ipv4:
+    description: 'Enable IPv4'
+    default: 'true'
   ipv6:
     description: 'Enable IPv6'
-    default: true
+    default: 'true'
+  underlay:
+    description: 'Underlay protocol for the VXLAN or GENEVE tunnels'
+    default: 'auto'
   kpr:
     description: 'Enable kube-proxy replacement'
-    default: false
+    default: 'false'
   lb-mode:
     description: 'KPR load-balancer mode'
     default: 'snat'
@@ -30,25 +36,40 @@ inputs:
     default: ''
   encryption-node:
     description: 'Enable node-to-node encryption (WireGuard only)'
-    default: false
+    default: 'false'
+  encryption-strict-egress:
+    description: 'Enable strict mode egress encryption'
+    default: ''
+  encryption-strict-ingress:
+    description: 'Enable strict mode ingress encryption (WireGuard only)'
+    default: 'false'
   egress-gateway:
     description: 'Enable egress gateway'
-    default: false
+    default: 'false'
   host-fw:
     description: 'Enable host firewall'
-    default: false
+    default: 'false'
   mutual-auth:
     description: 'Enable mTLS-based Mutual Authentication'
-    default: true
+    default: 'true'
   ingress-controller:
     description: 'Enable ingress controller, required kubeProxyReplacement'
-    default: false
+    default: 'false'
   devices:
     description: 'List of native devices to attach datapath programs'
     default: ''
   misc:
     description: 'Misc helm rarely set by a user coma separated values'
     default: ''
+  ciliumendpointslice:
+    description: 'Enable CiliumEndpointSlice'
+    default: 'false'
+  local-redirect-policy:
+    description: 'Enable local redirect policy'
+    default: 'false'
+  bgp-control-plane:
+    description: 'Enable BGP Control Plane'
+    default: 'false'
 outputs:
   config:
     description: 'Cilium installation config'
@@ -64,13 +85,42 @@ runs:
             --chart-directory=${{ inputs.chart-dir }} \
             --helm-set=debug.enabled=true \
             --helm-set=debug.verbose=envoy \
+            --helm-set=debug.metricsSamplingInterval=30s \
             --helm-set=hubble.eventBufferCapacity=65535 \
-            --helm-set=bpf.monitorAggregation=none \
             --helm-set=cluster.name=default \
             --helm-set=authentication.mutual.spire.enabled=${{ inputs.mutual-auth }} \
-            --nodes-without-cilium=kind-worker3 \
+            --nodes-without-cilium \
             --helm-set-string=kubeProxyReplacement=${{ inputs.kpr }} \
-            --set='${{ inputs.misc }}'"
+            --helm-set=l2NeighDiscovery.enabled=true \
+            --set='${{ inputs.misc }}' \
+            --set-string=extraEnv[0].name=CILIUM_FEATURE_METRICS_WITH_DEFAULTS \
+            --set-string=extraEnv[0].value=true \
+            --set-string=extraEnv[1].name=CILIUM_INVALID_METRIC_VALUE_DETECTOR \
+            --set-string=extraEnv[1].value=true \
+            --set-string=extraEnv[2].name=CILIUM_SLOG_DUP_ATTR_DETECTOR \
+            --set-string=extraEnv[2].value=true \
+            --set-string=operator.extraEnv[0].name=CILIUM_FEATURE_METRICS_WITH_DEFAULTS \
+            --set-string=operator.extraEnv[0].value=true \
+            --set-string=operator.extraEnv[1].name=CILIUM_INVALID_METRIC_VALUE_DETECTOR \
+            --set-string=operator.extraEnv[1].value=true \
+            --set-string=operator.extraEnv[2].name=CILIUM_SLOG_DUP_ATTR_DETECTOR \
+            --set-string=operator.extraEnv[2].value=true \
+            --set-string=clustermesh.apiserver.extraEnv[0].name=CILIUM_FEATURE_METRICS_WITH_DEFAULTS \
+            --set-string=clustermesh.apiserver.extraEnv[0].value=true \
+            --set-string=clustermesh.apiserver.extraEnv[1].name=CILIUM_INVALID_METRIC_VALUE_DETECTOR \
+            --set-string=clustermesh.apiserver.extraEnv[1].value=true \
+            --set-string=clustermesh.apiserver.extraEnv[2].name=CILIUM_SLOG_DUP_ATTR_DETECTOR \
+            --set-string=clustermesh.apiserver.extraEnv[2].value=true \
+            --set-string=hubble.relay.extraEnv[0].name=CILIUM_FEATURE_METRICS_WITH_DEFAULTS \
+            --set-string=hubble.relay.extraEnv[0].value=true \
+            --set-string=hubble.relay.extraEnv[1].name=CILIUM_INVALID_METRIC_VALUE_DETECTOR \
+            --set-string=hubble.relay.extraEnv[1].value=true \
+            --set-string=hubble.relay.extraEnv[2].name=CILIUM_SLOG_DUP_ATTR_DETECTOR \
+            --set-string=hubble.relay.extraEnv[2].value=true"
+
+          if [ -f "${{ inputs.chart-dir }}/../../../.github/actions/helm-default/ci-required-values.yaml" ]; then
+            DEFAULTS+=" --values=${{ inputs.chart-dir }}/../../../.github/actions/helm-default/ci-required-values.yaml"
+          fi
 
           IMAGE=""
           if [ "${{ inputs.image-tag }}" != "" ]; then
@@ -107,19 +157,23 @@ runs:
             ENDPOINT_ROUTES="--helm-set-string=endpointRoutes.enabled=true"
           fi
 
+          IPV4=""
+          if [ "${{ inputs.ipv4 }}" == "false" ]; then
+            IPV4="--helm-set=ipv4.enabled=false"
+          fi
+
           IPV6=""
           if [ "${{ inputs.ipv6 }}" != "false" ]; then
             IPV6="--helm-set=ipv6.enabled=true"
+            if [ "${{ inputs.underlay }}" == "ipv6" ]; then
+              IPV6+=" --helm-set=underlayProtocol=ipv6"
+            fi
           fi
 
           MASQ=""
           if [ "${{ inputs.kpr }}" == "true" ]; then
             # BPF-masq requires KPR=true.
             MASQ="--helm-set=bpf.masquerade=true"
-            if [ "${{ inputs.host-fw }}" == "true" ]; then
-              # BPF IPv6 masquerade not currently supported with host firewall - GH-26074
-              MASQ="${MASQ} --helm-set=enableIPv6Masquerade=false"
-            fi
           fi
 
           EGRESS_GATEWAY=""
@@ -138,6 +192,13 @@ runs:
             if [ "${{ inputs.encryption-node }}" != "" ]; then
               ENCRYPT+=" --helm-set=encryption.nodeEncryption=${{ inputs.encryption-node }}"
             fi
+            if [ "${{ inputs.encryption-strict-egress }}" != "" ]; then
+              ENCRYPT+=" --helm-set=encryption.strictMode.egress.enabled=${{ inputs.encryption-strict-egress }}"
+              ENCRYPT+=" --helm-set=encryption.strictMode.egress.cidr=10.244.0.0/16"
+            fi
+            if [ "${{ inputs.encryption-strict-ingress }}" != "" ]; then
+              ENCRYPT+=" --helm-set=encryption.strictMode.ingress.enabled=${{ inputs.encryption-strict-ingress }}"
+            fi
           fi
 
           HOST_FW=""
@@ -151,6 +212,20 @@ runs:
               INGRESS_CONTROLLER+=" --helm-set=ingressController.service.type=NodePort"
             fi
           fi
-        
-          CONFIG="${DEFAULTS} ${IMAGE} ${TUNNEL} ${DEVICES} ${LB_MODE} ${ENDPOINT_ROUTES} ${IPV6} ${MASQ} ${EGRESS_GATEWAY} ${ENCRYPT} ${HOST_FW} ${LB_ACCELERATION} ${INGRESS_CONTROLLER}"
+
+          if [ "${{ inputs.ciliumendpointslice }}" == "true" ]; then
+            CILIUMENDPOINTSLICE="--helm-set=ciliumEndpointSlice.enabled=true"
+          fi
+
+          LOCAL_REDIRECT_POLICY=""
+          if [ "${{ inputs.local-redirect-policy }}" == "true" ]; then
+            LOCAL_REDIRECT_POLICY="--helm-set=localRedirectPolicies.enabled=true"
+          fi
+
+          BGP_CONTROL_PLANE=""
+          if [ "${{ inputs.bgp-control-plane }}" == "true" ]; then
+            BGP_CONTROL_PLANE="${{ env.BGP_CONTROL_PLANE_HELM_VALUES }}"
+          fi
+
+          CONFIG="${DEFAULTS} ${IMAGE} ${TUNNEL} ${DEVICES} ${LB_MODE} ${ENDPOINT_ROUTES} ${IPV4} ${IPV6} ${MASQ} ${EGRESS_GATEWAY} ${ENCRYPT} ${HOST_FW} ${LB_ACCELERATION} ${INGRESS_CONTROLLER} ${CILIUMENDPOINTSLICE} ${LOCAL_REDIRECT_POLICY} ${BGP_CONTROL_PLANE}"
           echo "config=${CONFIG}" >> $GITHUB_OUTPUT

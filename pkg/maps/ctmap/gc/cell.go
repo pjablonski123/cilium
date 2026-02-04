@@ -4,8 +4,10 @@
 package gc
 
 import (
+	"github.com/cilium/hive/cell"
+
 	"github.com/cilium/cilium/pkg/endpointmanager"
-	"github.com/cilium/cilium/pkg/hive/cell"
+	"github.com/cilium/cilium/pkg/maps/ctmap"
 )
 
 var Cell = cell.Module(
@@ -16,15 +18,20 @@ var Cell = cell.Module(
 		// Provide the interface uses to start the GC logic. This hack
 		// should be removed once all dependencies have been modularized,
 		// and we can start the GC through a Start hook.
-		func(gc *GC) Enabler { return gc },
+		// TODO: GH-33557: Add a hook for purge events to replace ctmap.PurgeHook.
+		func(gc *GC) ctmap.GCRunner { return gc },
 	),
 
 	cell.ProvidePrivate(
-		New,
+		newGC,
 
 		// Register the signal handler for CT and NAT fill-up signals.
 		newSignalHandler,
 		// Provide the reduced interface used by the GC logic.
 		func(mgr endpointmanager.EndpointManager) EndpointManager { return mgr },
 	),
+	cell.Config(config{
+		ConntrackGCInterval:    0,
+		ConntrackGCMaxInterval: 0,
+	}),
 )

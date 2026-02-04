@@ -35,7 +35,9 @@ func NewGetMetrics(ctx *middleware.Context, handler GetMetricsHandler) *GetMetri
 /*
 	GetMetrics swagger:route GET /metrics/ metrics getMetrics
 
-Retrieve cilium operator metrics
+# Retrieve cilium operator metrics
+
+Returns the metrics exposed by the Cilium operator.
 */
 type GetMetrics struct {
 	Context *middleware.Context
@@ -54,6 +56,7 @@ func (o *GetMetrics) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	res := o.Handler.Handle(Params) // actually handle the request
+
 	o.Context.Respond(rw, r, route.Produces, route, res)
 
 }

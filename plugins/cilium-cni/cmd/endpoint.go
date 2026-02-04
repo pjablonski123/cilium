@@ -4,11 +4,17 @@
 package cmd
 
 import (
+	"fmt"
+	"log/slog"
+
 	"github.com/containernetworking/cni/pkg/skel"
-	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/plugins/cilium-cni/types"
 )
 
@@ -20,7 +26,7 @@ type EndpointConfigurator interface {
 }
 
 // EndpointConfiguration determines the configuration of an endpoint to be
-// created duing a CNI ADD invocation.
+// created during a CNI ADD invocation.
 type EndpointConfiguration interface {
 	// IfName specifies the container interface name to be used for this endpoint
 	IfName() string
@@ -36,7 +42,7 @@ type EndpointConfiguration interface {
 // invocation. Those fields may be used by custom implementations of the
 // EndpointConfigurator interface to customize the CNI ADD call.
 type ConfigurationParams struct {
-	Log     *logrus.Entry
+	Log     *slog.Logger
 	Conf    *models.DaemonConfigurationStatus
 	Args    *skel.CmdArgs
 	CniArgs *types.ArgsSpec
@@ -78,8 +84,10 @@ func (c *defaultEndpointConfiguration) PrepareEndpoint(ipam *models.IPAMResponse
 		Addressing:             &models.AddressPair{},
 		K8sPodName:             string(c.CniArgs.K8S_POD_NAME),
 		K8sNamespace:           string(c.CniArgs.K8S_POD_NAMESPACE),
+		K8sUID:                 string(c.CniArgs.K8S_POD_UID),
 		ContainerInterfaceName: c.Args.IfName,
 		DatapathConfiguration:  &models.EndpointDatapathConfiguration{},
+		Properties:             make(map[string]any),
 	}
 
 	if c.Conf.IpamMode == ipamOption.IPAMDelegatedPlugin {
@@ -87,9 +95,47 @@ func (c *defaultEndpointConfiguration) PrepareEndpoint(ipam *models.IPAMResponse
 		ep.DatapathConfiguration.ExternalIpam = true
 	}
 
+	if c.Conf.IpamMode == ipamOption.IPAMENI {
+		ifindex, err := ifindexFromMac(ipam.IPV4.MasterMac)
+		if err == nil {
+			ep.ParentInterfaceIndex = ifindex
+		} else {
+			c.Log.Error("Unable to get interface index from MAC address", logfields.Error, err)
+		}
+	}
+
 	state := &CmdState{
 		HostAddr: ipam.HostAddressing,
 	}
 
 	return state, ep, nil
+}
+
+func ifindexFromMac(mac string) (int64, error) {
+	var link netlink.Link
+
+	links, err := safenetlink.LinkList()
+	if err != nil {
+		return -1, fmt.Errorf("unable to list interfaces: %w", err)
+	}
+
+	for _, l := range links {
+		// Linux slave devices have the same MAC address as their master
+		// device, but we want the master device.
+		if l.Attrs().RawFlags&unix.IFF_SLAVE != 0 {
+			continue
+		}
+		if l.Attrs().HardwareAddr.String() == mac {
+			if link != nil {
+				return -1, fmt.Errorf("several interfaces found with MAC %s: %s and %s", mac, link.Attrs().Name, l.Attrs().Name)
+			}
+			link = l
+		}
+	}
+
+	if link == nil {
+		return -1, fmt.Errorf("no interface found with MAC %s", mac)
+	}
+
+	return int64(link.Attrs().Index), nil
 }

@@ -32,14 +32,21 @@ type LoadTimeConfiguration interface {
 	// GetIdentity returns a globally-significant numeric security identity.
 	GetIdentity() identity.NumericIdentity
 
-	// GetIdentityLocked returns a globally-significant numeric security
-	// identity while assuming that the backing data structure is locked.
-	// This function should be removed in favour of GetIdentity()
-	GetIdentityLocked() identity.NumericIdentity
-
 	IPv4Address() netip.Addr
 	IPv6Address() netip.Addr
 	GetNodeMAC() mac.MAC
+	GetIfIndex() int
+	GetEndpointNetNsCookie() uint64
+
+	// GetPolicyVerdictLogFilter returns the PolicyVerdictLogFilter for the endpoint
+	GetPolicyVerdictLogFilter() uint32
+
+	// GetPropertyValue returns the endpoint property value for this key.
+	GetPropertyValue(key string) any
+
+	// RequireARPPassthrough returns true if the datapath must implement
+	// ARP passthrough for this endpoint
+	RequireARPPassthrough() bool
 }
 
 // CompileTimeConfiguration provides datapath implementations a clean interface
@@ -47,13 +54,6 @@ type LoadTimeConfiguration interface {
 // compile time.
 type CompileTimeConfiguration interface {
 	DeviceConfiguration
-
-	// TODO: Move this detail into the datapath
-	ConntrackLocalLocked() bool
-
-	// RequireARPPassthrough returns true if the datapath must implement
-	// ARP passthrough for this endpoint
-	RequireARPPassthrough() bool
 
 	// RequireEgressProg returns true if the endpoint requires an egress
 	// program attached to the InterfaceName() invoking the section
@@ -68,9 +68,6 @@ type CompileTimeConfiguration interface {
 	// per endpoint route installed in the host's routing table to point to
 	// the endpoint's interface
 	RequireEndpointRoute() bool
-
-	// GetPolicyVerdictLogFilter returns the PolicyVerdictLogFilter for the endpoint
-	GetPolicyVerdictLogFilter() uint32
 
 	// IsHost returns true if the endpoint is the host endpoint.
 	IsHost() bool
@@ -94,37 +91,37 @@ type ConfigWriter interface {
 	// of configurable options to the specified writer. Options specified
 	// here will apply to base programs and not to endpoints, though
 	// endpoints may have equivalent configurable options.
-	WriteNetdevConfig(io.Writer, DeviceConfiguration) error
+	WriteNetdevConfig(io.Writer, *option.IntOptions) error
 
 	// WriteTemplateConfig writes the implementation-specific configuration
 	// of configurable options for BPF templates to the specified writer.
-	WriteTemplateConfig(w io.Writer, cfg EndpointConfiguration) error
+	WriteTemplateConfig(w io.Writer, nodeCfg *LocalNodeConfiguration, cfg EndpointConfiguration) error
 
 	// WriteEndpointConfig writes the implementation-specific configuration
 	// of configurable options for the endpoint to the specified writer.
-	WriteEndpointConfig(w io.Writer, cfg EndpointConfiguration) error
+	WriteEndpointConfig(w io.Writer, nodeCfg *LocalNodeConfiguration, cfg EndpointConfiguration) error
 }
 
 // RemoteSNATDstAddrExclusionCIDRv4 returns a CIDR for SNAT exclusion. Any
 // packet sent from a local endpoint to an IP address belonging to the CIDR
 // should not be SNAT'd.
-func RemoteSNATDstAddrExclusionCIDRv4() *cidr.CIDR {
-	if c := option.Config.GetIPv4NativeRoutingCIDR(); c != nil {
-		// ipv4-native-routing-cidr is set, so use it
-		return c
+func RemoteSNATDstAddrExclusionCIDRv4(localNode node.LocalNode) *cidr.CIDR {
+	if localNode.Local.IPv4NativeRoutingCIDR != nil {
+		// ipv4-native-routing-cidr is set or has been autodetected, so use it
+		return localNode.Local.IPv4NativeRoutingCIDR
 	}
 
-	return node.GetIPv4AllocRange()
+	return localNode.IPv4AllocCIDR
 }
 
 // RemoteSNATDstAddrExclusionCIDRv6 returns a IPv6 CIDR for SNAT exclusion. Any
 // packet sent from a local endpoint to an IP address belonging to the CIDR
 // should not be SNAT'd.
-func RemoteSNATDstAddrExclusionCIDRv6() *cidr.CIDR {
-	if c := option.Config.GetIPv6NativeRoutingCIDR(); c != nil {
-		// ipv6-native-routing-cidr is set, so use it
-		return c
+func RemoteSNATDstAddrExclusionCIDRv6(localNode node.LocalNode) *cidr.CIDR {
+	if localNode.Local.IPv6NativeRoutingCIDR != nil {
+		// ipv6-native-routing-cidr is set or has been autodetected, so use it
+		return localNode.Local.IPv6NativeRoutingCIDR
 	}
 
-	return node.GetIPv6AllocRange()
+	return localNode.IPv6AllocCIDR
 }

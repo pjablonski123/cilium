@@ -4,12 +4,13 @@
 package format
 
 import (
+	"os"
 	"runtime"
 	"testing"
 
-	"github.com/cilium/cilium/pkg/monitor/payload"
-
 	fuzz "github.com/AdaLogics/go-fuzz-headers"
+
+	"github.com/cilium/cilium/pkg/monitor/payload"
 )
 
 /*
@@ -38,7 +39,7 @@ func FuzzFormatEvent(f *testing.F) {
 			runtime.GC()
 		}()
 
-		mf := NewMonitorFormatter(0, nil)
+		mf := NewMonitorFormatter(0, nil, os.Stdout)
 
 		mf.FormatEvent(pl)
 	})

@@ -37,7 +37,7 @@ func NewGetHealthz(ctx *middleware.Context, handler GetHealthzHandler) *GetHealt
 
 # Get health of Cilium operator
 
-This path will return the status of cilium operator instance.
+Returns the status of cilium operator instance.
 */
 type GetHealthz struct {
 	Context *middleware.Context
@@ -56,6 +56,7 @@ func (o *GetHealthz) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	res := o.Handler.Handle(Params) // actually handle the request
+
 	o.Context.Respond(rw, r, route.Produces, route, res)
 
 }

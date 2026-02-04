@@ -14,13 +14,32 @@
  *
  * If TRACE_SOCK_NOTIFY is not defined, the API will be compiled in as a NOP.
  */
-#ifndef __LIB_TRACE_SOCK__
-#define __LIB_TRACE_SOCK__
+#pragma once
 
 #include <bpf/ctx/sock.h>
 
 #include "common.h"
 #include "events.h"
+#include "ratelimit.h"
+#include "sock.h"
+#include "time.h"
+
+/* Trace aggregation levels for socket traces (sock context only). */
+enum {
+	TRACE_SOCK_AGGREGATE_NONE	= 0, /* Trace every syscall */
+	TRACE_SOCK_AGGREGATE_RECV	= 1, /* Hide trace on receive syscalls */
+	TRACE_SOCK_AGGREGATE_CONNECT	= 3, /* Only trace connect syscalls */
+};
+
+/* Default monitor aggregation value when not provided by build defines. */
+#ifndef MONITOR_AGGREGATION
+#define MONITOR_AGGREGATION TRACE_SOCK_AGGREGATE_NONE
+#endif
+
+#ifndef TRACE_SOCK_EXTENSION
+#define TRACE_SOCK_EXTENSION
+#define trace_sock_extension_hook(ctx, msg) do {} while (0)
+#endif
 
 /* L4 protocol for the trace event */
 enum l4_protocol {
@@ -50,19 +69,21 @@ struct ip {
 	} __packed;
 };
 
-#ifdef TRACE_SOCK_NOTIFY
 struct trace_sock_notify {
 	__u8 type;
 	__u8 xlate_point;
-	struct ip dst_ip;
-	__u16 dst_port;
-	__u64 sock_cookie;
-	__u64 cgroup_id;
 	__u8 l4_proto;
 	__u8 ipv6 : 1;
 	__u8 pad : 7;
-} __packed;
+	__u16 dst_port;
+	__u16 pad2;
+	__u64 sock_cookie;
+	__u64 cgroup_id;
+	struct ip dst_ip;
+	TRACE_SOCK_EXTENSION
+};
 
+#ifdef TRACE_SOCK_NOTIFY
 static __always_inline enum l4_protocol
 parse_protocol(__u32 l4_proto) {
 	switch (l4_proto) {
@@ -75,16 +96,66 @@ parse_protocol(__u32 l4_proto) {
 	}
 }
 
+/* Apply monitor aggregation mapping for socket events.
+ * Mapping mirrors packet-side behavior and documented levels:
+ * - none (0): emit all socket trace events
+ * - lowest/low (1/2): suppress reverse-direction (recv) socket traces
+ * - medium/max (3/4): only emit connect-initiated traces
+ *
+ * When aggregation is enabled (>=1), rate limiting aligns to CT_REPORT_INTERVAL.
+ */
+static __always_inline bool
+emit_trace_sock_notify(enum xlate_point xlate_point, bool is_connect)
+{
+	/* Hide reverse-direction traces starting at RX-level aggregation. */
+	if (MONITOR_AGGREGATION >= TRACE_SOCK_AGGREGATE_RECV) {
+		switch (xlate_point) {
+		case XLATE_PRE_DIRECTION_REV:
+		case XLATE_POST_DIRECTION_REV:
+			return false;
+		default:
+			break;
+		}
+	}
+
+	/* At ACTIVE_CT (3) and up, only emit for connect syscalls. */
+	if (MONITOR_AGGREGATION >= TRACE_SOCK_AGGREGATE_CONNECT)
+		if (!is_connect)
+			return false;
+
+	return true;
+}
+
 static __always_inline void
 send_trace_sock_notify4(struct __ctx_sock *ctx,
 			enum xlate_point xlate_point,
-			__u32 dst_ip, __u16 dst_port)
+			__u32 dst_ip, __u16 dst_port,
+			bool is_connect)
 {
-	__u64 cgroup_id = 0;
 	struct trace_sock_notify msg __align_stack_8;
+	struct ratelimit_key rkey = {
+		.usage = RATELIMIT_USAGE_SOCKET_EVENTS_MAP,
+	};
+	struct ratelimit_settings settings = {
+		.topup_interval_ns = CT_REPORT_INTERVAL * NSEC_PER_SEC,
+	};
 
-	if (is_defined(HAVE_CGROUP_ID))
-		cgroup_id = get_current_cgroup_id();
+	if (!emit_trace_sock_notify(xlate_point, is_connect))
+		return;
+
+	/* Rate limit socket traces when monitor aggregation is enabled.
+	 * Uses CT_REPORT_INTERVAL as the time bucket for aggregation to
+	 * align with monitor aggregation timing.
+	 */
+	if (MONITOR_AGGREGATION != TRACE_SOCK_AGGREGATE_NONE) {
+		/* One token per CT_REPORT_INTERVAL with no burst to align with
+		 * monitor aggregation semantics ("~1 per interval").
+		 */
+		settings.bucket_size = 1;
+		settings.tokens_per_topup = 1;
+		if (!ratelimit_check_and_take(&rkey, &settings))
+			return;
+	}
 
 	msg = (typeof(msg)){
 		.type		= CILIUM_NOTIFY_TRACE_SOCK,
@@ -92,52 +163,76 @@ send_trace_sock_notify4(struct __ctx_sock *ctx,
 		.dst_ip.ip4	= dst_ip,
 		.dst_port	= dst_port,
 		.sock_cookie	= sock_local_cookie(ctx),
-		.cgroup_id	= cgroup_id,
+		.cgroup_id	= get_current_cgroup_id(),
 		.l4_proto	= parse_protocol(ctx->protocol),
 		.ipv6		= 0,
 	};
 
-	ctx_event_output(ctx, &EVENTS_MAP, BPF_F_CURRENT_CPU, &msg, sizeof(msg));
+	trace_sock_extension_hook(ctx, msg);
+	ctx_event_output(ctx, &cilium_events, BPF_F_CURRENT_CPU, &msg, sizeof(msg));
 }
 
 static __always_inline void
 send_trace_sock_notify6(struct __ctx_sock *ctx,
 			enum xlate_point xlate_point,
-			union v6addr *dst_addr,
-			__u16 dst_port)
+			const union v6addr *dst_addr,
+			__u16 dst_port,
+			bool is_connect)
 {
-	__u64 cgroup_id = 0;
 	struct trace_sock_notify msg __align_stack_8;
+	struct ratelimit_key rkey = {
+		.usage = RATELIMIT_USAGE_SOCKET_EVENTS_MAP,
+	};
+	struct ratelimit_settings settings = {
+		.topup_interval_ns = CT_REPORT_INTERVAL * NSEC_PER_SEC,
+	};
 
-	if (is_defined(HAVE_CGROUP_ID))
-		cgroup_id = get_current_cgroup_id();
+	if (!emit_trace_sock_notify(xlate_point, is_connect))
+		return;
+
+	/* Rate limit socket traces when monitor aggregation is enabled.
+	 * Uses CT_REPORT_INTERVAL as the time bucket for aggregation to
+	 * align with monitor aggregation timing.
+	 */
+	if (MONITOR_AGGREGATION != TRACE_SOCK_AGGREGATE_NONE) {
+		/* One token per CT_REPORT_INTERVAL with no burst to align with
+		 * monitor aggregation semantics ("~1 per interval").
+		 */
+		settings.bucket_size = 1;
+		settings.tokens_per_topup = 1;
+		if (!ratelimit_check_and_take(&rkey, &settings))
+			return;
+	}
+
 	msg = (typeof(msg)){
 		.type		= CILIUM_NOTIFY_TRACE_SOCK,
 		.xlate_point	= xlate_point,
 		.dst_port	= dst_port,
 		.sock_cookie	= sock_local_cookie(ctx),
-		.cgroup_id	= cgroup_id,
+		.cgroup_id	= get_current_cgroup_id(),
 		.l4_proto	= parse_protocol(ctx->protocol),
 		.ipv6		= 1,
 	};
-	ipv6_addr_copy(&msg.dst_ip.ip6, dst_addr);
+	ipv6_addr_copy_unaligned(&msg.dst_ip.ip6, dst_addr);
 
-	ctx_event_output(ctx, &EVENTS_MAP, BPF_F_CURRENT_CPU, &msg, sizeof(msg));
+	trace_sock_extension_hook(ctx, msg);
+	ctx_event_output(ctx, &cilium_events, BPF_F_CURRENT_CPU, &msg, sizeof(msg));
 }
 #else
 static __always_inline void
 send_trace_sock_notify4(struct __ctx_sock *ctx __maybe_unused,
 			enum xlate_point xlate_point __maybe_unused,
-			__u32 dst_ip __maybe_unused, __u16 dst_port __maybe_unused)
+			__u32 dst_ip __maybe_unused, __u16 dst_port __maybe_unused,
+			bool is_connect __maybe_unused)
 {
 }
 
 static __always_inline void
 send_trace_sock_notify6(struct __ctx_sock *ctx __maybe_unused,
 			enum xlate_point xlate_point __maybe_unused,
-			union v6addr *dst_addr __maybe_unused,
-			__u16 dst_port __maybe_unused)
+			const union v6addr *dst_addr __maybe_unused,
+			__u16 dst_port __maybe_unused,
+			bool is_connect __maybe_unused)
 {
 }
 #endif /* TRACE_SOCK_NOTIFY */
-#endif /* __LIB_TRACE_SOCK__ */

@@ -4,12 +4,15 @@
 package datapath
 
 import (
-	"log"
-	"path/filepath"
+	"fmt"
+	"log/slog"
 
-	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/hive/cell"
+
+	"github.com/cilium/cilium/pkg/act"
 	"github.com/cilium/cilium/pkg/datapath/agentliveness"
-	"github.com/cilium/cilium/pkg/datapath/garp"
+	"github.com/cilium/cilium/pkg/datapath/connector"
+	"github.com/cilium/cilium/pkg/datapath/gneigh"
 	"github.com/cilium/cilium/pkg/datapath/ipcache"
 	"github.com/cilium/cilium/pkg/datapath/iptables"
 	"github.com/cilium/cilium/pkg/datapath/l2responder"
@@ -19,23 +22,24 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/bigtcp"
 	dpcfg "github.com/cilium/cilium/pkg/datapath/linux/config"
 	"github.com/cilium/cilium/pkg/datapath/linux/ipsec"
-	"github.com/cilium/cilium/pkg/datapath/linux/modules"
+	routeReconciler "github.com/cilium/cilium/pkg/datapath/linux/route/reconciler"
+	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
 	"github.com/cilium/cilium/pkg/datapath/linux/utime"
+	"github.com/cilium/cilium/pkg/datapath/loader"
+	datapathmaps "github.com/cilium/cilium/pkg/datapath/maps"
+	"github.com/cilium/cilium/pkg/datapath/neighbor"
+	"github.com/cilium/cilium/pkg/datapath/node"
+	"github.com/cilium/cilium/pkg/datapath/orchestrator"
+	"github.com/cilium/cilium/pkg/datapath/prefilter"
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/datapath/tunnel"
-	"github.com/cilium/cilium/pkg/datapath/types"
-	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/hive/cell"
+	"github.com/cilium/cilium/pkg/datapath/vtep"
+	"github.com/cilium/cilium/pkg/datapath/xdp"
 	"github.com/cilium/cilium/pkg/maps"
 	"github.com/cilium/cilium/pkg/maps/eventsmap"
-	"github.com/cilium/cilium/pkg/maps/nodemap"
 	monitorAgent "github.com/cilium/cilium/pkg/monitor/agent"
 	"github.com/cilium/cilium/pkg/mtu"
-	"github.com/cilium/cilium/pkg/node"
-	"github.com/cilium/cilium/pkg/option"
 	wg "github.com/cilium/cilium/pkg/wireguard/agent"
-	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 // Datapath provides the privileged operations to apply control-plane
@@ -50,6 +54,9 @@ var Cell = cell.Module(
 	// Provides all BPF Map which are already provided by via hive cell.
 	maps.Cell,
 
+	// Cleanup of stale and disabled BPF maps
+	datapathmaps.Cell,
+
 	// Utime synchronizes utime from userspace to datapath via configmap.Map.
 	utime.Cell,
 
@@ -59,22 +66,25 @@ var Cell = cell.Module(
 	// The monitor agent, which multicasts cilium and agent events to its subscribers.
 	monitorAgent.Cell,
 
-	// The modules manager to search and load kernel modules.
-	modules.Cell,
+	// The sysctl reconciler to read and write kernel sysctl parameters.
+	sysctl.Cell,
 
 	// Manages Cilium-specific iptables rules.
 	iptables.Cell,
 
-	cell.Provide(
-		newWireguardAgent,
-		newDatapath,
-	),
+	cell.Invoke(initDatapath),
+
+	// Provides the WireGuard agent, which manages WireGuard device and peers.
+	wg.Cell,
 
 	// Provides the Table[NodeAddress] and the controller that populates it from Table[*Device]
 	tables.NodeAddressCell,
 
 	// Provides the legacy accessor for the above, the NodeAddressing interface.
-	tables.NodeAddressingCell,
+	NodeAddressingCell,
+
+	// Provides the DirectRoutingDevice selection logic.
+	tables.DirectRoutingDeviceCell,
 
 	// This cell periodically updates the agent liveness value in configmap.Map to inform
 	// the datapath of the liveness of the agent.
@@ -84,8 +94,8 @@ var Cell = cell.Module(
 	// it to the BPF L2 responder map.
 	l2responder.Cell,
 
-	// Gratuitous ARP event processor emits GARP packets on k8s pod creation events.
-	garp.Cell,
+	// Gratuitous ARP event processor emits GNeigh packets on k8s pod creation events.
+	gneigh.Cell,
 
 	// This cell provides the object used to write the headers for datapath program types.
 	dpcfg.Cell,
@@ -99,111 +109,67 @@ var Cell = cell.Module(
 	// The bandwidth manager provides efficient EDT-based rate-limiting (on Linux).
 	bandwidth.Cell,
 
-	// IPsec cell provides the IPsecKeyCustodian.
+	// IPsec cell provides the IPsecAgent.
 	ipsec.Cell,
 
 	// MTU provides the MTU configuration of the node.
 	mtu.Cell,
 
-	cell.Provide(func(dp types.Datapath) types.NodeIDHandler {
-		return dp.NodeIDs()
-	}),
+	// Connector provides pod-specific interface configuration
+	connector.Cell,
+
+	orchestrator.Cell,
 
 	// DevicesController manages the devices and routes tables
 	linuxdatapath.DevicesControllerCell,
-	cell.Provide(func(cfg *option.DaemonConfig) linuxdatapath.DevicesConfig {
-		// Provide the configured devices to the devices controller.
-		// This is temporary until DevicesController takes ownership of the
-		// device-related configuration options.
-		return linuxdatapath.DevicesConfig{
-			Devices: cfg.GetDevices(),
-		}
-	}),
+
+	// Synchronizes load-balancing backends with the neighbor table.
+	linuxdatapath.BackendNeighborSyncCell,
 
 	// Synchronizes the userspace ipcache with the corresponding BPF map.
 	ipcache.Cell,
+
+	// Provides the loader, which compiles and loads the datapath programs.
+	loader.Cell,
+
+	// Provides prefilter, a means of configuring XDP pre-filters for DDoS-mitigation.
+	prefilter.Cell,
+
+	// XDP cell provides modularized XDP enablement.
+	xdp.Cell,
+
+	vtep.Cell,
+
+	// Provides node handler, which handles node events.
+	cell.Provide(linuxdatapath.NewNodeHandler),
+	cell.Provide(node.NewNodeIDApiHandler),
+
+	// Provides Active Connection Tracking metrics based on counts of
+	// opened (from BPF ACT map), closed (from BPF ACT map), and failed
+	// connections (from ctmap's GC).
+	act.Cell,
+
+	// Provides a cache of link names to ifindex mappings
+	link.Cell,
+
+	// Neighbor cell provides the ability for other components to request an IP be
+	// "forwardable". The neighbor subsystem converts these IPs into neighbor entries
+	// in the kernel and ensures they are kept up to date.
+	neighbor.Cell,
+
+	// Provides the desired route table, and a reconciler that installs these desired routes
+	// into the Linux kernel routing table.
+	routeReconciler.Cell,
 )
 
-func newWireguardAgent(lc hive.Lifecycle, localNodeStore *node.LocalNodeStore) *wg.Agent {
-	var wgAgent *wg.Agent
-	if option.Config.EnableWireguard {
-		if option.Config.EnableIPSec {
-			log.Fatalf("WireGuard (--%s) cannot be used with IPsec (--%s)",
-				option.EnableWireguard, option.EnableIPSecName)
-		}
+func initDatapath(rootLogger *slog.Logger, lifecycle cell.Lifecycle) {
+	lifecycle.Append(cell.Hook{
+		OnStart: func(cell.HookContext) error {
+			if err := linuxdatapath.CheckRequirements(rootLogger); err != nil {
+				return fmt.Errorf("requirements failed: %w", err)
+			}
 
-		var err error
-		privateKeyPath := filepath.Join(option.Config.StateDir, wgTypes.PrivKeyFilename)
-		wgAgent, err = wg.NewAgent(privateKeyPath, localNodeStore)
-		if err != nil {
-			log.Fatalf("failed to initialize WireGuard: %s", err)
-		}
-
-		lc.Append(hive.Hook{
-			OnStop: func(hive.HookContext) error {
-				wgAgent.Close()
-				return nil
-			},
-		})
-	} else {
-		// Delete WireGuard device from previous run (if such exists)
-		link.DeleteByName(wgTypes.IfaceName)
-	}
-	return wgAgent
-}
-
-func newDatapath(params datapathParams) types.Datapath {
-	datapathConfig := linuxdatapath.DatapathConfiguration{
-		HostDevice:   defaults.HostDevice,
-		TunnelDevice: params.TunnelConfig.DeviceName(),
-		ProcFs:       option.Config.ProcFs,
-	}
-
-	datapath := linuxdatapath.NewDatapath(linuxdatapath.DatapathParams{
-		ConfigWriter:   params.ConfigWriter,
-		RuleManager:    params.IptablesManager,
-		WGAgent:        params.WgAgent,
-		NodeMap:        params.NodeMap,
-		NodeAddressing: params.NodeAddressing,
-		BWManager:      params.BandwidthManager,
-	}, datapathConfig)
-
-	params.LC.Append(hive.Hook{
-		OnStart: func(hive.HookContext) error {
-			datapath.NodeIDs().RestoreNodeIDs()
 			return nil
 		},
 	})
-
-	return datapath
-}
-
-type datapathParams struct {
-	cell.In
-
-	LC      hive.Lifecycle
-	WgAgent *wg.Agent
-
-	// Force map initialisation before loader. You should not use these otherwise.
-	// Some of the entries in this slice may be nil.
-	BpfMaps []bpf.BpfMap `group:"bpf-maps"`
-
-	NodeMap nodemap.Map
-
-	NodeAddressing types.NodeAddressing
-
-	// Depend on DeviceManager to ensure devices have been resolved.
-	// This is required until option.Config.GetDevices() has been removed and
-	// uses of it converted to Table[Device].
-	DeviceManager *linuxdatapath.DeviceManager
-
-	BandwidthManager bandwidth.Manager
-
-	ModulesManager *modules.Manager
-
-	IptablesManager *iptables.Manager
-
-	ConfigWriter types.ConfigWriter
-
-	TunnelConfig tunnel.Config
 }

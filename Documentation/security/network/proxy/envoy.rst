@@ -36,6 +36,7 @@ instead of running it from within the Cilium Agent Pod.
 The communication between Cilium agent and Envoy proxy takes place via UNIX domain sockets in both deployment modes.
 Be that streaming the access logs (e.g. L7 Protocol Visibility), updating the configuration via
 `xDS <https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol>`_ or accessing the admin interface.
+Due to the use of UNIX domain sockets, Envoy DaemonSet and the Cilium Agent need to have compatible types when SELinux is enabled on the host. This is the case if not specified otherwise, both using the highly privileged type: ``spc_t``. SELinux is enabled by default on Red Hat OpenShift Container Platform.
 
 Enable and configure Envoy DaemonSet
 ====================================
@@ -54,10 +55,10 @@ Potential Benefits
 - Dedicated health probes for the Envoy proxy.
 - Explicit deployment of Envoy proxy during Cilium installation (compared to on demand in the embedded mode).
 
-Known Limitations
-=================
+.. admonition:: Video
+ :class: attention
 
-- Due to Pod-to-Pod communication with the Cilium Agent via UNIX domain sockets, Envoy DaemonSet isn't supported with SELinux enabled on the host. This is the default for Red Hat OpenShift.
+  If you'd like to see Cilium Envoy in action, check out `eCHO episode 127: Cilium & Envoy <https://www.youtube.com/watch?v=HEwruycGbCU>`__.
 
 *************
 Go Extensions
@@ -179,7 +180,7 @@ After cloning cilium/proxy repo:
     $ cd proxylib
 
 While this dev VM is running, you can open additional terminals to the cilium/proxy dev VM
-by running ''vagrant ssh'' from within the cilium/proxy source directory.
+by running ``vagrant ssh`` from within the cilium/proxy source directory.
 
 
 Step 5: Create New Proxy Skeleton 
@@ -440,7 +441,7 @@ Step 11: Add Access Logging
 Cilium also has the notion of an ''Access Log'', which records each request handled by the proxy 
 and indicates whether the request was allowed or denied.  
 
-A call to ''p.connection.Log()'' implements access logging. See the OnData function in r2d2/r2d2parser.go 
+A call to ``p.connection.Log()`` implements access logging. See the OnData function in r2d2/r2d2parser.go 
 as an example: 
 
 .. code-block:: go
@@ -474,7 +475,7 @@ Note that we run both containers with labels that will make it easy to refer to 
 network policy.   Note that we have the client container run the sleep command, as we will use 'docker exec' to 
 access the client CLI.  
 
-Use ''cilium-dbg endpoint list'' to identify the IP address of the protocol server.  
+Use ``cilium-dbg endpoint list`` to identify the IP address of the protocol server.  
 
 .. code-block:: shell-session
 
@@ -493,67 +494,7 @@ One can then invoke the client CLI using that server IP address (10.11.51.247 in
 
 Note that in the above example, ingress policy is not enforced for the Cassandra server endpoint, so no data will flow through the
 Cassandra parser.  A simple ''allow all'' L7 Cassandra policy can be used to send all data to the Cassandra server through the 
-Go Cassandra parser.  This policy has a single empty rule, which matches all requests.  An allow all policy looks like: 
-
-.. code-block:: json
-
-  [ { 
-    "endpointSelector": {"matchLabels":{"id":"cass-server"}}, 
-    "ingress": [ {
-	  "toPorts": [{
-		  "ports": [{"port": "9042", "protocol": "TCP"}],
-            		"rules": {
-                		"l7proto": "cassandra",
-                		"l7": [{}]
-            		}
-		}]
-	  } ] 
-  }]
-
-
-A policy can be imported into cilium using ''cilium policy import'', after which another call to ''cilium-dbg endpoint list''
-confirms that ingress policy is now in place on the server.  If the above policy was saved to a file cass-allow-all.json, 
-one would run: 
-
-.. code-block:: shell-session
-
-    $ cilium-dbg policy import cass-allow-all.json
-    Revision: 1
-    $ cilium-dbg endpoint list
-    ENDPOINT   POLICY (ingress)   POLICY (egress)   IDENTITY   LABELS (source:key[=value])   IPv6                 IPv4            STATUS   
-               ENFORCEMENT        ENFORCEMENT                                                                                     
-    2987       Enabled            Disabled          31423      container:id=cass-server      f00d::a0b:0:0:bab    10.11.51.247    ready   
-    27333      Disabled           Disabled          4          reserved:health               f00d::a0b:0:0:6ac5   10.11.92.46     ready   
-    50923      Disabled           Disabled          18253      container:id=cass-client      f00d::a0b:0:0:c6eb   10.11.175.191   ready 
-
-Note that policy is now showing as ''Enabled'' for the Cassandra server on ingress. 
-
-To remove this or any other policy, run: 
-
-.. code-block:: shell-session
-
-    $ cilium-dbg policy delete --all 
-
-To install a new policy, first delete, and then run ''cilium policy import'' again.  For example, the following policy would allow
-select statements on a specific set of tables to this Cassandra server, but deny all other queries. 
-
-.. code-block:: json
-
-  [ {
-    "endpointSelector": {"matchLabels":{"id":"cass-server"}},
-    "ingress": [ {
-          "toPorts": [{
-                  "ports": [{"port": "9042", "protocol": "TCP"}],
-                        "rules": {
-                                "l7proto": "cassandra",
-                                "l7": [
-                                       { "query_action" : "select", "query_table": "^system.*"},
-                                       { "query_action" : "select", "query_table" : "^posts_db.posts$"}
-
-                                ]}
-                        }]
-         }]
-  } ]
+Go Cassandra parser.  This policy has a single empty rule, which matches all requests.
 
 When performing manual testing, remember that each time you change your Go proxy code, you must
 re-run ``make`` and ``sudo make install`` and then restart the cilium-agent process.  If the only changes
@@ -572,15 +513,15 @@ For example:
 If you rebase or other files change, you need to run both commands from the top level directory.  
 
 Cilium agent default to running as a service in the development VM.  However, the default options do not include 
-the ''--debug-verbose=flow'' flag, which is critical to getting visibility in troubleshooting Go proxy frameworks. 
+the ``--debug-verbose=flow`` flag, which is critical to getting visibility in troubleshooting Go proxy frameworks. 
 So it is easiest to stop the cilium service and run the cilium-agent directly as a command in a terminal window, 
-and adding the ''--debug-verbose=flow'' flag. 
+and adding the ``--debug-verbose=flow`` flag. 
 
 .. code-block:: shell-session
 
   $ sudo service cilium stop 
   
-  $ sudo /usr/bin/cilium-agent --debug --ipv4-range 10.11.0.0/16 --kvstore-opt consul.address=192.168.60.11:8500 --kvstore consul -t vxlan --fixed-identity-mapping=128=kv-store --fixed-identity-mapping=129=kube-dns --debug-verbose=flow
+  $ sudo /usr/bin/cilium-agent --debug --ipv4-range 10.11.0.0/16 --kvstore-opt etcd.address=192.168.60.11:4001 --kvstore etcd -t vxlan --fixed-identity-mapping=128=kv-store --fixed-identity-mapping=129=kube-dns --debug-verbose=flow
 
 
 Step 13: Add Runtime Tests
@@ -618,8 +559,8 @@ Step 15: Write Docs or Getting Started Guide (optional)
 At a minimum, the policy examples included as part of the runtime tests serve
 as basic documentation of the policy and its expected behavior.  But we also 
 encourage adding more user friendly examples and documentation, for example, 
-Getting Started Guides.  cilium/Documentation/gettingstarted/cassandra.rst is
-a good example to follow.   Also be sure to update Documentation/gettingstarted/index.rst
-with a link to this new getting started guide. 
+Getting Started Guides. For a good example to follow, see :gh-issue:`5661`.
+Also be sure to update ``Documentation/security/index.rst`` with a link
+to this new getting started guide.
 
 With that, you are ready to post this change for feedback from the Cilium community. Congrats!

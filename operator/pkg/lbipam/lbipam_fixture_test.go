@@ -12,16 +12,13 @@ import (
 	"testing"
 	"time"
 
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/cilium/hive/hivetest"
+	jsonpatch "github.com/evanphx/json-patch"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 
-	jsonpatch "github.com/evanphx/json-patch"
-	"github.com/sirupsen/logrus"
-
-	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
+	cilium_api_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_core_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
@@ -36,13 +33,14 @@ const (
 	serviceAUID = types.UID("b801e1cf-9e71-455c-9bc8-52c0575c22bd")
 	serviceBUID = types.UID("b415933e-524c-4f83-8493-de2157fc736f")
 	serviceCUID = types.UID("8d820ef0-d640-497a-bc67-b05190bddee6")
+	serviceDUID = types.UID("66666666-6666-6666-6666-666666666666")
 )
 
 type fakeIPPoolClient struct {
-	resources map[resource.Key]*v2alpha1.CiliumLoadBalancerIPPool
+	resources map[resource.Key]*cilium_api_v2.CiliumLoadBalancerIPPool
 }
 
-func (fic *fakeIPPoolClient) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v2alpha1.CiliumLoadBalancerIPPool, err error) {
+func (fic *fakeIPPoolClient) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *cilium_api_v2.CiliumLoadBalancerIPPool, err error) {
 	existing, found := fic.resources[resource.Key{Name: name}]
 	if !found {
 		return nil, fmt.Errorf("No IP pool found with name %q", name)
@@ -58,7 +56,7 @@ func (fic *fakeIPPoolClient) Patch(ctx context.Context, name string, pt types.Pa
 	value := reflect.ValueOf(existing)
 	value.Elem().Set(reflect.New(value.Type().Elem()).Elem())
 
-	var obj cilium_api_v2alpha1.CiliumLoadBalancerIPPool
+	var obj cilium_api_v2.CiliumLoadBalancerIPPool
 
 	switch pt {
 	case types.JSONPatchType:
@@ -121,7 +119,7 @@ func (fsc *fakeSvcClient) Watch(ctx context.Context, opts metav1.ListOptions) (w
 	return nil, nil
 }
 
-func (fsc *fakeSvcClient) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *slim_core_v1.Service, err error) {
+func (fsc *fakeSvcClient) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *slim_core_v1.Service, err error) {
 	existing, found := fsc.getter.resources[resource.Key{Namespace: fsc.namespace, Name: name}]
 	if !found {
 		return nil, fmt.Errorf("No service found with name %q", name)
@@ -170,14 +168,14 @@ type newFixture struct {
 	svcClient  *fakeSvcClientGetter
 }
 
-func (nf *newFixture) GetPool(name string) *v2alpha1.CiliumLoadBalancerIPPool {
+func (nf *newFixture) GetPool(name string) *cilium_api_v2.CiliumLoadBalancerIPPool {
 	return nf.poolClient.resources[resource.Key{Name: name}]
 }
 
-func (nf *newFixture) UpsertPool(t *testing.T, pool *v2alpha1.CiliumLoadBalancerIPPool) {
+func (nf *newFixture) UpsertPool(t *testing.T, pool *cilium_api_v2.CiliumLoadBalancerIPPool) {
 	key := resource.Key{Name: pool.Name}
 	nf.poolClient.resources[key] = pool
-	nf.lbipam.handlePoolEvent(context.Background(), resource.Event[*v2alpha1.CiliumLoadBalancerIPPool]{
+	nf.lbipam.handlePoolEvent(t.Context(), resource.Event[*cilium_api_v2.CiliumLoadBalancerIPPool]{
 		Kind:   resource.Upsert,
 		Key:    key,
 		Object: pool,
@@ -189,10 +187,10 @@ func (nf *newFixture) UpsertPool(t *testing.T, pool *v2alpha1.CiliumLoadBalancer
 	})
 }
 
-func (nf *newFixture) DeletePool(t *testing.T, pool *v2alpha1.CiliumLoadBalancerIPPool) {
+func (nf *newFixture) DeletePool(t *testing.T, pool *cilium_api_v2.CiliumLoadBalancerIPPool) {
 	key := resource.Key{Name: pool.Name}
 	delete(nf.poolClient.resources, key)
-	nf.lbipam.handlePoolEvent(context.Background(), resource.Event[*v2alpha1.CiliumLoadBalancerIPPool]{
+	nf.lbipam.handlePoolEvent(t.Context(), resource.Event[*cilium_api_v2.CiliumLoadBalancerIPPool]{
 		Kind:   resource.Delete,
 		Key:    key,
 		Object: pool,
@@ -207,7 +205,7 @@ func (nf *newFixture) DeletePool(t *testing.T, pool *v2alpha1.CiliumLoadBalancer
 func (nf *newFixture) UpsertSvc(t *testing.T, svc *slim_core_v1.Service) {
 	key := resource.Key{Name: svc.Name, Namespace: svc.Namespace}
 	nf.svcClient.resources[key] = svc
-	nf.lbipam.handleServiceEvent(context.Background(), resource.Event[*slim_core_v1.Service]{
+	nf.lbipam.handleServiceEvent(t.Context(), resource.Event[*slim_core_v1.Service]{
 		Kind:   resource.Upsert,
 		Key:    key,
 		Object: svc,
@@ -217,13 +215,13 @@ func (nf *newFixture) UpsertSvc(t *testing.T, svc *slim_core_v1.Service) {
 				t.Fatal(err)
 			}
 		},
-	})
+	}, false)
 }
 
 func (nf *newFixture) DeleteSvc(t *testing.T, svc *slim_core_v1.Service) {
 	key := resource.Key{Name: svc.Name, Namespace: svc.Namespace}
 	delete(nf.svcClient.resources, key)
-	nf.lbipam.handleServiceEvent(context.Background(), resource.Event[*slim_core_v1.Service]{
+	nf.lbipam.handleServiceEvent(t.Context(), resource.Event[*slim_core_v1.Service]{
 		Kind:   resource.Delete,
 		Key:    key,
 		Object: svc,
@@ -232,23 +230,18 @@ func (nf *newFixture) DeleteSvc(t *testing.T, svc *slim_core_v1.Service) {
 				t.Fatal(err)
 			}
 		},
-	})
+	}, false)
 }
 
 func (nf *newFixture) GetSvc(namespace, name string) *slim_core_v1.Service {
 	return nf.svcClient.resources[resource.Key{Namespace: namespace, Name: name}]
 }
 
-func mkTestFixture(ipv4Enabled, ipv6Enabled bool) newFixture {
-	log := logrus.New()
-	if testing.Verbose() {
-		log.SetLevel(logrus.DebugLevel)
-	} else {
-		log.SetLevel(logrus.ErrorLevel)
-	}
+func mkTestFixture(t *testing.T, ipv4Enabled, ipv6Enabled bool) newFixture {
+	log := hivetest.Logger(t)
 
 	poolClient := &fakeIPPoolClient{
-		resources: make(map[resource.Key]*v2alpha1.CiliumLoadBalancerIPPool),
+		resources: make(map[resource.Key]*cilium_api_v2.CiliumLoadBalancerIPPool),
 	}
 	svcClient := &fakeSvcClientGetter{
 		resources: make(map[resource.Key]*slim_core_v1.Service),
@@ -268,29 +261,30 @@ func mkTestFixture(ipv4Enabled, ipv6Enabled bool) newFixture {
 
 			metrics: newMetrics(),
 
-			poolClient: poolClient,
-			svcClient:  svcClient,
+			poolClient:  poolClient,
+			svcClient:   svcClient,
+			defaultIPAM: true,
 		}),
 	}
 }
 
 // mkPool is a constructor function to assist in the creation of new pool objects.
-func mkPool(uid types.UID, name string, cidrs []string) *cilium_api_v2alpha1.CiliumLoadBalancerIPPool {
-	var blocks []cilium_api_v2alpha1.CiliumLoadBalancerIPPoolIPBlock
+func mkPool(uid types.UID, name string, cidrs []string) *cilium_api_v2.CiliumLoadBalancerIPPool {
+	var blocks []cilium_api_v2.CiliumLoadBalancerIPPoolIPBlock
 	for _, cidr := range cidrs {
-		blocks = append(blocks, cilium_api_v2alpha1.CiliumLoadBalancerIPPoolIPBlock{
-			Cidr: cilium_api_v2alpha1.IPv4orIPv6CIDR(cidr),
+		blocks = append(blocks, cilium_api_v2.CiliumLoadBalancerIPPoolIPBlock{
+			Cidr: cilium_api_v2.IPv4orIPv6CIDR(cidr),
 		})
 	}
 
-	return &cilium_api_v2alpha1.CiliumLoadBalancerIPPool{
-		ObjectMeta: meta_v1.ObjectMeta{
+	return &cilium_api_v2.CiliumLoadBalancerIPPool{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			UID:               uid,
-			CreationTimestamp: meta_v1.Date(2022, 10, 16, 12, 00, 00, 0, time.UTC),
+			CreationTimestamp: metav1.Date(2022, 10, 16, 12, 00, 00, 0, time.UTC),
 		},
-		Spec: cilium_api_v2alpha1.CiliumLoadBalancerIPPoolSpec{
-			Cidrs: blocks,
+		Spec: cilium_api_v2.CiliumLoadBalancerIPPoolSpec{
+			Blocks: blocks,
 		},
 	}
 }

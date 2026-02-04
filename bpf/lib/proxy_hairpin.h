@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
 
-#ifndef __LIB_PROXY_HAIRPIN_H_
-#define __LIB_PROXY_HAIRPIN_H_
+#pragma once
 
 #include "common.h"
 #include "utils.h"
@@ -11,10 +10,8 @@
 #include "eth.h"
 #include "dbg.h"
 #include "trace.h"
-#include "csum.h"
+#include "l3.h"
 #include "l4.h"
-
-#if defined(HOST_IFINDEX_MAC) && defined(HOST_IFINDEX)
 
 /** Redirect to the proxy by hairpinning the packet out the incoming
  *  interface.
@@ -27,10 +24,8 @@ static __always_inline int
 ctx_redirect_to_proxy_hairpin(struct __ctx_buff *ctx, struct iphdr *ip4,
 			      __be16 proxy_port)
 {
-#if defined(ENABLE_IPV4) || defined(ENABLE_IPV6)
-	union macaddr host_mac = HOST_IFINDEX_MAC;
-	union macaddr router_mac = NODE_MAC;
-#endif
+	union macaddr __maybe_unused host_mac = CILIUM_HOST_MAC;
+	union macaddr __maybe_unused router_mac = CONFIG(interface_mac);
 	int ret = 0;
 
 	ctx_store_meta(ctx, CB_PROXY_MAGIC,
@@ -58,7 +53,7 @@ ctx_redirect_to_proxy_hairpin(struct __ctx_buff *ctx, struct iphdr *ip4,
 	 * ctx_redirect_to_proxy_first().
 	 */
 
-	return ctx_redirect(ctx, HOST_IFINDEX, 0);
+	return ctx_redirect(ctx, CILIUM_NET_IFINDEX, 0);
 }
 
 #ifdef ENABLE_IPV4
@@ -77,7 +72,3 @@ ctx_redirect_to_proxy_hairpin_ipv6(struct __ctx_buff *ctx, __be16 proxy_port)
 	return ctx_redirect_to_proxy_hairpin(ctx, NULL, proxy_port);
 }
 #endif
-
-#endif /* HOST_IFINDEX_MAC && HOST_IFINDEX */
-
-#endif /* __LIB_PROXY_HAIRPIN_H_ */

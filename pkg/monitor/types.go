@@ -4,7 +4,7 @@
 package monitor
 
 import (
-	"sort"
+	"slices"
 
 	"github.com/spf13/pflag"
 
@@ -13,14 +13,16 @@ import (
 
 var _ pflag.Value = &monitorAPI.MessageTypeFilter{}
 
+const (
+	msgSeparator = "------------------------------------------------------------------------------"
+)
+
 // GetAllTypes returns a slice of all known message types, sorted
 func GetAllTypes() []string {
-	types := make([]string, len(monitorAPI.MessageTypeNames))
-	i := 0
+	types := make([]string, 0, len(monitorAPI.MessageTypeNames))
 	for k := range monitorAPI.MessageTypeNames {
-		types[i] = k
-		i++
+		types = append(types, k)
 	}
-	sort.Strings(types)
+	slices.Sort(types)
 	return types
 }

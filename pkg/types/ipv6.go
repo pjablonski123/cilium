@@ -11,6 +11,15 @@ import (
 // IPv6 is the binary representation for encoding in binary structs.
 type IPv6 [16]byte
 
+func (v6 IPv6) IsZero() bool {
+	for i := range 16 {
+		if v6[i] != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (v6 IPv6) IP() net.IP {
 	return v6[:]
 }

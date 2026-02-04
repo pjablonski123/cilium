@@ -1,7 +1,9 @@
 # Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
-DIGESTS_PATH:=Makefile.digests
+-include Makefile.values.override
+
+DIGESTS_PATH ?= Makefile.digests
 include $(DIGESTS_PATH)
 export USE_DIGESTS ?= $(shell if grep -q '""' $(DIGESTS_PATH); then echo "false"; else echo "true"; fi)
 export RELEASE_REGISTRY ?= quay.io
@@ -16,7 +18,6 @@ ifeq ($(RELEASE),yes)
     export CLUSTERMESH_APISERVER_REPO:=${RELEASE_REGISTRY}/${RELEASE_ORG}/clustermesh-apiserver
     export HUBBLE_RELAY_REPO:=${RELEASE_REGISTRY}/${RELEASE_ORG}/hubble-relay
 else
-    export CILIUM_BRANCH:=main
     export PULL_POLICY:=Always
     export CILIUM_REPO:=${CI_REGISTRY}/${CI_ORG}/cilium-ci
     export CILIUM_OPERATOR_BASE_REPO:=${CI_REGISTRY}/${CI_ORG}/operator
@@ -26,37 +27,42 @@ else
     export HUBBLE_RELAY_REPO:=${CI_REGISTRY}/${CI_ORG}/hubble-relay-ci
 endif
 
-ifndef CILIUM_BRANCH
-$(error "CILIUM_BRANCH needs to be defined")
-endif
-
+# renovate: datasource=docker
 export CERTGEN_REPO:=quay.io/cilium/certgen
-export CERTGEN_VERSION:=v0.1.9
-export CERTGEN_DIGEST:=sha256:89a0847753686444daabde9474b48340993bd19c7bea66a46e45b2974b82041f
+export CERTGEN_VERSION:=v0.3.2
+export CERTGEN_DIGEST:=sha256:19921f48ee7e2295ea4dca955878a6cd8d70e6d4219d08f688e866ece9d95d4d
 
-export CILIUM_ETCD_OPERATOR_REPO:=quay.io/cilium/cilium-etcd-operator
-export CILIUM_ETCD_OPERATOR_VERSION:=v2.0.7
-export CILIUM_ETCD_OPERATOR_DIGEST:=sha256:04b8327f7f992693c2cb483b999041ed8f92efc8e14f2a5f3ab95574a65ea2dc
+# renovate: datasource=docker
 export CILIUM_NODEINIT_REPO:=quay.io/cilium/startup-script
-export CILIUM_NODEINIT_VERSION:=62093c5c233ea914bfa26a10ba41f8780d9b737f
+export CILIUM_NODEINIT_VERSION:=1763560095-8f36c34
+export CILIUM_NODEINIT_DIGEST:=sha256:50b9cf9c280096b59b80d2fc8ee6638facef79ac18998a22f0cbc40d5d28c16f
 
+# renovate: datasource=docker
 export CILIUM_ENVOY_REPO:=quay.io/cilium/cilium-envoy
-export CILIUM_ENVOY_VERSION:=v1.27.2-f19708f3d0188fe39b7e024b4525b75a9eeee61f
-export CILIUM_ENVOY_DIGEST:=sha256:80de27c1d16ab92923cc0cd1fff90f2e7047a9abf3906fda712268d9cbc5b950
+export CILIUM_ENVOY_VERSION:=v1.36.5-1768916005-32e6b51b774e6e90c980dcbba1d4cb607f2d43f3
+export CILIUM_ENVOY_DIGEST:=sha256:27d5429bb59dc6463dec15f0824065fafdce2fe0c214f17416fc1cb0b2e9b6f1
 
+# renovate: datasource=docker
 export HUBBLE_UI_BACKEND_REPO:=quay.io/cilium/hubble-ui-backend
-export HUBBLE_UI_BACKEND_VERSION:=v0.12.1
-export HUBBLE_UI_BACKEND_DIGEST:=sha256:1f86f3400827a0451e6332262467f894eeb7caf0eb8779bd951e2caa9d027cbe
-export HUBBLE_UI_FRONTEND_REPO:=quay.io/cilium/hubble-ui
-export HUBBLE_UI_FRONTEND_VERSION:=v0.12.1
-export HUBBLE_UI_FRONTEND_DIGEST:=sha256:9e5f81ee747866480ea1ac4630eb6975ff9227f9782b7c93919c081c33f38267
+export HUBBLE_UI_BACKEND_VERSION:=v0.13.3
+export HUBBLE_UI_BACKEND_DIGEST:=sha256:db1454e45dc39ca41fbf7cad31eec95d99e5b9949c39daaad0fa81ef29d56953
 
+# renovate: datasource=docker
+export HUBBLE_UI_FRONTEND_REPO:=quay.io/cilium/hubble-ui
+export HUBBLE_UI_FRONTEND_VERSION:=v0.13.3
+export HUBBLE_UI_FRONTEND_DIGEST:=sha256:661d5de7050182d495c6497ff0b007a7a1e379648e60830dd68c4d78ae21761d
+
+# renovate: datasource=docker
 export SPIRE_INIT_REPO:=docker.io/library/busybox
-export SPIRE_INIT_VERSION:=1.36.1
-export SPIRE_INIT_DIGEST:=sha256:223ae047b1065bd069aac01ae3ac8088b3ca4a527827e283b85112f29385fb1b
+export SPIRE_INIT_VERSION:=1.37.0
+export SPIRE_INIT_DIGEST:=sha256:e226d6308690dbe282443c8c7e57365c96b5228f0fe7f40731b5d84d37a06839
+
+# renovate: datasource=docker
 export SPIRE_SERVER_REPO:=ghcr.io/spiffe/spire-server
-export SPIRE_SERVER_VERSION:=1.8.5
-export SPIRE_SERVER_DIGEST:=sha256:28269265882048dcf0fed32fe47663cd98613727210b8d1a55618826f9bf5428
+export SPIRE_SERVER_VERSION:=1.14.1
+export SPIRE_SERVER_DIGEST:=sha256:46a740705d5e15839552b1307aff44ef5ac42d9b444d073b4ccefd87c5269283
+
+# renovate: datasource=docker
 export SPIRE_AGENT_REPO:=ghcr.io/spiffe/spire-agent
-export SPIRE_AGENT_VERSION:=1.8.5
-export SPIRE_AGENT_DIGEST:=sha256:99405637647968245ff9fe215f8bd2bd0ea9807be9725f8bf19fe1b21471e52b
+export SPIRE_AGENT_VERSION:=1.14.1
+export SPIRE_AGENT_DIGEST:=sha256:7bb8469af28f00908a96a8a51fb36cbbcdfb85efe78e94b492f949f33284bf4d

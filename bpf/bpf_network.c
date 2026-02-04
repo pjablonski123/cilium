@@ -4,25 +4,34 @@
 #include <bpf/ctx/skb.h>
 #include <bpf/api.h>
 
-#include <node_config.h>
+#include <bpf/config/node.h>
 #include <netdev_config.h>
 
+#define IS_BPF_NETWORK 1
+
 #include "lib/common.h"
+#include "lib/drop.h"
 #include "lib/trace.h"
-#include "lib/encrypt.h"
+#include "lib/ipsec.h"
 
 __section_entry
 int cil_from_network(struct __ctx_buff *ctx)
 {
 	int ret = CTX_ACT_OK;
 
-	__u16 proto __maybe_unused;
-	enum trace_reason reason = TRACE_REASON_UNKNOWN;
+	__be16 proto __maybe_unused;
+	__u32 ingress_ifindex = ctx->ingress_ifindex;
+	struct trace_ctx trace = {
+		.reason = TRACE_REASON_UNKNOWN,
+		.monitor = 0,
+	};
 	enum trace_point obs_point_to = TRACE_TO_STACK;
 	enum trace_point obs_point_from = TRACE_FROM_NETWORK;
 
 	bpf_clear_meta(ctx);
+	check_and_store_ip_trace_id(ctx);
 
+#ifdef ENABLE_IPSEC
 	/* This program should be attached to the tc-ingress of
 	 * the network-facing device. Thus, as far as Cilium
 	 * knows, no one touches to the ctx->mark before this
@@ -32,15 +41,16 @@ int cil_from_network(struct __ctx_buff *ctx)
 	 * from the stack by xfrm. In that case, the packets should
 	 * be marked with MARK_MAGIC_DECRYPT.
 	 */
-	if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_DECRYPT)
+	if (ctx_is_decrypt(ctx))
 		obs_point_from = TRACE_FROM_STACK;
 
-#ifdef ENABLE_IPSEC
 	/* Pass unknown protocols to the stack */
 	if (!validate_ethertype(ctx, &proto))
 		goto out;
 
 	ret = do_decrypt(ctx, proto);
+	if (IS_ERR(ret))
+		return send_drop_notify_error(ctx, UNKNOWN_ID, ret, METRIC_INGRESS);
 #endif
 
 /* We need to handle following possible packets come to this program
@@ -67,8 +77,8 @@ int cil_from_network(struct __ctx_buff *ctx)
  * because it doesn't matter for the non-IPSec mode.
  */
 #ifdef ENABLE_IPSEC
-	if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_DECRYPT)
-		reason = TRACE_REASON_ENCRYPTED;
+	if (ctx_is_decrypt(ctx))
+		trace.reason = TRACE_REASON_ENCRYPTED;
 
 	/* Only possible redirect in here is the one in the do_decrypt
 	 * which redirects to cilium_host.
@@ -78,11 +88,13 @@ int cil_from_network(struct __ctx_buff *ctx)
 #endif
 
 out:
-	send_trace_notify(ctx, obs_point_from, 0, 0, 0,
-			  ctx->ingress_ifindex, reason, TRACE_PAYLOAD_LEN);
+	send_trace_notify(ctx, obs_point_from, UNKNOWN_ID, UNKNOWN_ID,
+			  TRACE_EP_ID_UNKNOWN, ingress_ifindex,
+			  trace.reason, trace.monitor, proto);
 
-	send_trace_notify(ctx, obs_point_to, 0, 0, 0,
-			  ctx->ingress_ifindex, reason, TRACE_PAYLOAD_LEN);
+	send_trace_notify(ctx, obs_point_to, UNKNOWN_ID, UNKNOWN_ID,
+			  TRACE_EP_ID_UNKNOWN, ingress_ifindex,
+			  trace.reason, trace.monitor, proto);
 
 	return ret;
 }

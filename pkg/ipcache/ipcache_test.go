@@ -4,19 +4,17 @@
 package ipcache
 
 import (
-	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
 	"net/netip"
-	"sort"
+	"slices"
 	"strconv"
 	"testing"
 
-	. "github.com/cilium/checkmate"
+	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/require"
 
-	"github.com/cilium/cilium/pkg/checker"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	identityPkg "github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/labels"
@@ -26,96 +24,89 @@ import (
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
-// Hook up gocheck into the "go test" runner.
 type IPCacheTestSuite struct {
-	cleanup func()
-}
-
-var (
-	_               = Suite(&IPCacheTestSuite{})
 	IPIdentityCache *IPCache
 	PolicyHandler   *mockUpdater
-)
-
-func Test(t *testing.T) {
-	TestingT(t)
+	Allocator       *testidentity.MockIdentityAllocator
 }
 
-func (s *IPCacheTestSuite) SetUpTest(c *C) {
-	ctx, cancel := context.WithCancel(context.Background())
-	allocator := testidentity.NewMockIdentityAllocator(nil)
-	PolicyHandler = &mockUpdater{
-		identities: make(map[identityPkg.NumericIdentity]labels.LabelArray),
+func setupIPCacheTestSuite(tb testing.TB) *IPCacheTestSuite {
+	s := &IPCacheTestSuite{
+		Allocator:     testidentity.NewMockIdentityAllocator(nil),
+		PolicyHandler: newMockUpdater(),
 	}
-	IPIdentityCache = NewIPCache(&Configuration{
-		Context:           ctx,
-		IdentityAllocator: allocator,
-		PolicyHandler:     PolicyHandler,
-		DatapathHandler:   &mockTriggerer{},
+	s.IPIdentityCache = NewIPCache(&Configuration{
+		Context:           tb.Context(),
+		Logger:            hivetest.Logger(tb),
+		IdentityAllocator: s.Allocator,
+		IdentityUpdater:   s.PolicyHandler,
 	})
 
-	s.cleanup = func() {
-		cancel()
-		IPIdentityCache.Shutdown()
-	}
+	s.IPIdentityCache.metadata.upsertLocked(worldPrefix, source.KubeAPIServer, "kube-uid", labels.LabelKubeAPIServer)
+	s.IPIdentityCache.metadata.upsertLocked(worldPrefix, source.Local, "host-uid", labels.LabelHost)
+
+	tb.Cleanup(func() {
+		s.IPIdentityCache.Shutdown()
+	})
+
+	return s
 }
 
-func (s *IPCacheTestSuite) TearDownTest(c *C) {
-	s.cleanup()
-}
+func TestIPCache(t *testing.T) {
+	s := setupIPCacheTestSuite(t)
+	t.Parallel()
 
-func (s *IPCacheTestSuite) TestIPCache(c *C) {
 	endpointIP := "10.0.0.15"
 	identity := (identityPkg.NumericIdentity(68))
 
 	// Assure sane state at start.
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 0)
+	require.Empty(t, s.IPIdentityCache.ipToIdentityCache)
+	require.Empty(t, s.IPIdentityCache.identityToIPCache)
 
 	// Deletion of key that doesn't exist doesn't cause panic.
-	IPIdentityCache.Delete(endpointIP, source.KVStore)
+	s.IPIdentityCache.Delete(endpointIP, source.KVStore)
 
-	IPIdentityCache.Upsert(endpointIP, nil, 0, nil, Identity{
+	s.IPIdentityCache.Upsert(endpointIP, nil, 0, nil, Identity{
 		ID:     identity,
 		Source: source.KVStore,
 	})
 
 	// Assure both caches are updated..
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 1)
+	require.Len(t, s.IPIdentityCache.ipToIdentityCache, 1)
+	require.Len(t, s.IPIdentityCache.identityToIPCache, 1)
 
-	cachedIdentity, exists := IPIdentityCache.LookupByIP(endpointIP)
-	c.Assert(exists, Equals, true)
-	c.Assert(cachedIdentity.ID, Equals, identity)
-	c.Assert(cachedIdentity.Source, Equals, source.KVStore)
+	cachedIdentity, exists := s.IPIdentityCache.LookupByIP(endpointIP)
+	require.True(t, exists)
+	require.Equal(t, identity, cachedIdentity.ID)
+	require.Equal(t, source.KVStore, cachedIdentity.Source)
 
 	// kubernetes source cannot update kvstore source
-	_, err := IPIdentityCache.Upsert(endpointIP, nil, 0, nil, Identity{
+	_, err := s.IPIdentityCache.Upsert(endpointIP, nil, 0, nil, Identity{
 		ID:     identity,
 		Source: source.Kubernetes,
 	})
-	c.Assert(errors.Is(err, &ErrOverwrite{NewSrc: source.Kubernetes}), Equals, true)
+	require.ErrorIs(t, err, &ErrOverwrite{NewSrc: source.Kubernetes})
 
-	IPIdentityCache.Upsert(endpointIP, nil, 0, nil, Identity{
+	s.IPIdentityCache.Upsert(endpointIP, nil, 0, nil, Identity{
 		ID:     identity,
 		Source: source.KVStore,
 	})
 
 	// No duplicates.
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 1)
+	require.Len(t, s.IPIdentityCache.ipToIdentityCache, 1)
+	require.Len(t, s.IPIdentityCache.identityToIPCache, 1)
 
-	IPIdentityCache.Delete(endpointIP, source.KVStore)
+	s.IPIdentityCache.Delete(endpointIP, source.KVStore)
 
 	// Assure deletion occurs across all mappings.
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.ipToHostIPCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.ipToK8sMetadata), Equals, 0)
+	require.Empty(t, s.IPIdentityCache.ipToIdentityCache)
+	require.Empty(t, s.IPIdentityCache.identityToIPCache)
+	require.Empty(t, s.IPIdentityCache.ipToHostIPCache)
+	require.Empty(t, s.IPIdentityCache.ipToK8sMetadata)
 
-	_, exists = IPIdentityCache.LookupByIP(endpointIP)
+	_, exists = s.IPIdentityCache.LookupByIP(endpointIP)
 
-	c.Assert(exists, Equals, false)
+	require.False(t, exists)
 
 	hostIP := net.ParseIP("192.168.1.10")
 	k8sMeta := &K8sMetadata{
@@ -123,187 +114,190 @@ func (s *IPCacheTestSuite) TestIPCache(c *C) {
 		PodName:   "podname",
 	}
 
-	IPIdentityCache.Upsert(endpointIP, hostIP, 0, k8sMeta, Identity{
+	s.IPIdentityCache.Upsert(endpointIP, hostIP, 0, k8sMeta, Identity{
 		ID:     identity,
 		Source: source.KVStore,
 	})
 
-	cachedHostIP, _ := IPIdentityCache.getHostIPCache(endpointIP)
-	c.Assert(cachedHostIP, checker.DeepEquals, hostIP)
-	c.Assert(IPIdentityCache.GetK8sMetadata(netip.MustParseAddr(endpointIP)), checker.DeepEquals, k8sMeta)
+	cachedHostIP, _ := s.IPIdentityCache.getHostIPCacheRLocked(endpointIP)
+	require.Equal(t, hostIP, cachedHostIP)
+	require.Equal(t, k8sMeta, s.IPIdentityCache.GetK8sMetadata(netip.MustParseAddr(endpointIP)))
 
 	newIdentity := identityPkg.NumericIdentity(69)
-	IPIdentityCache.Upsert(endpointIP, hostIP, 0, k8sMeta, Identity{
+	s.IPIdentityCache.Upsert(endpointIP, hostIP, 0, k8sMeta, Identity{
 		ID:     newIdentity,
 		Source: source.KVStore,
 	})
 
 	// Ensure that update of cache with new identity doesn't keep old identity-to-ip
 	// mapping around.
-	ips := IPIdentityCache.LookupByIdentity(identity)
-	c.Assert(ips, IsNil)
+	ips := s.IPIdentityCache.LookupByIdentity(identity)
+	require.Nil(t, ips)
 
-	cachedIPs := IPIdentityCache.LookupByIdentity(newIdentity)
-	c.Assert(cachedIPs, Not(IsNil))
+	cachedIPs := s.IPIdentityCache.LookupByIdentity(newIdentity)
+	require.NotNil(t, cachedIPs)
 	for _, cachedIP := range cachedIPs {
-		c.Assert(cachedIP, Equals, endpointIP)
+		require.Equal(t, endpointIP, cachedIP)
 	}
 
-	IPIdentityCache.Delete(endpointIP, source.KVStore)
+	s.IPIdentityCache.Delete(endpointIP, source.KVStore)
 
 	// Assure deletion occurs across both mappings.
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.ipToHostIPCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.ipToK8sMetadata), Equals, 0)
+	require.Empty(t, s.IPIdentityCache.ipToIdentityCache)
+	require.Empty(t, s.IPIdentityCache.identityToIPCache)
+	require.Empty(t, s.IPIdentityCache.ipToHostIPCache)
+	require.Empty(t, s.IPIdentityCache.ipToK8sMetadata)
 
 	// Test mapping of multiple IPs to same identity.
 	endpointIPs := []string{"192.168.0.1", "20.3.75.3", "27.2.2.2", "127.0.0.1", "127.0.0.1", "10.1.1.250"}
 	identities := []identityPkg.NumericIdentity{5, 67, 29, 29, 29, 42}
 
 	for index := range endpointIPs {
-		IPIdentityCache.Upsert(endpointIPs[index], nil, 0, nil, Identity{
+		s.IPIdentityCache.Upsert(endpointIPs[index], nil, 0, nil, Identity{
 			ID:     identities[index],
 			Source: source.KVStore,
 		})
-		cachedIdentity, _ := IPIdentityCache.LookupByIP(endpointIPs[index])
-		c.Assert(cachedIdentity.ID, Equals, identities[index])
+		cachedIdentity, _ := s.IPIdentityCache.LookupByIP(endpointIPs[index])
+		require.Equal(t, identities[index], cachedIdentity.ID)
 	}
 
 	expectedIPList := []string{"127.0.0.1", "27.2.2.2"}
 
-	cachedEndpointIPs := IPIdentityCache.LookupByIdentity(29)
-	sort.Strings(cachedEndpointIPs)
-	c.Assert(cachedEndpointIPs, checker.DeepEquals, expectedIPList)
+	cachedEndpointIPs := s.IPIdentityCache.LookupByIdentity(29)
+	slices.Sort(cachedEndpointIPs)
+	require.Equal(t, expectedIPList, cachedEndpointIPs)
 
-	IPIdentityCache.Delete("27.2.2.2", source.KVStore)
+	s.IPIdentityCache.Delete("27.2.2.2", source.KVStore)
 
 	expectedIPList = []string{"127.0.0.1"}
 
-	cachedEndpointIPs = IPIdentityCache.LookupByIdentity(29)
-	c.Assert(cachedEndpointIPs, checker.DeepEquals, expectedIPList)
+	cachedEndpointIPs = s.IPIdentityCache.LookupByIdentity(29)
+	require.Equal(t, expectedIPList, cachedEndpointIPs)
 
-	cachedIdentity, exists = IPIdentityCache.LookupByIP("127.0.0.1")
-	c.Assert(exists, Equals, true)
-	c.Assert(cachedIdentity.ID, Equals, identityPkg.NumericIdentity(29))
+	cachedIdentity, exists = s.IPIdentityCache.LookupByIP("127.0.0.1")
+	require.True(t, exists)
+	require.Equal(t, identityPkg.NumericIdentity(29), cachedIdentity.ID)
 
-	cachedIdentity, exists = IPIdentityCache.LookupByPrefix("127.0.0.1/32")
-	c.Assert(exists, Equals, true)
-	c.Assert(cachedIdentity.ID, Equals, identityPkg.NumericIdentity(29))
+	cachedIdentity, exists = s.IPIdentityCache.LookupByPrefix("127.0.0.1/32")
+	require.True(t, exists)
+	require.Equal(t, identityPkg.NumericIdentity(29), cachedIdentity.ID)
 
-	IPIdentityCache.Delete("127.0.0.1", source.KVStore)
+	s.IPIdentityCache.Delete("127.0.0.1", source.KVStore)
 
-	ips = IPIdentityCache.LookupByIdentity(29)
-	c.Assert(ips, IsNil)
+	ips = s.IPIdentityCache.LookupByIdentity(29)
+	require.Nil(t, ips)
 
-	_, exists = IPIdentityCache.LookupByPrefix("127.0.0.1/32")
-	c.Assert(exists, Equals, false)
+	_, exists = s.IPIdentityCache.LookupByPrefix("127.0.0.1/32")
+	require.False(t, exists)
 
 	// Assert IPCache entry is overwritten when a different pod (different
 	// k8sMeta) with the same IP as what's already inside the IPCache is
 	// inserted.
-	_, err = IPIdentityCache.Upsert("10.1.1.250", net.ParseIP("10.0.0.1"), 0, &K8sMetadata{
+	_, err = s.IPIdentityCache.Upsert("10.1.1.250", net.ParseIP("10.0.0.1"), 0, &K8sMetadata{
 		Namespace: "ns-1",
 		PodName:   "pod1",
 	}, Identity{
 		ID:     42,
 		Source: source.KVStore,
 	})
-	c.Assert(err, IsNil)
-	_, exists = IPIdentityCache.LookupByPrefix("10.1.1.250/32")
-	c.Assert(exists, Equals, true)
+	require.NoError(t, err)
+	_, exists = s.IPIdentityCache.LookupByPrefix("10.1.1.250/32")
+	require.True(t, exists)
 	// Insert different pod now.
-	_, err = IPIdentityCache.Upsert("10.1.1.250", net.ParseIP("10.0.0.2"), 0, &K8sMetadata{
+	_, err = s.IPIdentityCache.Upsert("10.1.1.250", net.ParseIP("10.0.0.2"), 0, &K8sMetadata{
 		Namespace: "ns-1",
 		PodName:   "pod2",
 	}, Identity{
 		ID:     43,
 		Source: source.KVStore,
 	})
-	c.Assert(err, IsNil)
-	cachedIdentity, _ = IPIdentityCache.LookupByPrefix("10.1.1.250/32")
-	c.Assert(cachedIdentity.ID, Equals, identityPkg.NumericIdentity(43)) // Assert entry overwritten.
+	require.NoError(t, err)
+	cachedIdentity, _ = s.IPIdentityCache.LookupByPrefix("10.1.1.250/32")
+	require.Equal(t, identityPkg.NumericIdentity(43), cachedIdentity.ID) // Assert entry overwritten.
 	// Assuming different pod with same IP 10.1.1.250 as a previous pod was
 	// deleted, assert IPCache entry is deleted is still deleted.
-	IPIdentityCache.Delete("10.1.1.250", source.KVStore)
-	_, exists = IPIdentityCache.LookupByPrefix("10.1.1.250/32")
-	c.Assert(exists, Equals, false) // Assert entry deleted.
+	s.IPIdentityCache.Delete("10.1.1.250", source.KVStore)
+	_, exists = s.IPIdentityCache.LookupByPrefix("10.1.1.250/32")
+	require.False(t, exists) // Assert entry deleted.
 
 	// Clean up.
 	for index := range endpointIPs {
-		IPIdentityCache.Delete(endpointIPs[index], source.KVStore)
-		_, exists = IPIdentityCache.LookupByIP(endpointIPs[index])
-		c.Assert(exists, Equals, false)
+		s.IPIdentityCache.Delete(endpointIPs[index], source.KVStore)
+		_, exists = s.IPIdentityCache.LookupByIP(endpointIPs[index])
+		require.False(t, exists)
 
-		ips = IPIdentityCache.LookupByIdentity(identities[index])
-		c.Assert(ips, IsNil)
+		ips = s.IPIdentityCache.LookupByIdentity(identities[index])
+		require.Nil(t, ips)
 	}
 
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 0)
+	require.Empty(t, s.IPIdentityCache.ipToIdentityCache)
+	require.Empty(t, s.IPIdentityCache.identityToIPCache)
 }
 
-func (s *IPCacheTestSuite) TestIPCacheNamedPorts(c *C) {
+func TestIPCacheNamedPorts(t *testing.T) {
+	s := setupIPCacheTestSuite(t)
+	t.Parallel()
+
 	endpointIP := "10.0.0.15"
-	identity := (identityPkg.NumericIdentity(68))
+	identity := identityPkg.NumericIdentity(68)
 
 	// Assure sane state at start.
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 0)
+	require.Empty(t, s.IPIdentityCache.ipToIdentityCache)
+	require.Empty(t, s.IPIdentityCache.identityToIPCache)
 
 	// Deletion of key that doesn't exist doesn't cause panic.
-	namedPortsChanged := IPIdentityCache.Delete(endpointIP, source.KVStore)
-	c.Assert(namedPortsChanged, Equals, false)
+	namedPortsChanged := s.IPIdentityCache.Delete(endpointIP, source.KVStore)
+	require.False(t, namedPortsChanged)
 
 	meta := K8sMetadata{
 		Namespace: "default",
 		PodName:   "app1",
 		NamedPorts: types.NamedPortMap{
-			"http": types.PortProto{Port: 80, Proto: uint8(u8proto.TCP)},
+			"http": types.PortProto{Port: 80, Proto: u8proto.TCP},
 			"dns":  types.PortProto{Port: 53},
 		},
 	}
 
-	namedPortsChanged, err := IPIdentityCache.Upsert(endpointIP, nil, 0, &meta, Identity{
+	namedPortsChanged, err := s.IPIdentityCache.Upsert(endpointIP, nil, 0, &meta, Identity{
 		ID:     identity,
 		Source: source.Kubernetes,
 	})
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	// Assure both caches are updated..
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.ipToHostIPCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.ipToK8sMetadata), Equals, 1)
+	require.Len(t, s.IPIdentityCache.ipToIdentityCache, 1)
+	require.Len(t, s.IPIdentityCache.identityToIPCache, 1)
+	require.Empty(t, s.IPIdentityCache.ipToHostIPCache)
+	require.Len(t, s.IPIdentityCache.ipToK8sMetadata, 1)
 
-	cachedIdentity, exists := IPIdentityCache.LookupByIP(endpointIP)
-	c.Assert(exists, Equals, true)
-	c.Assert(cachedIdentity.ID, Equals, identity)
-	c.Assert(cachedIdentity.Source, Equals, source.Kubernetes)
+	cachedIdentity, exists := s.IPIdentityCache.LookupByIP(endpointIP)
+	require.True(t, exists)
+	require.Equal(t, identity, cachedIdentity.ID)
+	require.Equal(t, source.Kubernetes, cachedIdentity.Source)
 
 	// Named ports have been updated, but no policy uses them, hence don't
 	// trigger policy regen until GetNamedPorts has been called at least once.
-	c.Assert(namedPortsChanged, Equals, false)
-	npm := IPIdentityCache.GetNamedPorts()
-	c.Assert(npm, NotNil)
-	c.Assert(npm.Len(), Equals, 2)
-	port, err := npm.GetNamedPort("http", uint8(6))
-	c.Assert(err, IsNil)
-	c.Assert(port, Equals, uint16(80))
-	port, err = npm.GetNamedPort("dns", uint8(0))
-	c.Assert(err, IsNil)
-	c.Assert(port, Equals, uint16(53))
+	require.False(t, namedPortsChanged)
+	npm := s.IPIdentityCache.GetNamedPorts()
+	require.NotNil(t, npm)
+	require.Equal(t, 2, npm.Len())
+	port, err := npm.GetNamedPort("http", u8proto.TCP)
+	require.NoError(t, err)
+	require.Equal(t, uint16(80), port)
+	port, err = npm.GetNamedPort("dns", u8proto.ANY)
+	require.NoError(t, err)
+	require.Equal(t, uint16(53), port)
 
 	// No duplicates.
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.ipToHostIPCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.ipToK8sMetadata), Equals, 1)
+	require.Len(t, s.IPIdentityCache.ipToIdentityCache, 1)
+	require.Len(t, s.IPIdentityCache.identityToIPCache, 1)
+	require.Empty(t, s.IPIdentityCache.ipToHostIPCache)
+	require.Len(t, s.IPIdentityCache.ipToK8sMetadata, 1)
 
-	cachedIdentity, exists = IPIdentityCache.LookupByIP(endpointIP)
-	c.Assert(exists, Equals, true)
-	c.Assert(cachedIdentity.ID, Equals, identity)
-	c.Assert(cachedIdentity.Source, Equals, source.Kubernetes)
+	cachedIdentity, exists = s.IPIdentityCache.LookupByIP(endpointIP)
+	require.True(t, exists)
+	require.Equal(t, identity, cachedIdentity.ID)
+	require.Equal(t, source.Kubernetes, cachedIdentity.Source)
 
 	// 2nd identity
 	endpointIP2 := "10.0.0.16"
@@ -313,65 +307,65 @@ func (s *IPCacheTestSuite) TestIPCacheNamedPorts(c *C) {
 		Namespace: "testing",
 		PodName:   "app2",
 		NamedPorts: types.NamedPortMap{
-			"https": types.PortProto{Port: 443, Proto: uint8(u8proto.TCP)},
+			"https": types.PortProto{Port: 443, Proto: u8proto.TCP},
 			"dns":   types.PortProto{Port: 53},
 		},
 	}
 
-	namedPortsChanged, err = IPIdentityCache.Upsert(endpointIP2, nil, 0, &meta2, Identity{
+	namedPortsChanged, err = s.IPIdentityCache.Upsert(endpointIP2, nil, 0, &meta2, Identity{
 		ID:     identity2,
 		Source: source.Kubernetes,
 	})
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	// Assure both caches are updated..
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 2)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 2)
-	c.Assert(len(IPIdentityCache.ipToHostIPCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.ipToK8sMetadata), Equals, 2)
+	require.Len(t, s.IPIdentityCache.ipToIdentityCache, 2)
+	require.Len(t, s.IPIdentityCache.identityToIPCache, 2)
+	require.Empty(t, s.IPIdentityCache.ipToHostIPCache)
+	require.Len(t, s.IPIdentityCache.ipToK8sMetadata, 2)
 
-	cachedIdentity, exists = IPIdentityCache.LookupByIP(endpointIP2)
-	c.Assert(exists, Equals, true)
-	c.Assert(cachedIdentity.ID, Equals, identity2)
-	c.Assert(cachedIdentity.Source, Equals, source.Kubernetes)
+	cachedIdentity, exists = s.IPIdentityCache.LookupByIP(endpointIP2)
+	require.True(t, exists)
+	require.Equal(t, identity2, cachedIdentity.ID)
+	require.Equal(t, source.Kubernetes, cachedIdentity.Source)
 
 	// Named ports have been updated
-	c.Assert(namedPortsChanged, Equals, true)
-	npm = IPIdentityCache.GetNamedPorts()
-	c.Assert(npm, NotNil)
-	c.Assert(npm.Len(), Equals, 3)
-	port, err = npm.GetNamedPort("http", uint8(6))
-	c.Assert(err, IsNil)
-	c.Assert(port, Equals, uint16(80))
-	port, err = npm.GetNamedPort("dns", uint8(0))
-	c.Assert(err, IsNil)
-	c.Assert(port, Equals, uint16(53))
-	port, err = npm.GetNamedPort("https", uint8(6))
-	c.Assert(err, IsNil)
-	c.Assert(port, Equals, uint16(443))
+	require.True(t, namedPortsChanged)
+	npm = s.IPIdentityCache.GetNamedPorts()
+	require.NotNil(t, npm)
+	require.Equal(t, 3, npm.Len())
+	port, err = npm.GetNamedPort("http", u8proto.TCP)
+	require.NoError(t, err)
+	require.Equal(t, uint16(80), port)
+	port, err = npm.GetNamedPort("dns", u8proto.ANY)
+	require.NoError(t, err)
+	require.Equal(t, uint16(53), port)
+	port, err = npm.GetNamedPort("https", u8proto.TCP)
+	require.NoError(t, err)
+	require.Equal(t, uint16(443), port)
 
-	namedPortsChanged = IPIdentityCache.Delete(endpointIP, source.Kubernetes)
-	c.Assert(namedPortsChanged, Equals, true)
-	npm = IPIdentityCache.GetNamedPorts()
-	c.Assert(npm, NotNil)
-	c.Assert(npm.Len(), Equals, 2)
+	namedPortsChanged = s.IPIdentityCache.Delete(endpointIP, source.Kubernetes)
+	require.True(t, namedPortsChanged)
+	npm = s.IPIdentityCache.GetNamedPorts()
+	require.NotNil(t, npm)
+	require.Equal(t, 2, npm.Len())
 
-	port, err = npm.GetNamedPort("dns", uint8(0))
-	c.Assert(err, IsNil)
-	c.Assert(port, Equals, uint16(53))
-	port, err = npm.GetNamedPort("https", uint8(6))
-	c.Assert(err, IsNil)
-	c.Assert(port, Equals, uint16(443))
+	port, err = npm.GetNamedPort("dns", u8proto.ANY)
+	require.NoError(t, err)
+	require.Equal(t, uint16(53), port)
+	port, err = npm.GetNamedPort("https", u8proto.TCP)
+	require.NoError(t, err)
+	require.Equal(t, uint16(443), port)
 
 	// Assure deletion occurs across all mappings.
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.ipToHostIPCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.ipToK8sMetadata), Equals, 1)
+	require.Len(t, s.IPIdentityCache.ipToIdentityCache, 1)
+	require.Len(t, s.IPIdentityCache.identityToIPCache, 1)
+	require.Empty(t, s.IPIdentityCache.ipToHostIPCache)
+	require.Len(t, s.IPIdentityCache.ipToK8sMetadata, 1)
 
-	_, exists = IPIdentityCache.LookupByIP(endpointIP)
+	_, exists = s.IPIdentityCache.LookupByIP(endpointIP)
 
-	c.Assert(exists, Equals, false)
+	require.False(t, exists)
 
 	hostIP := net.ParseIP("192.168.1.10")
 	k8sMeta := &K8sMetadata{
@@ -379,136 +373,136 @@ func (s *IPCacheTestSuite) TestIPCacheNamedPorts(c *C) {
 		PodName:   "podname",
 	}
 
-	namedPortsChanged, err = IPIdentityCache.Upsert(endpointIP, hostIP, 0, k8sMeta, Identity{
+	namedPortsChanged, err = s.IPIdentityCache.Upsert(endpointIP, hostIP, 0, k8sMeta, Identity{
 		ID:     identity,
 		Source: source.KVStore,
 	})
-	c.Assert(err, IsNil)
-	c.Assert(namedPortsChanged, Equals, false)
+	require.NoError(t, err)
+	require.False(t, namedPortsChanged)
 
 	// Assure upsert occurs across all mappings.
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 2)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 2)
-	c.Assert(len(IPIdentityCache.ipToHostIPCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.ipToK8sMetadata), Equals, 2)
+	require.Len(t, s.IPIdentityCache.ipToIdentityCache, 2)
+	require.Len(t, s.IPIdentityCache.identityToIPCache, 2)
+	require.Len(t, s.IPIdentityCache.ipToHostIPCache, 1)
+	require.Len(t, s.IPIdentityCache.ipToK8sMetadata, 2)
 
-	cachedHostIP, _ := IPIdentityCache.getHostIPCache(endpointIP)
-	c.Assert(cachedHostIP, checker.DeepEquals, hostIP)
-	c.Assert(IPIdentityCache.GetK8sMetadata(netip.MustParseAddr(endpointIP)), checker.DeepEquals, k8sMeta)
+	cachedHostIP, _ := s.IPIdentityCache.getHostIPCacheRLocked(endpointIP)
+	require.Equal(t, hostIP, cachedHostIP)
+	require.Equal(t, k8sMeta, s.IPIdentityCache.GetK8sMetadata(netip.MustParseAddr(endpointIP)))
 
 	newIdentity := identityPkg.NumericIdentity(69)
-	namedPortsChanged, err = IPIdentityCache.Upsert(endpointIP, hostIP, 0, k8sMeta, Identity{
+	namedPortsChanged, err = s.IPIdentityCache.Upsert(endpointIP, hostIP, 0, k8sMeta, Identity{
 		ID:     newIdentity,
 		Source: source.KVStore,
 	})
-	c.Assert(err, IsNil)
-	c.Assert(namedPortsChanged, Equals, false)
+	require.NoError(t, err)
+	require.False(t, namedPortsChanged)
 
 	// Assure upsert occurs across all mappings.
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 2)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 2)
-	c.Assert(len(IPIdentityCache.ipToHostIPCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.ipToK8sMetadata), Equals, 2)
+	require.Len(t, s.IPIdentityCache.ipToIdentityCache, 2)
+	require.Len(t, s.IPIdentityCache.identityToIPCache, 2)
+	require.Len(t, s.IPIdentityCache.ipToHostIPCache, 1)
+	require.Len(t, s.IPIdentityCache.ipToK8sMetadata, 2)
 
 	// Ensure that update of cache with new identity doesn't keep old identity-to-ip
 	// mapping around.
-	ips := IPIdentityCache.LookupByIdentity(identity)
-	c.Assert(ips, IsNil)
+	ips := s.IPIdentityCache.LookupByIdentity(identity)
+	require.Nil(t, ips)
 
-	cachedIPs := IPIdentityCache.LookupByIdentity(newIdentity)
-	c.Assert(cachedIPs, Not(IsNil))
+	cachedIPs := s.IPIdentityCache.LookupByIdentity(newIdentity)
+	require.NotNil(t, cachedIPs)
 	for _, cachedIP := range cachedIPs {
-		c.Assert(cachedIP, Equals, endpointIP)
+		require.Equal(t, endpointIP, cachedIP)
 	}
 
-	namedPortsChanged = IPIdentityCache.Delete(endpointIP, source.KVStore)
+	namedPortsChanged = s.IPIdentityCache.Delete(endpointIP, source.KVStore)
 	// Deleted identity did not have any named ports, so no change
-	c.Assert(namedPortsChanged, Equals, false)
+	require.False(t, namedPortsChanged)
 
 	// Assure deletion occurs across both mappings.
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.ipToHostIPCache), Equals, 0)
-	c.Assert(len(IPIdentityCache.ipToK8sMetadata), Equals, 1)
+	require.Len(t, s.IPIdentityCache.ipToIdentityCache, 1)
+	require.Len(t, s.IPIdentityCache.identityToIPCache, 1)
+	require.Empty(t, s.IPIdentityCache.ipToHostIPCache)
+	require.Len(t, s.IPIdentityCache.ipToK8sMetadata, 1)
 
 	// Test mapping of multiple IPs to same identity.
 	endpointIPs := []string{"192.168.0.1", "20.3.75.3", "27.2.2.2", "127.0.0.1", "127.0.0.1"}
 	identities := []identityPkg.NumericIdentity{5, 67, 29, 29, 29}
 	k8sMeta.NamedPorts = types.NamedPortMap{
-		"http2": types.PortProto{Port: 8080, Proto: uint8(u8proto.TCP)},
+		"http2": types.PortProto{Port: 8080, Proto: u8proto.TCP},
 	}
 
 	for index := range endpointIPs {
 		k8sMeta.PodName = fmt.Sprintf("pod-%d", int(identities[index]))
-		namedPortsChanged, err = IPIdentityCache.Upsert(endpointIPs[index], nil, 0, k8sMeta, Identity{
+		namedPortsChanged, err = s.IPIdentityCache.Upsert(endpointIPs[index], nil, 0, k8sMeta, Identity{
 			ID:     identities[index],
 			Source: source.KVStore,
 		})
-		c.Assert(err, IsNil)
-		npm = IPIdentityCache.GetNamedPorts()
-		c.Assert(npm, NotNil)
-		port, err := npm.GetNamedPort("http2", uint8(6))
-		c.Assert(err, IsNil)
-		c.Assert(port, Equals, uint16(8080))
+		require.NoError(t, err)
+		npm = s.IPIdentityCache.GetNamedPorts()
+		require.NotNil(t, npm)
+		port, err := npm.GetNamedPort("http2", u8proto.TCP)
+		require.NoError(t, err)
+		require.Equal(t, uint16(8080), port)
 		// only the first changes named ports, as they are all the same
-		c.Assert(namedPortsChanged, Equals, index == 0)
-		cachedIdentity, _ := IPIdentityCache.LookupByIP(endpointIPs[index])
-		c.Assert(cachedIdentity.ID, Equals, identities[index])
+		require.Equal(t, index == 0, namedPortsChanged)
+		cachedIdentity, _ := s.IPIdentityCache.LookupByIP(endpointIPs[index])
+		require.Equal(t, identities[index], cachedIdentity.ID)
 	}
 
 	expectedIPList := []string{"127.0.0.1", "27.2.2.2"}
 
-	cachedEndpointIPs := IPIdentityCache.LookupByIdentity(29)
-	sort.Strings(cachedEndpointIPs)
-	c.Assert(cachedEndpointIPs, checker.DeepEquals, expectedIPList)
+	cachedEndpointIPs := s.IPIdentityCache.LookupByIdentity(29)
+	slices.Sort(cachedEndpointIPs)
+	require.Equal(t, expectedIPList, cachedEndpointIPs)
 
-	namedPortsChanged = IPIdentityCache.Delete("27.2.2.2", source.KVStore)
-	c.Assert(namedPortsChanged, Equals, false)
+	namedPortsChanged = s.IPIdentityCache.Delete("27.2.2.2", source.KVStore)
+	require.False(t, namedPortsChanged)
 
 	expectedIPList = []string{"127.0.0.1"}
 
-	cachedEndpointIPs = IPIdentityCache.LookupByIdentity(29)
-	c.Assert(cachedEndpointIPs, checker.DeepEquals, expectedIPList)
+	cachedEndpointIPs = s.IPIdentityCache.LookupByIdentity(29)
+	require.Equal(t, expectedIPList, cachedEndpointIPs)
 
-	cachedIdentity, exists = IPIdentityCache.LookupByIP("127.0.0.1")
-	c.Assert(exists, Equals, true)
-	c.Assert(cachedIdentity.ID, Equals, identityPkg.NumericIdentity(29))
+	cachedIdentity, exists = s.IPIdentityCache.LookupByIP("127.0.0.1")
+	require.True(t, exists)
+	require.Equal(t, identityPkg.NumericIdentity(29), cachedIdentity.ID)
 
-	cachedIdentity, exists = IPIdentityCache.LookupByPrefix("127.0.0.1/32")
-	c.Assert(exists, Equals, true)
-	c.Assert(cachedIdentity.ID, Equals, identityPkg.NumericIdentity(29))
+	cachedIdentity, exists = s.IPIdentityCache.LookupByPrefix("127.0.0.1/32")
+	require.True(t, exists)
+	require.Equal(t, identityPkg.NumericIdentity(29), cachedIdentity.ID)
 
-	IPIdentityCache.Delete("127.0.0.1", source.KVStore)
+	s.IPIdentityCache.Delete("127.0.0.1", source.KVStore)
 
-	ips = IPIdentityCache.LookupByIdentity(29)
-	c.Assert(ips, IsNil)
+	ips = s.IPIdentityCache.LookupByIdentity(29)
+	require.Nil(t, ips)
 
-	_, exists = IPIdentityCache.LookupByPrefix("127.0.0.1/32")
-	c.Assert(exists, Equals, false)
+	_, exists = s.IPIdentityCache.LookupByPrefix("127.0.0.1/32")
+	require.False(t, exists)
 
 	// Clean up.
 	for index := range endpointIPs {
-		namedPortsChanged = IPIdentityCache.Delete(endpointIPs[index], source.KVStore)
-		npm = IPIdentityCache.GetNamedPorts()
-		c.Assert(npm, NotNil)
-		log.Infof("Named ports after Delete %d: %v", index, npm)
+		namedPortsChanged = s.IPIdentityCache.Delete(endpointIPs[index], source.KVStore)
+		npm = s.IPIdentityCache.GetNamedPorts()
+		require.NotNil(t, npm)
+		t.Logf("Named ports after Delete %d: %v", index, npm)
 		// 2nd delete removes named port mapping, as remaining IPs have an already deleted ID (29)
-		c.Assert(namedPortsChanged, Equals, index == 1)
+		require.Equal(t, index == 1, namedPortsChanged)
 
-		_, exists = IPIdentityCache.LookupByIP(endpointIPs[index])
-		c.Assert(exists, Equals, false)
+		_, exists = s.IPIdentityCache.LookupByIP(endpointIPs[index])
+		require.False(t, exists)
 
-		ips = IPIdentityCache.LookupByIdentity(identities[index])
-		c.Assert(ips, IsNil)
+		ips = s.IPIdentityCache.LookupByIdentity(identities[index])
+		require.Nil(t, ips)
 	}
 
-	c.Assert(len(IPIdentityCache.ipToIdentityCache), Equals, 1)
-	c.Assert(len(IPIdentityCache.identityToIPCache), Equals, 1)
+	require.Len(t, s.IPIdentityCache.ipToIdentityCache, 1)
+	require.Len(t, s.IPIdentityCache.identityToIPCache, 1)
 
-	namedPortsChanged = IPIdentityCache.Delete(endpointIP2, source.Kubernetes)
-	c.Assert(namedPortsChanged, Equals, true)
-	npm = IPIdentityCache.GetNamedPorts()
-	c.Assert(npm.Len(), Equals, 0)
+	namedPortsChanged = s.IPIdentityCache.Delete(endpointIP2, source.Kubernetes)
+	require.True(t, namedPortsChanged)
+	npm = s.IPIdentityCache.GetNamedPorts()
+	require.Equal(t, 0, npm.Len())
 }
 
 func BenchmarkIPCacheUpsert10(b *testing.B) {
@@ -528,11 +522,12 @@ func BenchmarkIPCacheUpsert10000(b *testing.B) {
 }
 
 func benchmarkIPCacheUpsert(b *testing.B, num int) {
+	logger := hivetest.Logger(b)
 	meta := K8sMetadata{
 		Namespace: "default",
 		PodName:   "app",
 		NamedPorts: types.NamedPortMap{
-			"http": types.PortProto{Port: 80, Proto: uint8(u8proto.TCP)},
+			"http": types.PortProto{Port: 80, Proto: u8proto.TCP},
 			"dns":  types.PortProto{Port: 53},
 		},
 	}
@@ -547,23 +542,25 @@ func benchmarkIPCacheUpsert(b *testing.B, num int) {
 		nms[i] = strconv.Itoa(i)
 	}
 
-	b.StopTimer()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ctx, cancel := context.WithCancel(context.Background())
-		allocator := testidentity.NewMockIdentityAllocator(nil)
+	ipcs := make([]*IPCache, 0, b.N)
+	for range b.N {
 		ipcache := NewIPCache(&Configuration{
-			Context:           ctx,
-			IdentityAllocator: allocator,
-			PolicyHandler:     &mockUpdater{},
-			DatapathHandler:   &mockTriggerer{},
+			Context: b.Context(),
+			Logger:  logger,
+			//IdentityAllocator: allocator,
+			IdentityUpdater: &mockUpdater{},
 		})
+		ipcs = append(ipcs, ipcache)
+	}
 
-		// We only want to measure the calls to upsert.
-		b.StartTimer()
-		for j := 0; j < num; j++ {
+	i := 0
+	for b.Loop() {
+		ipc := ipcs[i]
+		i++
+
+		for j := range num {
 			meta.PodName = nms[j]
-			_, err := ipcache.Upsert(ips[j], nil, 0, &meta, Identity{
+			_, err := ipc.Upsert(ips[j], nil, 0, &meta, Identity{
 				ID:     identityPkg.NumericIdentity(j),
 				Source: source.Kubernetes,
 			})
@@ -571,11 +568,6 @@ func benchmarkIPCacheUpsert(b *testing.B, num int) {
 				b.Fatalf("failed to upsert: %v", err)
 			}
 		}
-		b.StopTimer()
-
-		// Clean up after ourselves, so that the individual runs are comparable.
-		cancel()
-		ipcache.Shutdown()
 	}
 }
 
@@ -592,7 +584,7 @@ func newDummyListener(ipc *IPCache) *dummyListener {
 
 func (dl *dummyListener) OnIPIdentityCacheChange(modType CacheModification,
 	cidrCluster cmtypes.PrefixCluster, oldHostIP, newHostIP net.IP, oldID *Identity,
-	newID Identity, encryptKey uint8, k8sMeta *K8sMetadata) {
+	newID Identity, encryptKey uint8, k8sMeta *K8sMetadata, endpointFlags uint8) {
 
 	switch modType {
 	case Upsert:
@@ -602,31 +594,33 @@ func (dl *dummyListener) OnIPIdentityCacheChange(modType CacheModification,
 	}
 }
 
-func (dl *dummyListener) ExpectMapping(c *C, targetIP string, targetIdentity identityPkg.NumericIdentity) {
+func (dl *dummyListener) ExpectMapping(t *testing.T, targetIP string, targetIdentity identityPkg.NumericIdentity) {
 	// Identity lookup directly shows the expected mapping
 	identity, exists := dl.ipc.LookupByPrefix(targetIP)
-	c.Assert(exists, Equals, true)
-	c.Assert(identity.ID, Equals, targetIdentity)
+	require.True(t, exists)
+	require.Equal(t, targetIdentity, identity.ID)
 
 	// Dump reliably supplies the IP once and only the pod identity.
 	dl.entries = make(map[string]identityPkg.NumericIdentity)
-	dl.ipc.DumpToListenerLocked(dl)
-	c.Assert(dl.entries, checker.DeepEquals,
-		map[string]identityPkg.NumericIdentity{
-			targetIP: targetIdentity,
-		})
+	dl.ipc.dumpToListenerLocked(dl)
+	require.Equal(t, map[string]identityPkg.NumericIdentity{
+		targetIP: targetIdentity,
+	}, dl.entries)
 }
 
-func (s *IPCacheTestSuite) TestIPCacheShadowing(c *C) {
+func TestIPCacheShadowing(t *testing.T) {
+	t.Parallel()
+	s := setupIPCacheTestSuite(t)
+
 	endpointIP := "10.0.0.15"
 	cidrOverlap := "10.0.0.15/32"
-	epIdentity := (identityPkg.NumericIdentity(68))
-	cidrIdentity := (identityPkg.NumericIdentity(202))
-	ipc := IPIdentityCache
+	epIdentity := identityPkg.NumericIdentity(68)
+	cidrIdentity := identityPkg.NumericIdentity(202)
+	ipc := s.IPIdentityCache
 
 	// Assure sane state at start.
-	c.Assert(ipc.ipToIdentityCache, checker.DeepEquals, map[string]Identity{})
-	c.Assert(ipc.identityToIPCache, checker.DeepEquals, map[identityPkg.NumericIdentity]map[string]struct{}{})
+	require.Equal(t, map[string]Identity{}, ipc.ipToIdentityCache)
+	require.Equal(t, map[identityPkg.NumericIdentity]map[string]struct{}{}, ipc.identityToIPCache)
 
 	// Upsert overlapping identities for the IP. Pod identity takes precedence.
 	ipc.Upsert(endpointIP, nil, 0, nil, Identity{
@@ -638,25 +632,25 @@ func (s *IPCacheTestSuite) TestIPCacheShadowing(c *C) {
 		Source: source.Generated,
 	})
 	ipcache := newDummyListener(ipc)
-	ipcache.ExpectMapping(c, cidrOverlap, epIdentity)
+	ipcache.ExpectMapping(t, cidrOverlap, epIdentity)
 
 	// Deleting pod identity shows that cidr identity is now used.
 	ipc.Delete(endpointIP, source.KVStore)
-	ipcache.ExpectMapping(c, cidrOverlap, cidrIdentity)
+	ipcache.ExpectMapping(t, cidrOverlap, cidrIdentity)
 
 	// Reinsert of pod IP should shadow the CIDR identity again.
 	ipc.Upsert(endpointIP, nil, 0, nil, Identity{
 		ID:     epIdentity,
 		Source: source.KVStore,
 	})
-	ipcache.ExpectMapping(c, cidrOverlap, epIdentity)
+	ipcache.ExpectMapping(t, cidrOverlap, epIdentity)
 
 	// Deletion of the shadowed identity should not change the output.
 	ipc.Delete(cidrOverlap, source.Generated)
-	ipcache.ExpectMapping(c, cidrOverlap, epIdentity)
+	ipcache.ExpectMapping(t, cidrOverlap, epIdentity)
 
 	// Clean up
 	ipc.Delete(endpointIP, source.KVStore)
 	_, exists := ipc.LookupByPrefix(cidrOverlap)
-	c.Assert(exists, Equals, false)
+	require.False(t, exists)
 }

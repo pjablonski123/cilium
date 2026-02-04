@@ -10,37 +10,50 @@ import (
 	"testing"
 	"time"
 
-	"go.uber.org/goleak"
+	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/hivetest"
+	"github.com/go-openapi/runtime/middleware"
 
 	operatorApi "github.com/cilium/cilium/api/v1/operator/server"
+	clrestapi "github.com/cilium/cilium/api/v1/operator/server/restapi/cluster"
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/hive/cell"
-	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	k8sClient "github.com/cilium/cilium/pkg/k8s/client/testutils"
+	"github.com/cilium/cilium/pkg/kvstore"
+	ciliumMetrics "github.com/cilium/cilium/pkg/metrics"
+	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
 func TestAPIServerK8sDisabled(t *testing.T) {
-	defer goleak.VerifyNone(
+	defer testutils.GoleakVerifyNone(
 		t,
 		// ignore goroutine started from sigs.k8s.io/controller-runtime/pkg/log.go init function
-		goleak.IgnoreTopFunction("time.Sleep"),
+		testutils.GoleakIgnoreTopFunction("time.Sleep"),
 	)
 
 	var testSrv Server
 
 	hive := hive.New(
-		k8sClient.FakeClientCell,
+		cell.Provide(ciliumMetrics.NewRegistry),
+		cell.Provide(func() (*option.DaemonConfig, ciliumMetrics.RegistryConfig) {
+			return option.Config, ciliumMetrics.RegistryConfig{}
+		}),
+		k8sClient.FakeClientCell(),
 		cell.Invoke(func(cs *k8sClient.FakeClientset) {
 			cs.Disable()
 		}),
+
+		kvstore.Cell(kvstore.DisabledBackendName),
+
 		MetricsHandlerCell,
 		HealthHandlerCell(
-			func() bool {
-				return false
-			},
 			func() bool {
 				return true
 			},
 		),
+		cell.Provide(func() clrestapi.GetClusterHandler {
+			return clrestapi.GetClusterHandlerFunc(clustersHandlerMock)
+		}),
 		cell.Provide(func() Config {
 			return Config{
 				OperatorAPIServeAddr: "localhost:0",
@@ -55,7 +68,8 @@ func TestAPIServerK8sDisabled(t *testing.T) {
 		}),
 	)
 
-	if err := hive.Start(context.Background()); err != nil {
+	tlog := hivetest.Logger(t)
+	if err := hive.Start(tlog, t.Context()); err != nil {
 		t.Fatalf("failed to start: %s", err)
 	}
 
@@ -73,32 +87,41 @@ func TestAPIServerK8sDisabled(t *testing.T) {
 	if err := testEndpoint(t, port, "/healthz", http.StatusNotImplemented); err != nil {
 		t.Fatalf("failed to query endpoint: %s", err)
 	}
+	if err := testEndpoint(t, port, "/v1/cluster", http.StatusOK); err != nil {
+		t.Fatalf("failed to query endpoint: %s", err)
+	}
 
-	if err := hive.Stop(context.Background()); err != nil {
+	if err := hive.Stop(tlog, t.Context()); err != nil {
 		t.Fatalf("failed to stop: %s", err)
 	}
 }
 
 func TestAPIServerK8sEnabled(t *testing.T) {
-	defer goleak.VerifyNone(
+	defer testutils.GoleakVerifyNone(
 		t,
 		// ignore goroutine started from sigs.k8s.io/controller-runtime/pkg/log.go init function
-		goleak.IgnoreTopFunction("time.Sleep"),
+		testutils.GoleakIgnoreTopFunction("time.Sleep"),
 	)
 
 	var testSrv Server
 
 	hive := hive.New(
-		k8sClient.FakeClientCell,
+		cell.Provide(ciliumMetrics.NewRegistry),
+		cell.Provide(func() (*option.DaemonConfig, ciliumMetrics.RegistryConfig) {
+			return option.Config, ciliumMetrics.RegistryConfig{}
+		}),
+		k8sClient.FakeClientCell(),
+		kvstore.Cell(kvstore.DisabledBackendName),
+
 		MetricsHandlerCell,
 		HealthHandlerCell(
-			func() bool {
-				return false
-			},
 			func() bool {
 				return true
 			},
 		),
+		cell.Provide(func() clrestapi.GetClusterHandler {
+			return clrestapi.GetClusterHandlerFunc(clustersHandlerMock)
+		}),
 		cell.Provide(func() Config {
 			return Config{
 				OperatorAPIServeAddr: "localhost:0",
@@ -113,7 +136,8 @@ func TestAPIServerK8sEnabled(t *testing.T) {
 		}),
 	)
 
-	if err := hive.Start(context.Background()); err != nil {
+	tlog := hivetest.Logger(t)
+	if err := hive.Start(tlog, t.Context()); err != nil {
 		t.Fatalf("failed to start: %s", err)
 	}
 
@@ -131,14 +155,17 @@ func TestAPIServerK8sEnabled(t *testing.T) {
 	if err := testEndpoint(t, port, "/healthz", http.StatusOK); err != nil {
 		t.Fatalf("failed to query endpoint: %s", err)
 	}
+	if err := testEndpoint(t, port, "/v1/cluster", http.StatusOK); err != nil {
+		t.Fatalf("failed to query endpoint: %s", err)
+	}
 
-	if err := hive.Stop(context.Background()); err != nil {
+	if err := hive.Stop(tlog, t.Context()); err != nil {
 		t.Fatalf("failed to stop: %s", err)
 	}
 }
 
 func testEndpoint(t *testing.T, port int, path string, statusCode int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(
@@ -148,12 +175,12 @@ func testEndpoint(t *testing.T, port int, path string, statusCode int) error {
 		nil,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create http request: %s", err)
+		return fmt.Errorf("failed to create http request: %w", err)
 	}
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("http request for %s failed: %s", path, err)
+		return fmt.Errorf("http request for %s failed: %w", path, err)
 	}
 	defer res.Body.Close()
 
@@ -162,4 +189,8 @@ func testEndpoint(t *testing.T, port int, path string, statusCode int) error {
 	}
 
 	return nil
+}
+
+func clustersHandlerMock(params clrestapi.GetClusterParams) middleware.Responder {
+	return clrestapi.NewGetClusterOK()
 }

@@ -7,25 +7,35 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/cilium/hive/cell"
+	"github.com/cilium/statedb"
+	"go4.org/netipx"
 	"golang.org/x/sys/unix"
 
-	"github.com/cilium/cilium/pkg/datapath/iptables"
-	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
+	"github.com/cilium/cilium/pkg/datapath"
+	fakeTypes "github.com/cilium/cilium/pkg/datapath/fake/types"
+	"github.com/cilium/cilium/pkg/datapath/gneigh"
+	"github.com/cilium/cilium/pkg/datapath/iptables/ipset"
+	"github.com/cilium/cilium/pkg/datapath/link"
 	"github.com/cilium/cilium/pkg/datapath/linux/bigtcp"
+	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
+	"github.com/cilium/cilium/pkg/datapath/loader"
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/datapath/types"
-	"github.com/cilium/cilium/pkg/hive/cell"
-	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/maps/authmap"
-	"github.com/cilium/cilium/pkg/maps/egressmap"
-	"github.com/cilium/cilium/pkg/maps/signalmap"
-	"github.com/cilium/cilium/pkg/mtu"
-	"github.com/cilium/cilium/pkg/statedb"
-	"github.com/cilium/cilium/pkg/time"
-
 	fakeauthmap "github.com/cilium/cilium/pkg/maps/authmap/fake"
+	"github.com/cilium/cilium/pkg/maps/egressmap"
+	"github.com/cilium/cilium/pkg/maps/encrypt"
+	fakeencryptmap "github.com/cilium/cilium/pkg/maps/encrypt/fake"
+	"github.com/cilium/cilium/pkg/maps/lxcmap"
+	"github.com/cilium/cilium/pkg/maps/nat"
+	"github.com/cilium/cilium/pkg/maps/signalmap"
 	fakesignalmap "github.com/cilium/cilium/pkg/maps/signalmap/fake"
+	"github.com/cilium/cilium/pkg/mtu"
+	"github.com/cilium/cilium/pkg/node/manager"
+	"github.com/cilium/cilium/pkg/time"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 // Cell provides a fake version of the datapath cell.
@@ -36,36 +46,51 @@ var Cell = cell.Module(
 	"Fake Datapath",
 
 	cell.Provide(
-		func(na types.NodeAddressing) (*FakeDatapath, types.Datapath, types.NodeIDHandler) {
-			dp := newDatapath(na)
-			return dp, dp, dp.NodeIDs()
+		func(lifecycle cell.Lifecycle, na types.NodeAddressing, nodeManager manager.NodeManager) (types.NodeIDHandler, types.NodeHandler, *fakeTypes.FakeNodeHandler) {
+			fakeNodeHandler := fakeTypes.NewNodeHandler()
+			nodeManager.Subscribe(fakeNodeHandler)
+			return fakeNodeHandler, fakeNodeHandler, fakeNodeHandler
 		},
-
 		func() signalmap.Map { return fakesignalmap.NewFakeSignalMap([][]byte{}, time.Second) },
 		func() authmap.Map { return fakeauthmap.NewFakeAuthMap() },
-		func() egressmap.PolicyMap { return nil },
+		func() encrypt.EncryptMap { return fakeencryptmap.NewFakeEncryptMap() },
+		func() *egressmap.PolicyMap4 { return nil },
+		func() *egressmap.PolicyMap6 { return nil },
+		func() lxcmap.Map { return nil },
 		func() *bigtcp.Configuration { return &bigtcp.Configuration{} },
-		func() *iptables.Manager { return &iptables.Manager{} },
-		func() bandwidth.Manager { return &BandwidthManager{} },
-		func() types.IPsecKeyCustodian { return &ipsecKeyCustodian{} },
-		func() mtu.MTU { return &MTU{} },
+		func() types.IptablesManager { return &fakeTypes.FakeIptablesManager{} },
+		func() ipset.Manager { return &fakeTypes.IPSet{} },
+		func() types.BandwidthManager { return &fakeTypes.BandwidthManager{} },
+		func() types.IPsecAgent { return &fakeTypes.IPsecAgent{} },
+		func() types.IPsecConfig { return &fakeTypes.IPsecConfig{} },
+		func() mtu.MTU { return &fakeTypes.MTU{} },
+		func() wgTypes.WireguardAgent { return &fakeTypes.WireguardAgent{} },
+		func() wgTypes.WireguardConfig { return &fakeTypes.WireguardConfig{} },
+		func() types.Loader { return &fakeTypes.FakeLoader{} },
+		func() types.Orchestrator { return &fakeTypes.FakeOrchestrator{} },
+		loader.NewCompilationLock,
+		func() sysctl.Sysctl { return &Sysctl{} },
+		func() (nat.NatMap4, nat.NatMap6) {
+			return nil, nil
+		},
 
 		tables.NewDeviceTable,
 		tables.NewL2AnnounceTable, statedb.RWTable[*tables.L2AnnounceEntry].ToTable,
 		tables.NewRouteTable, statedb.RWTable[*tables.Route].ToTable,
+
+		func() types.BigTCPConfig { return &fakeTypes.BigTCPUserConfig{} },
+
+		func() gneigh.L2PodAnnouncementConfig { return &fakeTypes.GNeighConfig{} },
+		func() types.ConnectorConfig { return fakeTypes.NewFakeConnectorVeth() },
 	),
 
 	tables.NodeAddressCell,
-	tables.NodeAddressingCell,
-
-	cell.Invoke(
-		statedb.RegisterTable[*tables.Device],
-		statedb.RegisterTable[*tables.L2AnnounceEntry],
-		statedb.RegisterTable[*tables.Route],
-	),
+	datapath.NodeAddressingCell,
+	tables.DirectRoutingDeviceCell,
 
 	tunnel.Cell,
 	cell.Provide(fakeDevices),
+	link.Cell,
 )
 
 func fakeDevices(db *statedb.DB, devices statedb.RWTable[*tables.Device]) statedb.Table[*tables.Device] {
@@ -79,8 +104,8 @@ func fakeDevices(db *statedb.DB, devices statedb.RWTable[*tables.Device]) stated
 		HardwareAddr: []byte{1, 2, 3, 4, 5, 6},
 		Flags:        net.FlagUp,
 		Addrs: []tables.DeviceAddress{
-			{Addr: ip.MustAddrFromIP(IPv4NodePortAddress), Scope: unix.RT_SCOPE_UNIVERSE},
-			{Addr: ip.MustAddrFromIP(IPv6NodePortAddress), Scope: unix.RT_SCOPE_UNIVERSE},
+			{Addr: netipx.MustFromStdIP(fakeTypes.IPv4NodePortAddress), Scope: unix.RT_SCOPE_UNIVERSE},
+			{Addr: netipx.MustFromStdIP(fakeTypes.IPv6NodePortAddress), Scope: unix.RT_SCOPE_UNIVERSE},
 		},
 		Type:     "test",
 		Selected: true,
@@ -93,8 +118,8 @@ func fakeDevices(db *statedb.DB, devices statedb.RWTable[*tables.Device]) stated
 		HardwareAddr: []byte{2, 3, 4, 5, 6, 7},
 		Flags:        net.FlagUp,
 		Addrs: []tables.DeviceAddress{
-			{Addr: ip.MustAddrFromIP(IPv4InternalAddress), Scope: unix.RT_SCOPE_UNIVERSE},
-			{Addr: ip.MustAddrFromIP(IPv6InternalAddress), Scope: unix.RT_SCOPE_UNIVERSE},
+			{Addr: netipx.MustFromStdIP(fakeTypes.IPv4InternalAddress), Scope: unix.RT_SCOPE_UNIVERSE},
+			{Addr: netipx.MustFromStdIP(fakeTypes.IPv6InternalAddress), Scope: unix.RT_SCOPE_UNIVERSE},
 
 			{Addr: netip.MustParseAddr("10.0.0.4"), Scope: unix.RT_SCOPE_UNIVERSE, Secondary: true},
 			{Addr: netip.MustParseAddr("f00d::3"), Scope: unix.RT_SCOPE_UNIVERSE, Secondary: true},

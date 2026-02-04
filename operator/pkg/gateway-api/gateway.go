@@ -5,12 +5,18 @@ package gateway_api
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"maps"
+	"slices"
 
-	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -20,13 +26,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+	mcsapiv1alpha1 "sigs.k8s.io/mcs-api/pkg/apis/v1alpha1"
 
 	"github.com/cilium/cilium/operator/pkg/gateway-api/helpers"
+	"github.com/cilium/cilium/operator/pkg/gateway-api/indexers"
+	"github.com/cilium/cilium/operator/pkg/model/translation"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 const (
+	// Deprecated: owningGatewayLabel will be removed later in favour of gatewayNameLabel
 	owningGatewayLabel = "io.cilium.gateway/owning-gateway"
 
 	lastTransitionTime = "LastTransitionTime"
@@ -35,49 +46,105 @@ const (
 // gatewayReconciler reconciles a Gateway object
 type gatewayReconciler struct {
 	client.Client
-	Scheme             *runtime.Scheme
-	SecretsNamespace   string
-	IdleTimeoutSeconds int
+	Scheme     *runtime.Scheme
+	translator translation.Translator
+
+	logger        *slog.Logger
+	installedCRDs []schema.GroupVersionKind
 }
 
-func newGatewayReconciler(mgr ctrl.Manager, secretsNamespace string, idleTimeoutSeconds int) *gatewayReconciler {
+func newGatewayReconciler(mgr ctrl.Manager, translator translation.Translator, logger *slog.Logger, installedCRDs []schema.GroupVersionKind) *gatewayReconciler {
+	scopedLog := logger.With(logfields.Controller, gateway)
+
 	return &gatewayReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		SecretsNamespace:   secretsNamespace,
-		IdleTimeoutSeconds: idleTimeoutSeconds,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		translator:    translator,
+		logger:        scopedLog,
+		installedCRDs: installedCRDs,
 	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
 // The reconciler will be triggered by Gateway, or any cilium-managed GatewayClass events
 func (r *gatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	hasMatchingControllerFn := hasMatchingController(context.Background(), r.Client, controllerName)
-	return ctrl.NewControllerManagedBy(mgr).
+	// Determine which optional CRDs are enabled
+	var tlsRouteEnabled, serviceImportEnabled bool
+
+	for _, gvk := range r.installedCRDs {
+		switch gvk.Kind {
+		case helpers.TLSRouteKind:
+			tlsRouteEnabled = true
+		case helpers.ServiceImportKind:
+			serviceImportEnabled = true
+		}
+	}
+
+	// Add field indexes for HTTPRoutes
+	for indexName, indexerFunc := range map[string]client.IndexerFunc{
+		indexers.BackendServiceHTTPRouteIndex: indexers.GenerateIndexerHTTPRouteByBackendService(r.Client, r.logger),
+		indexers.GatewayHTTPRouteIndex:        indexers.IndexHTTPRouteByGateway,
+	} {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &gatewayv1.HTTPRoute{}, indexName, indexerFunc); err != nil {
+			return fmt.Errorf("failed to setup field indexer %q: %w", indexName, err)
+		}
+	}
+
+	// Only index HTTPRoute by ServiceImport if ServiceImport is enabled
+	if serviceImportEnabled {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &gatewayv1.HTTPRoute{}, indexers.BackendServiceImportHTTPRouteIndex, indexers.IndexHTTPRouteByBackendServiceImport); err != nil {
+			return fmt.Errorf("failed to setup field indexer %q: %w", indexers.BackendServiceImportHTTPRouteIndex, err)
+		}
+	}
+
+	// Index Gateways by implementation (ie `cilium`)
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &gatewayv1.Gateway{}, indexers.ImplementationGatewayIndex, indexers.GenerateIndexerGatewayByImplementation(r.Client, controllerName)); err != nil {
+		return fmt.Errorf("failed to setup field indexer %q: %w", indexers.ImplementationGatewayIndex, err)
+	}
+
+	// Add indexes for TLSRoutes
+	if tlsRouteEnabled {
+		for indexName, indexerFunc := range map[string]client.IndexerFunc{
+			indexers.BackendServiceTLSRouteIndex: indexers.GenerateIndexerTLSRoutebyBackendService(r.Client, r.logger),
+			indexers.GatewayTLSRouteIndex:        indexers.IndexTLSRouteByGateway,
+		} {
+			if err := mgr.GetFieldIndexer().IndexField(context.Background(), &gatewayv1alpha2.TLSRoute{}, indexName, indexerFunc); err != nil {
+				return fmt.Errorf("failed to setup field indexer %q: %w", indexName, err)
+			}
+		}
+	}
+
+	// Add field indexes for GRPCRoutes
+	for indexName, indexerFunc := range map[string]client.IndexerFunc{
+		indexers.BackendServiceGRPCRouteIndex: indexers.GenerateIndexerGRPCRoutebyBackendService(r.Client, r.logger),
+		indexers.GatewayGRPCRouteIndex:        indexers.IndexGRPCRouteByGateway,
+	} {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &gatewayv1.GRPCRoute{}, indexName, indexerFunc); err != nil {
+			return fmt.Errorf("failed to setup field indexer %q: %w", indexName, err)
+		}
+	}
+
+	// IndexBackendTLSPolicies by referenced ConfigMaps
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &gatewayv1.BackendTLSPolicy{}, indexers.BackendTLSPolicyConfigMapIndex, indexers.IndexBTLSPolicyByConfigMap); err != nil {
+		return fmt.Errorf("failed to setup field indexer %q: %w", indexers.BackendTLSPolicyConfigMapIndex, err)
+	}
+
+	hasMatchingControllerFn := hasMatchingController(context.Background(), r.Client, controllerName, r.logger)
+	gatewayBuilder := ctrl.NewControllerManagedBy(mgr).
 		// Watch its own resource
 		For(&gatewayv1.Gateway{},
 			builder.WithPredicates(predicate.NewPredicateFuncs(hasMatchingControllerFn))).
 		// Watch GatewayClass resources, which are linked to Gateway
 		Watches(&gatewayv1.GatewayClass{},
 			r.enqueueRequestForOwningGatewayClass(),
-			builder.WithPredicates(predicate.NewPredicateFuncs(hasMatchingControllerFn))).
-		// Watch related LB service for status
-		Watches(&corev1.Service{},
-			r.enqueueRequestForOwningResource(),
-			builder.WithPredicates(predicate.NewPredicateFuncs(func(object client.Object) bool {
-				_, found := object.GetLabels()[owningGatewayLabel]
-				return found
-			}))).
-		// Watch HTTP Route status changes, there is one assumption that any change in spec will
-		// always update status always at least for observedGeneration value.
-		Watches(&gatewayv1.HTTPRoute{},
-			r.enqueueRequestForOwningHTTPRoute(),
-			builder.WithPredicates(onlyStatusChanged())).
-		// Watch TLS Route status changes, there is one assumption that any change in spec will
-		// always update status always at least for observedGeneration value.
-		Watches(&gatewayv1alpha2.TLSRoute{},
-			r.enqueueRequestForOwningTLSRoute(),
-			builder.WithPredicates(onlyStatusChanged())).
+			builder.WithPredicates(predicate.NewPredicateFuncs(matchesControllerName(controllerName)))).
+		// Watch related backend Service for status
+		// LB Services are handled by the Owns call later.
+		Watches(&corev1.Service{}, r.enqueueRequestForBackendService()).
+		// Watch HTTPRoute linked to Gateway
+		Watches(&gatewayv1.HTTPRoute{}, r.enqueueRequestForOwningHTTPRoute(r.logger)).
+		// Watch GRPCRoute linked to Gateway
+		Watches(&gatewayv1.GRPCRoute{}, r.enqueueRequestForOwningGRPCRoute()).
 		// Watch related secrets used to configure TLS
 		Watches(&corev1.Secret{},
 			r.enqueueRequestForTLSSecret(),
@@ -85,25 +152,40 @@ func (r *gatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Watch related namespace in allowed namespaces
 		Watches(&corev1.Namespace{},
 			r.enqueueRequestForAllowedNamespace()).
+		// Watch for changes to Reference Grants
+		Watches(&gatewayv1beta1.ReferenceGrant{}, r.enqueueRequestForReferenceGrant()).
+		// Watch for changes to BackendTLSPolicy
+		Watches(&gatewayv1.BackendTLSPolicy{}, r.enqueueRequestForBackendTLSPolicy()).
+		Watches(&corev1.ConfigMap{}, r.enqueueRequestForBackendTLSPolicyConfigMap()).
 		// Watch created and owned resources
 		Owns(&ciliumv2.CiliumEnvoyConfig{}).
 		Owns(&corev1.Service{}).
-		Owns(&corev1.Endpoints{}).
-		Complete(r)
+		Owns(&discoveryv1.EndpointSlice{})
+
+	if tlsRouteEnabled {
+		// Watch TLSRoute linked to Gateway
+		gatewayBuilder = gatewayBuilder.Watches(&gatewayv1alpha2.TLSRoute{}, r.enqueueRequestForOwningTLSRoute(r.logger))
+	}
+
+	if serviceImportEnabled {
+		// Watch for changes to Backend Service Imports
+		gatewayBuilder = gatewayBuilder.Watches(&mcsapiv1alpha1.ServiceImport{}, r.enqueueRequestForBackendServiceImport())
+	}
+
+	return gatewayBuilder.Complete(r)
 }
 
-// enqueueRequestForOwningGatewayClass returns an event handler for all Gateway objects
-// belonging to the given GatewayClass.
+// enqueueRequestForOwningGatewayClass returns an event handler that, when given a GatewayClass,
+// returns reconcile.Requests for all Gateway objects belonging to the given GatewayClass.
 func (r *gatewayReconciler) enqueueRequestForOwningGatewayClass() handler.EventHandler {
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
-		scopedLog := log.WithFields(logrus.Fields{
-			logfields.Controller: gateway,
-			logfields.Resource:   a.GetName(),
-		})
+		scopedLog := r.logger.With(
+			logfields.Resource, client.ObjectKeyFromObject(a).String(),
+		)
 		var reqs []reconcile.Request
 		gwList := &gatewayv1.GatewayList{}
 		if err := r.Client.List(ctx, gwList); err != nil {
-			scopedLog.Error("Unable to list Gateways")
+			scopedLog.ErrorContext(ctx, "Unable to list Gateways")
 			return nil
 		}
 
@@ -118,82 +200,394 @@ func (r *gatewayReconciler) enqueueRequestForOwningGatewayClass() handler.EventH
 				},
 			}
 			reqs = append(reqs, req)
-			scopedLog.WithFields(logrus.Fields{
-				logfields.K8sNamespace: gw.GetNamespace(),
-				logfields.Resource:     gw.GetName(),
-			}).Info("Queueing gateway")
+			scopedLog.InfoContext(ctx,
+				"Queueing gateway",
+				logfields.K8sNamespace, gw.GetNamespace(),
+				gateway, gw.GetName(),
+			)
 		}
 		return reqs
 	})
 }
 
-// enqueueRequestForOwningResource returns an event handler for all Gateway objects having
-// owningGatewayLabel
-func (r *gatewayReconciler) enqueueRequestForOwningResource() handler.EventHandler {
-	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
-		scopedLog := log.WithFields(logrus.Fields{
-			logfields.Controller: "gateway",
-			logfields.Resource:   a.GetName(),
-		})
-
-		key, found := a.GetLabels()[owningGatewayLabel]
-		if !found {
-			return nil
-		}
-
-		scopedLog.WithFields(logrus.Fields{
-			logfields.K8sNamespace: a.GetNamespace(),
-			logfields.Resource:     a.GetName(),
-			"gateway":              key,
-		}).Info("Enqueued gateway for owning service")
-
-		return []reconcile.Request{
-			{
-				NamespacedName: types.NamespacedName{
-					Namespace: a.GetNamespace(),
-					Name:      key,
-				},
-			},
-		}
-	})
-}
-
-// enqueueRequestForOwningHTTPRoute returns an event handler for any changes with HTTP Routes
-// belonging to the given Gateway
-func (r *gatewayReconciler) enqueueRequestForOwningHTTPRoute() handler.EventHandler {
+// enqueueRequestForOwningHTTPRoute returns an event handler that, when passed a HTTPRoute, returns reconcile.Requests
+// for all Cilium-relevant Gateways associated with that HTTPRoute.
+func (r *gatewayReconciler) enqueueRequestForOwningHTTPRoute(logger *slog.Logger) handler.EventHandler {
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
 		hr, ok := a.(*gatewayv1.HTTPRoute)
 		if !ok {
 			return nil
 		}
 
-		return getReconcileRequestsForRoute(context.Background(), r.Client, a, hr.Spec.CommonRouteSpec)
+		return getGatewayReconcileRequestsForRoute(context.Background(), r.Client, a, hr.Spec.CommonRouteSpec, logger)
 	})
 }
 
-// enqueueRequestForOwningTLSRoute returns an event handler for any changes with TLS Routes
-// belonging to the given Gateway
-func (r *gatewayReconciler) enqueueRequestForOwningTLSRoute() handler.EventHandler {
+// enqueueRequestForOwningTLSRoute returns an event handler that, when passed a TLSRoute, returns reconcile.Requests
+// for all Cilium-relevant Gateways associated with that TLSRoute.
+func (r *gatewayReconciler) enqueueRequestForOwningTLSRoute(logger *slog.Logger) handler.EventHandler {
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
 		hr, ok := a.(*gatewayv1alpha2.TLSRoute)
 		if !ok {
 			return nil
 		}
 
-		return getReconcileRequestsForRoute(context.Background(), r.Client, a, hr.Spec.CommonRouteSpec)
+		return getGatewayReconcileRequestsForRoute(context.Background(), r.Client, a, hr.Spec.CommonRouteSpec, logger)
 	})
 }
 
-func getReconcileRequestsForRoute(ctx context.Context, c client.Client, object metav1.Object, route gatewayv1.CommonRouteSpec) []reconcile.Request {
+// enqueueRequestForOwningGRPCRoute returns an event handler that, when passed a GRPCRoute, returns reconcile.Requests
+// for any Cilium-relevant Gateways associated with that GRPCRoute.
+func (r *gatewayReconciler) enqueueRequestForOwningGRPCRoute() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
+		gr, ok := a.(*gatewayv1.GRPCRoute)
+		if !ok {
+			return nil
+		}
+
+		return getGatewayReconcileRequestsForRoute(ctx, r.Client, a, gr.Spec.CommonRouteSpec, r.logger)
+	})
+}
+
+// enqueueRequestForBackendService returns an event handler that, when passed a Service, returns reconcile.Requests
+// for all Cilium-relevant Gateways where that Service is used as a backend for a HTTPRoute that is attached to that Gateway.
+func (r *gatewayReconciler) enqueueRequestForBackendService() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+		_, ok := o.(*corev1.Service)
+		if !ok {
+			return nil
+		}
+
+		scopedLog := r.logger.With(logfields.LogSubsys, "queue-gw-from-backend-svc")
+
+		// Make a set to hold all reconcile requests
+		reconcileRequests := make(map[reconcile.Request]struct{})
+
+		// Then, fetch all HTTPRoutes that reference this service, using the backendServiceIndex
+		hrList := &gatewayv1.HTTPRouteList{}
+
+		if err := r.Client.List(ctx, hrList, &client.ListOptions{
+			FieldSelector: fields.OneTermEqualSelector(indexers.BackendServiceHTTPRouteIndex, client.ObjectKeyFromObject(o).String()),
+		}); err != nil {
+			scopedLog.ErrorContext(ctx, "Failed to get related HTTPRoutes", logfields.Error, err)
+			return []reconcile.Request{}
+		}
+
+		// Then, fetch all TLSRoutes that reference this service, using the backendServiceIndex
+		tlsrList := &gatewayv1alpha2.TLSRouteList{}
+
+		if err := r.Client.List(ctx, tlsrList, &client.ListOptions{
+			FieldSelector: fields.OneTermEqualSelector(indexers.BackendServiceTLSRouteIndex, client.ObjectKeyFromObject(o).String()),
+		}); err != nil {
+			scopedLog.Error("Failed to get related HTTPRoutes", logfields.Error, err)
+			return []reconcile.Request{}
+		}
+
+		grpcRouteList := &gatewayv1.GRPCRouteList{}
+		if err := r.Client.List(ctx, grpcRouteList, &client.ListOptions{
+			FieldSelector: fields.OneTermEqualSelector(indexers.BackendServiceGRPCRouteIndex, client.ObjectKeyFromObject(o).String()),
+		}); err != nil {
+			scopedLog.ErrorContext(ctx, "Unable to list GRPCRoutes", logfields.Error, err)
+			return []reconcile.Request{}
+		}
+
+		// Fetch all the Cilium-relevant Gateways using the indexers.ImplementationGatewayIndex.
+		gwList := &gatewayv1.GatewayList{}
+		if err := r.Client.List(ctx, gwList, &client.ListOptions{
+			FieldSelector: fields.OneTermEqualSelector(indexers.ImplementationGatewayIndex, "cilium"),
+		}); err != nil {
+			scopedLog.ErrorContext(ctx, "Failed to get Cilium Gateways", logfields.Error, err)
+			return []reconcile.Request{}
+		}
+
+		// Build a set of all Cilium Gateway full names.
+		// This makes sure we only add a reconcile.Request once for each Gateway.
+		allCiliumGatewaysSet := make(map[string]struct{})
+
+		for _, gw := range gwList.Items {
+			gwFullName := types.NamespacedName{
+				Name:      gw.GetName(),
+				Namespace: gw.GetNamespace(),
+			}
+			allCiliumGatewaysSet[gwFullName.String()] = struct{}{}
+		}
+
+		// iterate through the HTTPRoutes, update reconcileRequests for each Gateway that is relevant.
+		for _, hr := range hrList.Items {
+			updateReconcileRequestsForParentRefs(hr.Spec.ParentRefs, hr.Namespace, allCiliumGatewaysSet, reconcileRequests)
+		}
+
+		// iterate through the TLSRoutes, update reconcileRequests for each Gateway that is relevant.
+		for _, tlsr := range tlsrList.Items {
+			updateReconcileRequestsForParentRefs(tlsr.Spec.ParentRefs, tlsr.Namespace, allCiliumGatewaysSet, reconcileRequests)
+		}
+
+		// iterate through the TLSRoutes, update reconcileRequests for each Gateway that is relevant.
+		for _, grpcr := range grpcRouteList.Items {
+			updateReconcileRequestsForParentRefs(grpcr.Spec.ParentRefs, grpcr.Namespace, allCiliumGatewaysSet, reconcileRequests)
+		}
+
+		// return the keys of the set, since that's the actual reconcile.Requests.
+		return slices.Collect(maps.Keys(reconcileRequests))
+	})
+}
+
+// enqueueRequestForBackendTLSPolicy returns an event handler that, when passed a BackendTLSPolicy, returns reconcile.Requests
+// for all Cilium-relevant Gateways where that BackendTLSPolicy references a Service that is used as a backend for a
+// Route that is attached to that Gateway.
+func (r *gatewayReconciler) enqueueRequestForBackendTLSPolicy() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+		scopedLog := r.logger.With(logfields.LogSubsys, "queue-gw-from-backendtlspolicy")
+
+		reconcileRequests := make(map[reconcile.Request]struct{})
+		btlsp, ok := o.(*gatewayv1.BackendTLSPolicy)
+		if !ok {
+			return nil
+		}
+
+		// Build a set of all Cilium Gateway full names.
+		// This makes sure we only add a reconcile.Request once for each Gateway.
+		allCiliumGatewaysSet, err := r.getAllCiliumGatewaysSet(ctx)
+		if err != nil {
+			scopedLog.ErrorContext(ctx, "Failed to get Cilium Gateways", logfields.Error, err)
+			return []reconcile.Request{}
+		}
+
+		ns := o.GetNamespace()
+		r.updateReconcileRequestsForBackendTLSPolicy(ctx, scopedLog, allCiliumGatewaysSet, reconcileRequests, btlsp, ns)
+
+		recs := slices.Collect(maps.Keys(reconcileRequests))
+		if len(recs) > 0 {
+			scopedLog.Debug("BackendTLSPolicy relevant to Gateways",
+				logfields.Resource, client.ObjectKeyFromObject(o).String(),
+				logfields.Gateway, recs)
+		}
+		return slices.Collect(maps.Keys(reconcileRequests))
+	})
+}
+
+func (r *gatewayReconciler) enqueueRequestForBackendTLSPolicyConfigMap() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+		scopedLog := r.logger.With(logfields.LogSubsys, "queue-gw-from-backendtlspolicy-configmap")
+
+		cfgMap, ok := o.(*corev1.ConfigMap)
+		if !ok {
+			return []reconcile.Request{}
+		}
+
+		cfgMapName := types.NamespacedName{
+			Name:      cfgMap.GetName(),
+			Namespace: cfgMap.GetNamespace(),
+		}
+
+		// Fetch all BackendTLSPolicies that reference this ConfigMap
+		btlspList := &gatewayv1.BackendTLSPolicyList{}
+
+		if err := r.Client.List(ctx, btlspList, &client.ListOptions{
+			FieldSelector: fields.OneTermEqualSelector(indexers.BackendTLSPolicyConfigMapIndex, cfgMapName.String()),
+		}); err != nil {
+			scopedLog.ErrorContext(ctx, "Failed to get related BackendTLSPolicies for ConfigMap", logfields.Error, err)
+			return []reconcile.Request{}
+		}
+		// If there are no relevant BackendTLSPolicies, then we can skip this ConfigMap.
+		if len(btlspList.Items) == 0 {
+			return []reconcile.Request{}
+		}
+
+		// Build a set of all Cilium Gateway full names.
+		// This makes sure we only add a reconcile.Request once for each Gateway.
+		allCiliumGatewaysSet, err := r.getAllCiliumGatewaysSet(ctx)
+		if err != nil {
+			scopedLog.ErrorContext(ctx, "Failed to get Cilium Gateways", logfields.Error, err)
+			return []reconcile.Request{}
+		}
+
+		reconcileRequests := make(map[reconcile.Request]struct{})
+
+		for _, btlsp := range btlspList.Items {
+
+			if len(btlsp.Spec.Validation.CACertificateRefs) == 0 {
+				// There are no ConfigMaps specified in this BackendTLSPolicy,
+				// so this enqueue function doesn't care about it.
+				continue
+			}
+
+			configMapReferenced := false
+
+			for _, caRef := range btlsp.Spec.Validation.CACertificateRefs {
+				if caRef.Group == "" && caRef.Kind == "ConfigMap" && string(caRef.Name) == cfgMap.GetName() {
+					configMapReferenced = true
+				}
+			}
+
+			if !configMapReferenced {
+				// Enqueue only cares about ConfigMaps that are referenced by a BackendTLSPolicy
+				// If there are no references to this ConfigMap, this BackendTLSPolicy is not relevant.
+				continue
+			}
+
+			// This BackendTLSPolicy references the ConfigMap being enqueued, check to see if it's in the
+			// ownership chain any Cilium-relevant Gateways.
+			r.updateReconcileRequestsForBackendTLSPolicy(ctx, scopedLog, allCiliumGatewaysSet, reconcileRequests, &btlsp, cfgMap.GetNamespace())
+
+		}
+		recs := slices.Collect(maps.Keys(reconcileRequests))
+		if len(recs) > 0 {
+			scopedLog.Debug("ConfigMap in BackendTLSPolicy relevant to Gateways",
+				logfields.Resource, client.ObjectKeyFromObject(o).String(),
+				logfields.Gateway, recs)
+		}
+		return recs
+	})
+}
+
+func (r *gatewayReconciler) updateReconcileRequestsForBackendTLSPolicy(ctx context.Context,
+	scopedLog *slog.Logger,
+	allGatewaysSet map[string]struct{},
+	rrSet map[reconcile.Request]struct{},
+	btlsp *gatewayv1.BackendTLSPolicy,
+	ns string,
+) {
+	serviceRefs := []string{}
+	// First, we collect Service references from the TargetRefs
+	for _, target := range btlsp.Spec.TargetRefs {
+		if helpers.IsServiceTargetRef(target) {
+			serviceRefs = append(serviceRefs, ns+"/"+string(target.Name))
+		}
+	}
+	httpRoutes := []gatewayv1.HTTPRoute{}
+
+	for _, svcName := range serviceRefs {
+		// Then, fetch all HTTPRoutes that reference this service, using the backendServiceIndex
+		hrList := &gatewayv1.HTTPRouteList{}
+
+		if err := r.Client.List(ctx, hrList, &client.ListOptions{
+			FieldSelector: fields.OneTermEqualSelector(indexers.BackendServiceHTTPRouteIndex, svcName),
+		}); err != nil {
+			scopedLog.ErrorContext(ctx, "Failed to get related HTTPRoutes", logfields.Error, err)
+			return
+		}
+
+		httpRoutes = append(httpRoutes, hrList.Items...)
+	}
+	for _, hr := range httpRoutes {
+		updateReconcileRequestsForParentRefs(hr.Spec.ParentRefs, hr.Namespace, allGatewaysSet, rrSet)
+	}
+}
+
+func (r *gatewayReconciler) getAllCiliumGatewaysSet(ctx context.Context) (map[string]struct{}, error) {
+	// Fetch all the Cilium-relevant Gateways using the indexers.ImplementationGatewayIndex.
+	gwList := &gatewayv1.GatewayList{}
+	if err := r.Client.List(ctx, gwList, &client.ListOptions{
+		FieldSelector: fields.OneTermEqualSelector(indexers.ImplementationGatewayIndex, "cilium"),
+	}); err != nil {
+		return nil, err
+	}
+	// Build a set of all Cilium Gateway full names.
+	// This makes sure we only add a reconcile.Request once for each Gateway.
+	allCiliumGatewaysSet := make(map[string]struct{})
+
+	for _, gw := range gwList.Items {
+		gwFullName := types.NamespacedName{
+			Name:      gw.GetName(),
+			Namespace: gw.GetNamespace(),
+		}
+		allCiliumGatewaysSet[gwFullName.String()] = struct{}{}
+	}
+
+	return allCiliumGatewaysSet, nil
+}
+
+// updateReconcileRequestsForParentRefs mutates the passed reconcile.Request set to add all
+func updateReconcileRequestsForParentRefs(parentRefs []gatewayv1.ParentReference, ns string, allGatewaysSet map[string]struct{}, rrSet map[reconcile.Request]struct{}) {
+	for _, parent := range parentRefs {
+		if !helpers.IsGateway(parent) {
+			continue
+		}
+		parentFullName := types.NamespacedName{
+			Name:      string(parent.Name),
+			Namespace: helpers.NamespaceDerefOr(parent.Namespace, ns),
+		}
+		if _, found := allGatewaysSet[parentFullName.String()]; found {
+			rrSet[reconcile.Request{NamespacedName: parentFullName}] = struct{}{}
+		}
+	}
+}
+
+// enqueueRequestForBackendServiceImport makes sure that Gateways are reconciled
+// if a relevant HTTPRoute backend Service Imports are updated.
+func (r *gatewayReconciler) enqueueRequestForBackendServiceImport() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+		_, ok := o.(*mcsapiv1alpha1.ServiceImport)
+		if !ok {
+			return nil
+		}
+
+		scopedLog := r.logger.With(logfields.LogSubsys, "queue-gw-from-backend-svc-import")
+
+		// make a set to hold all reconcile requests
+		reconcileRequests := make(map[reconcile.Request]struct{})
+
+		// Then, fetch all HTTPRoutes that reference this service, using the backendServiceIndex
+		hrList := &gatewayv1.HTTPRouteList{}
+
+		if err := r.Client.List(ctx, hrList, &client.ListOptions{
+			FieldSelector: fields.OneTermEqualSelector(indexers.BackendServiceImportHTTPRouteIndex, client.ObjectKeyFromObject(o).String()),
+		}); err != nil {
+			scopedLog.ErrorContext(ctx, "Failed to get related HTTPRoutes", logfields.Error, err)
+			return []reconcile.Request{}
+		}
+
+		// Fetch all the Cilium-relevant Gateways using the indexers.ImplementationGatewayIndex.
+		gwList := &gatewayv1.GatewayList{}
+		if err := r.Client.List(ctx, gwList, &client.ListOptions{
+			FieldSelector: fields.OneTermEqualSelector(indexers.ImplementationGatewayIndex, "cilium"),
+		}); err != nil {
+			scopedLog.ErrorContext(ctx, "Failed to get Cilium Gateways", logfields.Error, err)
+			return []reconcile.Request{}
+		}
+
+		// Build a set of all Cilium Gateway full names.
+		// This makes sure we only add a reconcile.Request once for each Gateway.
+		allCiliumGatewaysSet := make(map[string]struct{})
+		for _, gw := range gwList.Items {
+			gwFullName := types.NamespacedName{
+				Name:      gw.GetName(),
+				Namespace: gw.GetNamespace(),
+			}
+			allCiliumGatewaysSet[gwFullName.String()] = struct{}{}
+		}
+
+		// iterate through the HTTPRoutes, return a reconcile.Request for each Gateways that is relevant.
+		for _, hr := range hrList.Items {
+			for _, parent := range hr.Spec.ParentRefs {
+				if !helpers.IsGateway(parent) {
+					continue
+				}
+				parentFullName := types.NamespacedName{
+					Name:      string(parent.Name),
+					Namespace: helpers.NamespaceDerefOr(parent.Namespace, hr.Namespace),
+				}
+				if _, found := allCiliumGatewaysSet[parentFullName.String()]; found {
+					reconcileRequests[reconcile.Request{NamespacedName: parentFullName}] = struct{}{}
+				}
+			}
+		}
+
+		// return the keys of the set.
+		return slices.Collect(maps.Keys(reconcileRequests))
+	})
+}
+
+func getGatewayReconcileRequestsForRoute(ctx context.Context, c client.Client, object metav1.Object, route gatewayv1.CommonRouteSpec, logger *slog.Logger) []reconcile.Request {
 	var reqs []reconcile.Request
 
-	scopedLog := log.WithFields(logrus.Fields{
-		logfields.Controller: gateway,
-		logfields.Resource: types.NamespacedName{
+	scopedLog := logger.With(
+		logfields.Resource, types.NamespacedName{
 			Namespace: object.GetNamespace(),
 			Name:      object.GetName(),
 		},
-	})
+	)
 
 	for _, parent := range route.ParentRefs {
 		if !helpers.IsGateway(parent) {
@@ -208,21 +602,21 @@ func getReconcileRequestsForRoute(ctx context.Context, c client.Client, object m
 			Name:      string(parent.Name),
 		}, gw); err != nil {
 			if !k8serrors.IsNotFound(err) {
-				scopedLog.WithError(err).Error("Failed to get Gateway")
+				scopedLog.ErrorContext(ctx, "Failed to get Gateway", logfields.Error, err)
 			}
 			continue
 		}
 
-		if !hasMatchingController(ctx, c, controllerName)(gw) {
-			scopedLog.Debug("Gateway does not have matching controller, skipping")
+		if !hasMatchingController(ctx, c, controllerName, logger)(gw) {
+			scopedLog.DebugContext(ctx, "Gateway does not have matching controller, skipping")
 			continue
 		}
 
-		scopedLog.WithFields(logrus.Fields{
-			logfields.K8sNamespace: ns,
-			logfields.Resource:     parent.Name,
-			logfields.Route:        object.GetName(),
-		}).Info("Enqueued gateway for Route")
+		scopedLog.InfoContext(ctx,
+			"Enqueued gateway for Route",
+			logfields.K8sNamespace, ns,
+			logfields.ParentResource, parent.Name,
+			logfields.Route, object.GetName())
 
 		reqs = append(reqs, reconcile.Request{
 			NamespacedName: types.NamespacedName{
@@ -235,10 +629,10 @@ func getReconcileRequestsForRoute(ctx context.Context, c client.Client, object m
 	return reqs
 }
 
-// enqueueRequestForOwningTLSCertificate returns an event handler for any changes with TLS secrets
+// enqueueRequestForTLSSecret returns an event handler for any changes with TLS secrets
 func (r *gatewayReconciler) enqueueRequestForTLSSecret() handler.EventHandler {
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
-		gateways := getGatewaysForSecret(ctx, r.Client, a)
+		gateways := getGatewaysForSecret(ctx, r.Client, a, r.logger)
 		reqs := make([]reconcile.Request, 0, len(gateways))
 		for _, gw := range gateways {
 			reqs = append(reqs, reconcile.Request{
@@ -256,7 +650,7 @@ func (r *gatewayReconciler) enqueueRequestForTLSSecret() handler.EventHandler {
 // with allowed namespaces
 func (r *gatewayReconciler) enqueueRequestForAllowedNamespace() handler.EventHandler {
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, ns client.Object) []reconcile.Request {
-		gateways := getGatewaysForNamespace(ctx, r.Client, ns)
+		gateways := getGatewaysForNamespace(ctx, r.Client, ns, r.logger)
 		reqs := make([]reconcile.Request, 0, len(gateways))
 		for _, gw := range gateways {
 			reqs = append(reqs, reconcile.Request{
@@ -268,5 +662,36 @@ func (r *gatewayReconciler) enqueueRequestForAllowedNamespace() handler.EventHan
 }
 
 func (r *gatewayReconciler) usedInGateway(obj client.Object) bool {
-	return len(getGatewaysForSecret(context.Background(), r.Client, obj)) > 0
+	return len(getGatewaysForSecret(context.Background(), r.Client, obj, r.logger)) > 0
+}
+
+func (r *gatewayReconciler) enqueueRequestForReferenceGrant() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(r.enqueueAll())
+}
+
+func (r *gatewayReconciler) enqueueAll() handler.MapFunc {
+	return func(ctx context.Context, o client.Object) []reconcile.Request {
+		scopedLog := r.logger.With(
+			logfields.Resource, client.ObjectKeyFromObject(o),
+		)
+		list := &gatewayv1.GatewayList{}
+
+		if err := r.Client.List(ctx, list, &client.ListOptions{}); err != nil {
+			scopedLog.ErrorContext(ctx, "Failed to list Gateway", logfields.Error, err)
+			return []reconcile.Request{}
+		}
+
+		requests := make([]reconcile.Request, 0, len(list.Items))
+		for _, item := range list.Items {
+			gw := client.ObjectKey{
+				Namespace: item.GetNamespace(),
+				Name:      item.GetName(),
+			}
+			requests = append(requests, reconcile.Request{
+				NamespacedName: gw,
+			})
+			scopedLog.InfoContext(ctx, "Enqueued Gateway for resource", gateway, gw)
+		}
+		return requests
+	}
 }

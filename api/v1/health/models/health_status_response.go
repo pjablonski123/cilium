@@ -10,6 +10,7 @@ package models
 
 import (
 	"context"
+	stderrors "errors"
 	"strconv"
 
 	"github.com/go-openapi/errors"
@@ -27,6 +28,9 @@ type HealthStatusResponse struct {
 
 	// Connectivity status to each other node
 	Nodes []*NodeStatus `json:"nodes"`
+
+	// Interval in seconds between probes
+	ProbeInterval string `json:"probeInterval,omitempty"`
 
 	// timestamp
 	Timestamp string `json:"timestamp,omitempty"`
@@ -57,11 +61,15 @@ func (m *HealthStatusResponse) validateLocal(formats strfmt.Registry) error {
 
 	if m.Local != nil {
 		if err := m.Local.Validate(formats); err != nil {
-			if ve, ok := err.(*errors.Validation); ok {
+			ve := new(errors.Validation)
+			if stderrors.As(err, &ve) {
 				return ve.ValidateName("local")
-			} else if ce, ok := err.(*errors.CompositeError); ok {
+			}
+			ce := new(errors.CompositeError)
+			if stderrors.As(err, &ce) {
 				return ce.ValidateName("local")
 			}
+
 			return err
 		}
 	}
@@ -81,11 +89,15 @@ func (m *HealthStatusResponse) validateNodes(formats strfmt.Registry) error {
 
 		if m.Nodes[i] != nil {
 			if err := m.Nodes[i].Validate(formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
+				ve := new(errors.Validation)
+				if stderrors.As(err, &ve) {
 					return ve.ValidateName("nodes" + "." + strconv.Itoa(i))
-				} else if ce, ok := err.(*errors.CompositeError); ok {
+				}
+				ce := new(errors.CompositeError)
+				if stderrors.As(err, &ce) {
 					return ce.ValidateName("nodes" + "." + strconv.Itoa(i))
 				}
+
 				return err
 			}
 		}
@@ -116,12 +128,21 @@ func (m *HealthStatusResponse) ContextValidate(ctx context.Context, formats strf
 func (m *HealthStatusResponse) contextValidateLocal(ctx context.Context, formats strfmt.Registry) error {
 
 	if m.Local != nil {
+
+		if swag.IsZero(m.Local) { // not required
+			return nil
+		}
+
 		if err := m.Local.ContextValidate(ctx, formats); err != nil {
-			if ve, ok := err.(*errors.Validation); ok {
+			ve := new(errors.Validation)
+			if stderrors.As(err, &ve) {
 				return ve.ValidateName("local")
-			} else if ce, ok := err.(*errors.CompositeError); ok {
+			}
+			ce := new(errors.CompositeError)
+			if stderrors.As(err, &ce) {
 				return ce.ValidateName("local")
 			}
+
 			return err
 		}
 	}
@@ -134,12 +155,21 @@ func (m *HealthStatusResponse) contextValidateNodes(ctx context.Context, formats
 	for i := 0; i < len(m.Nodes); i++ {
 
 		if m.Nodes[i] != nil {
+
+			if swag.IsZero(m.Nodes[i]) { // not required
+				return nil
+			}
+
 			if err := m.Nodes[i].ContextValidate(ctx, formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
+				ve := new(errors.Validation)
+				if stderrors.As(err, &ve) {
 					return ve.ValidateName("nodes" + "." + strconv.Itoa(i))
-				} else if ce, ok := err.(*errors.CompositeError); ok {
+				}
+				ce := new(errors.CompositeError)
+				if stderrors.As(err, &ce) {
 					return ce.ValidateName("nodes" + "." + strconv.Itoa(i))
 				}
+
 				return err
 			}
 		}

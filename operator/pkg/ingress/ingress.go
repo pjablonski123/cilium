@@ -5,9 +5,11 @@ package ingress
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
-	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -19,8 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/cilium/cilium/operator/pkg/model/translation"
-	ingressTranslation "github.com/cilium/cilium/operator/pkg/model/translation/ingress"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 const (
@@ -30,57 +32,59 @@ const (
 
 // ingressReconciler reconciles a Ingress object
 type ingressReconciler struct {
-	logger logrus.FieldLogger
+	logger *slog.Logger
 	client client.Client
 
-	maxRetries              int
-	enforcedHTTPS           bool
-	useProxyProtocol        bool
-	secretsNamespace        string
 	lbAnnotationPrefixes    []string
-	sharedLBServiceName     string
+	sharedResourcesName     string
 	ciliumNamespace         string
 	defaultLoadbalancerMode string
 	defaultSecretNamespace  string
 	defaultSecretName       string
-	idleTimeoutSeconds      int
+	enforcedHTTPS           bool
+	defaultRequestTimeout   time.Duration
 
-	sharedTranslator    translation.Translator
+	hostNetworkEnabled    bool
+	hostNetworkSharedPort uint32
+
+	cecTranslator       translation.CECTranslator
 	dedicatedTranslator translation.Translator
 }
 
 func newIngressReconciler(
-	logger logrus.FieldLogger,
+	logger *slog.Logger,
 	c client.Client,
+	cecTranslator translation.CECTranslator,
+	dedicatedIngressTranslator translation.Translator,
 	ciliumNamespace string,
-	enforceHTTPS bool,
-	useProxyProtocol bool,
-	secretsNamespace string,
 	lbAnnotationPrefixes []string,
-	sharedLBServiceName string,
+	sharedResourcesName string,
 	defaultLoadbalancerMode string,
 	defaultSecretNamespace string,
 	defaultSecretName string,
-	proxyIdleTimeoutSeconds int,
+	enforcedHTTPS bool,
+	defaultRequestTimeout time.Duration,
+	hostNetworkEnabled bool,
+	hostNetworkSharedPort uint32,
 ) *ingressReconciler {
 	return &ingressReconciler{
 		logger: logger,
 		client: c,
 
-		sharedTranslator:    ingressTranslation.NewSharedIngressTranslator(sharedLBServiceName, ciliumNamespace, secretsNamespace, enforceHTTPS, useProxyProtocol, proxyIdleTimeoutSeconds),
-		dedicatedTranslator: ingressTranslation.NewDedicatedIngressTranslator(secretsNamespace, enforceHTTPS, useProxyProtocol, proxyIdleTimeoutSeconds),
+		cecTranslator:       cecTranslator,
+		dedicatedTranslator: dedicatedIngressTranslator,
 
-		maxRetries:              10,
-		enforcedHTTPS:           enforceHTTPS,
-		useProxyProtocol:        useProxyProtocol,
-		secretsNamespace:        secretsNamespace,
 		lbAnnotationPrefixes:    lbAnnotationPrefixes,
-		sharedLBServiceName:     sharedLBServiceName,
+		sharedResourcesName:     sharedResourcesName,
 		ciliumNamespace:         ciliumNamespace,
 		defaultLoadbalancerMode: defaultLoadbalancerMode,
 		defaultSecretNamespace:  defaultSecretNamespace,
 		defaultSecretName:       defaultSecretName,
-		idleTimeoutSeconds:      proxyIdleTimeoutSeconds,
+		enforcedHTTPS:           enforcedHTTPS,
+		defaultRequestTimeout:   defaultRequestTimeout,
+
+		hostNetworkEnabled:    hostNetworkEnabled,
+		hostNetworkSharedPort: hostNetworkSharedPort,
 	}
 }
 
@@ -93,8 +97,8 @@ func (r *ingressReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&networkingv1.Ingress{}, r.forCiliumManagedIngress()).
 		// (LoadBalancer) Service resource with OwnerReference to the Ingress with dedicated loadbalancing mode
 		Owns(&corev1.Service{}).
-		// Endpoints resource with OwnerReference to the Ingress with dedicated loadbalancing mode
-		Owns(&corev1.Endpoints{}).
+		// EndpointSlice resource with OwnerReference to the Ingress with dedicated loadbalancing mode
+		Owns(&discoveryv1.EndpointSlice{}).
 		// CiliumEnvoyConfig resource with OwnerReference to the Ingress with dedicated loadbalancing mode
 		Owns(&ciliumv2.CiliumEnvoyConfig{}).
 		// Watching shared loadbalancer Service and reconcile all shared Cilium Ingresses.
@@ -121,7 +125,7 @@ func (r *ingressReconciler) enqueueSharedCiliumIngresses() handler.EventHandler 
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
 		ingressList := networkingv1.IngressList{}
 		if err := r.client.List(ctx, &ingressList); err != nil {
-			r.logger.WithError(err).Warn("Failed to list Ingresses")
+			r.logger.WarnContext(ctx, "Failed to list Ingresses", logfields.Error, err)
 			return nil
 		}
 
@@ -154,7 +158,7 @@ func (r *ingressReconciler) enqueueIngressesWithoutExplicitClass() handler.Event
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
 		ingressList := networkingv1.IngressList{}
 		if err := r.client.List(ctx, &ingressList); err != nil {
-			r.logger.WithError(err).Warn("Failed to list Ingresses")
+			r.logger.WarnContext(ctx, "Failed to list Ingresses", logfields.Error, err)
 			return nil
 		}
 
@@ -190,11 +194,11 @@ func (r *ingressReconciler) enqueuePseudoIngress() handler.EventHandler {
 }
 
 func (r *ingressReconciler) forSharedLoadbalancerService() builder.WatchesOption {
-	return builder.WithPredicates(&matchesInstancePredicate{namespace: r.ciliumNamespace, name: r.sharedLBServiceName})
+	return builder.WithPredicates(&matchesInstancePredicate{namespace: r.ciliumNamespace, name: r.sharedResourcesName})
 }
 
 func (r *ingressReconciler) forSharedCiliumEnvoyConfig() builder.WatchesOption {
-	return builder.WithPredicates(&matchesInstancePredicate{namespace: r.ciliumNamespace, name: r.sharedLBServiceName})
+	return builder.WithPredicates(&matchesInstancePredicate{namespace: r.ciliumNamespace, name: r.sharedResourcesName})
 }
 
 func (r *ingressReconciler) forCiliumIngressClass() builder.WatchesOption {
@@ -275,7 +279,7 @@ var _ predicate.Predicate = &matchesCiliumRelevantIngressPredicate{}
 
 type matchesCiliumRelevantIngressPredicate struct {
 	client client.Client
-	logger logrus.FieldLogger
+	logger *slog.Logger
 }
 
 func (r *matchesCiliumRelevantIngressPredicate) Create(event event.CreateEvent) bool {

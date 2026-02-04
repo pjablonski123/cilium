@@ -65,24 +65,26 @@ type Range struct {
 }
 
 // NewCIDRRange creates a Range over a net.IPNet, calling allocator.NewAllocationMap to construct
-// the backing store.
+// the backing store. Returned Range excludes first (base) and last addresses (max) if provided cidr
+// has more than 2 addresses.
 func NewCIDRRange(cidr *net.IPNet) *Range {
 	base := bigForIP(cidr.IP)
-	max := maximum(0, int(RangeSize(cidr)-2)) // don't use the network broadcast,
+	size := RangeSize(cidr)
+
+	// for any CIDR other than /32 or /128:
+	if size > 2 {
+		// don't use the network broadcast
+		size = max(0, size-2)
+		// don't use the network base
+		base = base.Add(base, big.NewInt(1))
+	}
 
 	return &Range{
 		net:   cidr,
-		base:  base.Add(base, big.NewInt(1)), // don't use the network base
-		max:   max,
-		alloc: allocator.NewAllocationMap(int(max), cidr.String()),
+		base:  base,
+		max:   int(size),
+		alloc: allocator.NewAllocationMap(int(size), cidr.String()),
 	}
-}
-
-func maximum(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // Free returns the count of IP addresses left in the range.
@@ -110,10 +112,7 @@ func (r *Range) Allocate(ip net.IP) error {
 		return &ErrNotInRange{r.net.String()}
 	}
 
-	allocated, err := r.alloc.Allocate(offset)
-	if err != nil {
-		return err
-	}
+	allocated := r.alloc.Allocate(offset)
 	if !allocated {
 		return ErrAllocated
 	}
@@ -123,10 +122,7 @@ func (r *Range) Allocate(ip net.IP) error {
 // AllocateNext reserves one of the IPs from the pool. ErrFull may
 // be returned if there are no addresses left.
 func (r *Range) AllocateNext() (net.IP, error) {
-	offset, ok, err := r.alloc.AllocateNext()
-	if err != nil {
-		return nil, err
-	}
+	offset, ok := r.alloc.AllocateNext()
 	if !ok {
 		return nil, ErrFull
 	}
@@ -183,7 +179,7 @@ func (r *Range) Restore(net *net.IPNet, data []byte) error {
 		return fmt.Errorf("not a snapshottable allocator")
 	}
 	if err := snapshottable.Restore(net.String(), data); err != nil {
-		return fmt.Errorf("restoring snapshot encountered %v", err)
+		return fmt.Errorf("restoring snapshot encountered: %w", err)
 	}
 	return nil
 }

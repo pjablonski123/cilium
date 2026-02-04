@@ -77,6 +77,20 @@ MTU Overhead
   connection. This can be largely mitigated by enabling jumbo frames (50 bytes
   of overhead for each 1500 bytes vs 50 bytes of overhead for each 9000 bytes).
 
+Configuration
+-------------
+
+The following options can be used to configure encapsulation:
+
+* ``tunnel-protocol``: Set the encapsulation protocol to ``vxlan`` or
+  ``geneve``, defaults to ``vxlan``.
+* ``underlay-protocol``: Set the IP family for the underlay. Defaults to
+  ``auto``: Cilium will automatically select the appropriate underlay protocol
+  based on the daemon configuration, prioritizing IPv4 if both IPv4 and IPv6
+  are enabled. The underlying network must support that protocol.
+* ``tunnel-port``: Set the port for the encapsulation protocol. Defaults
+  to ``8472`` for ``vxlan`` and ``6081`` for ``geneve``.
+
 .. _arch_direct_routing:
 .. _native_routing:
 
@@ -136,6 +150,14 @@ routing mode:
 * ``ipv4-native-routing-cidr: x.x.x.x/y``: Set the CIDR in which native routing
   can be performed.
 
+The following configuration options are optional when running the datapath in 
+native routing mode:
+
+* ``direct-routing-skip-unreachable``: If a BGP daemon is running and there 
+  is multiple native subnets to the cluster network, 
+  ``direct-routing-skip-unreachable: true`` can be added alongside 
+  ``auto-direct-node-routes`` to give each node L2 connectivity in each zone 
+  without traffic always needing to be routed by the BGP routers.
 
 .. _aws_eni_datapath:
 
@@ -278,9 +300,6 @@ Masquerading
 
 Load-balancing
    ClusterIP load-balancing will be performed using eBPF for all version of GKE.
-   Starting with >= GKE v1.15 or when running a Linux kernel >= 4.19, all
-   NodePort/ExternalIP/HostPort will be performed using a eBPF implementation as
-   well.
 
 Policy enforcement & visibility
    All NetworkPolicy enforcement and visibility is provided using eBPF.

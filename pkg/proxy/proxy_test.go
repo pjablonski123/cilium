@@ -8,186 +8,62 @@ import (
 	"os"
 	"testing"
 
-	. "github.com/cilium/checkmate"
+	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/hivetest"
+	"github.com/cilium/hive/job"
+	cilium "github.com/cilium/proxy/go/cilium/api"
+	statedbReconciler "github.com/cilium/statedb/reconciler"
+	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/pkg/completion"
+	datapath "github.com/cilium/cilium/pkg/datapath/fake/types"
+	"github.com/cilium/cilium/pkg/datapath/iptables"
+	"github.com/cilium/cilium/pkg/datapath/linux/route/reconciler"
 	"github.com/cilium/cilium/pkg/envoy"
-	"github.com/cilium/cilium/pkg/identity"
+	"github.com/cilium/cilium/pkg/envoy/xds"
+	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/policy"
-	endpointtest "github.com/cilium/cilium/pkg/proxy/endpoint/test"
-	"github.com/cilium/cilium/pkg/proxy/types"
+	"github.com/cilium/cilium/pkg/proxy/endpoint"
+	"github.com/cilium/cilium/pkg/proxy/proxyports"
+	"github.com/cilium/cilium/pkg/time"
+	"github.com/cilium/cilium/pkg/u8proto"
 )
 
-func Test(t *testing.T) { TestingT(t) }
+func proxyForTest(t *testing.T, envoyIntegration *envoyProxyIntegration) *Proxy {
+	var drm *reconciler.DesiredRouteManager
+	hive.New(
+		reconciler.TableCell,
+		cell.Provide(func() (_ statedbReconciler.Reconciler[*reconciler.DesiredRoute]) {
+			return nil
+		}),
+		cell.Invoke(func(m *reconciler.DesiredRouteManager) {
+			drm = m
+		}),
+	).Populate(hivetest.Logger(t))
+	fakeIPTablesManager := &datapath.FakeIptablesManager{}
+	ppConfig := proxyports.ProxyPortsConfig{
+		ProxyPortrangeMin:          10000,
+		ProxyPortrangeMax:          20000,
+		RestoredProxyPortsAgeLimit: 0,
+	}
+	pp := proxyports.NewProxyPorts(hivetest.Logger(t), ppConfig, fakeIPTablesManager)
+	p, err := createProxy(true, hivetest.Logger(t), nil, pp, envoyIntegration, nil, nil, nil, drm)
+	require.NoError(t, err)
 
-type ProxySuite struct{}
-
-var _ = Suite(&ProxySuite{})
-
-type MockDatapathUpdater struct{}
-
-func (m *MockDatapathUpdater) InstallProxyRules(ctx context.Context, proxyPort uint16, ingress, localOnly bool, name string) error {
-	return nil
+	p.proxyPorts.Trigger = job.NewTrigger(job.WithDebounce(10 * time.Second))
+	return p
 }
 
-func (m *MockDatapathUpdater) SupportsOriginalSourceAddr() bool {
-	return true
+type fakeProxyPolicy struct {
+	parserType policy.L7ParserType
 }
 
-func (s *ProxySuite) TestPortAllocator(c *C) {
-	mockDatapathUpdater := &MockDatapathUpdater{}
-
-	testRunDir := c.MkDir()
-	socketDir := envoy.GetSocketDir(testRunDir)
-	err := os.MkdirAll(socketDir, 0700)
-	c.Assert(err, IsNil)
-
-	p := createProxy(10000, 20000, 0, mockDatapathUpdater, nil, nil, nil)
-
-	port, err := p.AllocateProxyPort("listener1", false, true)
-	c.Assert(err, IsNil)
-	c.Assert(port, Not(Equals), 0)
-
-	port1, err := p.GetProxyPort("listener1")
-	c.Assert(err, IsNil)
-	c.Assert(port1, Equals, port)
-
-	// Another allocation for the same name gets the same port
-	port1a, err := p.AllocateProxyPort("listener1", false, true)
-	c.Assert(err, IsNil)
-	c.Assert(port1a, Equals, port1)
-
-	name, pp := p.findProxyPortByType(types.ProxyTypeCRD, "listener1", false)
-	c.Assert(name, Equals, "listener1")
-	c.Assert(pp.proxyType, Equals, types.ProxyTypeCRD)
-	c.Assert(pp.proxyPort, Equals, port)
-	c.Assert(pp.ingress, Equals, false)
-	c.Assert(pp.localOnly, Equals, true)
-	c.Assert(pp.configured, Equals, true)
-	c.Assert(pp.isStatic, Equals, false)
-	c.Assert(pp.nRedirects, Equals, 0)
-	c.Assert(pp.rulesPort, Equals, uint16(0))
-
-	err = p.ReleaseProxyPort("listener1")
-	c.Assert(err, IsNil)
-
-	// ProxyPort lingers and can still be found, but it's port is zeroed
-	port1b, err := p.GetProxyPort("listener1")
-	c.Assert(err, IsNil)
-	c.Assert(port1b, Equals, uint16(0))
-	c.Assert(pp.proxyPort, Equals, uint16(0))
-	c.Assert(pp.configured, Equals, false)
-	c.Assert(pp.nRedirects, Equals, 0)
-
-	// the port was never acked, so rulesPort is 0
-	c.Assert(pp.rulesPort, Equals, uint16(0))
-
-	// Allocates a different port (due to port was never acked)
-	port2, err := p.AllocateProxyPort("listener1", true, false)
-	c.Assert(err, IsNil)
-	c.Assert(port2, Not(Equals), port)
-	c.Assert(pp.proxyType, Equals, types.ProxyTypeCRD)
-	c.Assert(pp.ingress, Equals, false)
-	c.Assert(pp.localOnly, Equals, true)
-	c.Assert(pp.proxyPort, Equals, port2)
-	c.Assert(pp.configured, Equals, true)
-	c.Assert(pp.isStatic, Equals, false)
-	c.Assert(pp.nRedirects, Equals, 0)
-	c.Assert(pp.rulesPort, Equals, uint16(0))
-
-	// Ack configures the port to the datapath
-	err = p.AckProxyPort(context.TODO(), "listener1")
-	c.Assert(err, IsNil)
-	c.Assert(pp.nRedirects, Equals, 1)
-	c.Assert(pp.rulesPort, Equals, port2)
-
-	// Another Ack takes another reference
-	err = p.AckProxyPort(context.TODO(), "listener1")
-	c.Assert(err, IsNil)
-	c.Assert(pp.nRedirects, Equals, 2)
-	c.Assert(pp.rulesPort, Equals, port2)
-
-	// 1st release decreases the count
-	err = p.ReleaseProxyPort("listener1")
-	c.Assert(err, IsNil)
-	c.Assert(pp.nRedirects, Equals, 1)
-	c.Assert(pp.configured, Equals, true)
-	c.Assert(pp.proxyPort, Equals, port2)
-
-	// 2nd release decreases the count to zero
-	err = p.ReleaseProxyPort("listener1")
-	c.Assert(err, IsNil)
-	c.Assert(pp.nRedirects, Equals, 0)
-	c.Assert(pp.configured, Equals, false)
-	c.Assert(pp.proxyPort, Equals, uint16(0))
-	c.Assert(pp.rulesPort, Equals, port2)
-
-	// extra releases are idempotent
-	err = p.ReleaseProxyPort("listener1")
-	c.Assert(err, IsNil)
-	c.Assert(pp.nRedirects, Equals, 0)
-	c.Assert(pp.configured, Equals, false)
-	c.Assert(pp.proxyPort, Equals, uint16(0))
-	c.Assert(pp.rulesPort, Equals, port2)
-
-	// mimic some other process taking the port
-	p.allocatedPorts[port2] = true
-
-	// Allocate again, this time a different port is allocated
-	port3, err := p.AllocateProxyPort("listener1", true, true)
-	c.Assert(err, IsNil)
-	c.Assert(port3, Not(Equals), uint16(0))
-	c.Assert(port3, Not(Equals), port2)
-	c.Assert(port3, Not(Equals), port1)
-	c.Assert(pp.proxyType, Equals, types.ProxyTypeCRD)
-	c.Assert(pp.ingress, Equals, false)
-	c.Assert(pp.localOnly, Equals, true)
-	c.Assert(pp.proxyPort, Equals, port3)
-	c.Assert(pp.configured, Equals, true)
-	c.Assert(pp.isStatic, Equals, false)
-	c.Assert(pp.nRedirects, Equals, 0)
-	c.Assert(pp.rulesPort, Equals, port2)
-
-	// Ack configures the port to the datapath
-	err = p.AckProxyPort(context.TODO(), "listener1")
-	c.Assert(err, IsNil)
-	c.Assert(pp.nRedirects, Equals, 1)
-	c.Assert(pp.rulesPort, Equals, port3)
-
-	// Release marks the port as unallocated
-	err = p.ReleaseProxyPort("listener1")
-	c.Assert(err, IsNil)
-	c.Assert(pp.nRedirects, Equals, 0)
-	c.Assert(pp.configured, Equals, false)
-	c.Assert(pp.proxyPort, Equals, uint16(0))
-	c.Assert(pp.rulesPort, Equals, port3)
-
-	inuse, exists := p.allocatedPorts[port3]
-	c.Assert(exists, Equals, true)
-	c.Assert(inuse, Equals, false)
-
-	// No-one used the port so next allocation gets the same port again
-	port4, err := p.AllocateProxyPort("listener1", true, true)
-	c.Assert(err, IsNil)
-	c.Assert(port4, Equals, port3)
-	c.Assert(pp.proxyType, Equals, types.ProxyTypeCRD)
-	c.Assert(pp.ingress, Equals, false)
-	c.Assert(pp.localOnly, Equals, true)
-	c.Assert(pp.proxyPort, Equals, port4)
-	c.Assert(pp.configured, Equals, true)
-	c.Assert(pp.isStatic, Equals, false)
-	c.Assert(pp.nRedirects, Equals, 0)
-	c.Assert(pp.rulesPort, Equals, port3)
-}
-
-type fakeProxyPolicy struct{}
-
-func (p *fakeProxyPolicy) CopyL7RulesPerEndpoint() policy.L7DataMap {
+func (p *fakeProxyPolicy) GetPerSelectorPolicies() policy.L7DataMap {
 	return policy.L7DataMap{}
 }
 
 func (p *fakeProxyPolicy) GetL7Parser() policy.L7ParserType {
-	return policy.ParserTypeCRD
+	return p.parserType
 }
 
 func (p *fakeProxyPolicy) GetIngress() bool {
@@ -198,36 +74,147 @@ func (p *fakeProxyPolicy) GetPort() uint16 {
 	return uint16(80)
 }
 
+func (p *fakeProxyPolicy) GetProtocol() u8proto.U8proto {
+	return u8proto.UDP
+}
+
 func (p *fakeProxyPolicy) GetListener() string {
 	return "nonexisting-listener"
 }
 
-func (s *ProxySuite) TestCreateOrUpdateRedirectMissingListener(c *C) {
-	mockDatapathUpdater := &MockDatapathUpdater{}
-
-	testRunDir := c.MkDir()
+func TestCreateOrUpdateRedirectMissingListener(t *testing.T) {
+	testRunDir := t.TempDir()
 	socketDir := envoy.GetSocketDir(testRunDir)
-	err := os.MkdirAll(socketDir, 0700)
-	c.Assert(err, IsNil)
+	err := os.MkdirAll(socketDir, 0o700)
+	require.NoError(t, err)
 
-	p := createProxy(10000, 20000, 0, mockDatapathUpdater, nil, nil, nil)
+	p := proxyForTest(t, nil)
 
-	ep := &endpointtest.ProxyUpdaterMock{
-		Id:       1000,
-		Ipv4:     "10.0.0.1",
-		Ipv6:     "f00d::1",
-		Labels:   []string{"id.foo", "id.bar"},
-		Identity: identity.NumericIdentity(123),
-	}
+	l4 := &fakeProxyPolicy{policy.ParserTypeCRD}
 
-	l4 := &fakeProxyPolicy{}
-
-	ctx := context.TODO()
+	ctx := t.Context()
 	wg := completion.NewWaitGroup(ctx)
 
-	proxyPort, err, finalizeFunc, revertFunc := p.CreateOrUpdateRedirect(ctx, l4, "dummy-proxy-id", ep, wg)
-	c.Assert(proxyPort, Equals, uint16(0))
-	c.Assert(err, NotNil)
-	c.Assert(finalizeFunc, IsNil)
-	c.Assert(revertFunc, IsNil)
+	proxyPort, err, revertFunc := p.CreateOrUpdateRedirect(ctx, l4, "dummy-proxy-id", 1000, wg)
+	require.Equal(t, uint16(0), proxyPort)
+	require.Error(t, err)
+	require.Nil(t, revertFunc)
 }
+
+func TestCreateOrUpdateRedirectMissingListenerWithUseOriginalSourceAddrFlagEnabled(t *testing.T) {
+	testRunDir := t.TempDir()
+	socketDir := envoy.GetSocketDir(testRunDir)
+	err := os.MkdirAll(socketDir, 0o700)
+	require.NoError(t, err)
+	ipTablesManager := &iptables.Manager{}
+	xdsServer := &fakeXdsServer{}
+	envoyIntegrationConfig := EnvoyProxyIntegrationConfig{
+		ProxyUseOriginalSourceAddress: true,
+	}
+	envoyIntegrationParams := envoyProxyIntegrationParams{
+		IptablesManager: ipTablesManager,
+		XdsServer:       xdsServer,
+		Cfg:             envoyIntegrationConfig,
+	}
+	envoyIntegration := newEnvoyProxyIntegration(envoyIntegrationParams)
+	p := proxyForTest(t, envoyIntegration)
+
+	l4 := &fakeProxyPolicy{policy.ParserTypeHTTP}
+
+	ctx := t.Context()
+	wg := completion.NewWaitGroup(ctx)
+
+	p.CreateOrUpdateRedirect(ctx, l4, "dummy-proxy-id", 1000, wg)
+	require.True(t, envoyIntegration.proxyUseOriginalSourceAddress)
+}
+
+func TestCreateOrUpdateRedirectMissingListenerWithUseOriginalSourceAddrFlagDisabled(t *testing.T) {
+	testRunDir := t.TempDir()
+	socketDir := envoy.GetSocketDir(testRunDir)
+	err := os.MkdirAll(socketDir, 0o700)
+	require.NoError(t, err)
+	ipTablesManager := &iptables.Manager{}
+	xdsServer := &fakeXdsServer{}
+	envoyIntegrationConfig := EnvoyProxyIntegrationConfig{
+		ProxyUseOriginalSourceAddress: false,
+	}
+	envoyIntegrationParams := envoyProxyIntegrationParams{
+		IptablesManager: ipTablesManager,
+		XdsServer:       xdsServer,
+		Cfg:             envoyIntegrationConfig,
+	}
+	envoyIntegration := newEnvoyProxyIntegration(envoyIntegrationParams)
+	p := proxyForTest(t, envoyIntegration)
+
+	l4 := &fakeProxyPolicy{policy.ParserTypeHTTP}
+
+	ctx := t.Context()
+	wg := completion.NewWaitGroup(ctx)
+
+	p.CreateOrUpdateRedirect(ctx, l4, "dummy-proxy-id", 1000, wg)
+	require.False(t, envoyIntegration.proxyUseOriginalSourceAddress)
+	require.False(t, xdsServer.ObservedMayUseOriginalSourceAddr)
+}
+
+type fakeXdsServer struct {
+	ObservedMayUseOriginalSourceAddr bool
+}
+
+func (r *fakeXdsServer) UpdateEnvoyResources(ctx context.Context, old envoy.Resources, new envoy.Resources) error {
+	panic("unimplemented")
+}
+
+func (r *fakeXdsServer) DeleteEnvoyResources(ctx context.Context, resources envoy.Resources) error {
+	panic("unimplemented")
+}
+
+func (r *fakeXdsServer) UpsertEnvoyResources(ctx context.Context, resources envoy.Resources) error {
+	panic("unimplemented")
+}
+
+func (s *fakeXdsServer) AddListener(name string, kind policy.L7ParserType, port uint16, isIngress bool, mayUseOriginalSourceAddr bool, wg *completion.WaitGroup, cb func(err error)) error {
+	s.ObservedMayUseOriginalSourceAddr = mayUseOriginalSourceAddr
+	return nil
+}
+
+func (*fakeXdsServer) AddAdminListener(port uint16, wg *completion.WaitGroup) {
+	panic("unimplemented")
+}
+
+func (*fakeXdsServer) AddMetricsListener(port uint16, wg *completion.WaitGroup) {
+	panic("unimplemented")
+}
+
+func (*fakeXdsServer) GetNetworkPolicies(resourceNames []string) (map[string]*cilium.NetworkPolicy, error) {
+	panic("unimplemented")
+}
+
+func (*fakeXdsServer) RemoveAllNetworkPolicies() {
+	panic("unimplemented")
+}
+
+func (*fakeXdsServer) RemoveListener(name string, wg *completion.WaitGroup) xds.AckingResourceMutatorRevertFunc {
+	panic("unimplemented")
+}
+
+func (*fakeXdsServer) RemoveNetworkPolicy(ep endpoint.EndpointInfoSource) {
+	panic("unimplemented")
+}
+
+func (*fakeXdsServer) UpdateNetworkPolicy(ep endpoint.EndpointUpdater, policy *policy.EndpointPolicy, wg *completion.WaitGroup) (error, func() error) {
+	panic("unimplemented")
+}
+
+func (*fakeXdsServer) UseCurrentNetworkPolicy(ep endpoint.EndpointUpdater, policy *policy.EndpointPolicy, wg *completion.WaitGroup) {
+	panic("unimplemented")
+}
+
+func (*fakeXdsServer) GetPolicySecretSyncNamespace() string {
+	panic("unimplemented")
+}
+
+func (*fakeXdsServer) SetPolicySecretSyncNamespace(string) {
+	panic("unimplemented")
+}
+
+var _ envoy.XDSServer = &fakeXdsServer{}

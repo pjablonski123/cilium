@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/sirupsen/logrus"
 
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/time"
 )
@@ -31,10 +31,6 @@ var (
 )
 
 func (ipam *IPAM) determineIPAMPool(owner string, family Family) (Pool, error) {
-	if ipam.metadata == nil {
-		return PoolDefault(), nil
-	}
-
 	pool, err := ipam.metadata.GetIPPoolForPod(owner, family)
 	if err != nil {
 		return "", fmt.Errorf("unable to determine IPAM pool for owner %q: %w", owner, err)
@@ -80,38 +76,38 @@ func (ipam *IPAM) allocateIP(ip net.IP, owner string, pool Pool, needSyncUpstrea
 
 	family := IPv4
 	if ip.To4() != nil {
-		if ipam.IPv4Allocator == nil {
+		if ipam.ipv4Allocator == nil {
 			err = ErrIPv4Disabled
 			return
 		}
 
 		if needSyncUpstream {
-			if result, err = ipam.IPv4Allocator.Allocate(ip, owner, pool); err != nil {
+			if result, err = ipam.ipv4Allocator.Allocate(ip, owner, pool); err != nil {
 				return
 			}
 		} else {
-			if result, err = ipam.IPv4Allocator.AllocateWithoutSyncUpstream(ip, owner, pool); err != nil {
+			if result, err = ipam.ipv4Allocator.AllocateWithoutSyncUpstream(ip, owner, pool); err != nil {
 				return
 			}
 		}
-		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.IPv4Allocator.Capacity()))
+		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.ipv4Allocator.Capacity()))
 	} else {
 		family = IPv6
-		if ipam.IPv6Allocator == nil {
+		if ipam.ipv6Allocator == nil {
 			err = ErrIPv6Disabled
 			return
 		}
 
 		if needSyncUpstream {
-			if result, err = ipam.IPv6Allocator.Allocate(ip, owner, pool); err != nil {
+			if result, err = ipam.ipv6Allocator.Allocate(ip, owner, pool); err != nil {
 				return
 			}
 		} else {
-			if result, err = ipam.IPv6Allocator.AllocateWithoutSyncUpstream(ip, owner, pool); err != nil {
+			if result, err = ipam.ipv6Allocator.AllocateWithoutSyncUpstream(ip, owner, pool); err != nil {
 				return
 			}
 		}
-		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.IPv6Allocator.Capacity()))
+		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.ipv6Allocator.Capacity()))
 	}
 
 	// If the allocator did not populate the pool, we assume it does not
@@ -120,11 +116,12 @@ func (ipam *IPAM) allocateIP(ip net.IP, owner string, pool Pool, needSyncUpstrea
 		result.IPPoolName = PoolDefault()
 	}
 
-	log.WithFields(logrus.Fields{
-		"ip":    ip.String(),
-		"owner": owner,
-		"pool":  result.IPPoolName,
-	}).Debugf("Allocated specific IP")
+	ipam.logger.Debug(
+		"Allocated specific IP",
+		logfields.IPAddr, ip,
+		logfields.Owner, owner,
+		logfields.PoolName, result.IPPoolName,
+	)
 
 	ipam.registerIPOwner(ip, owner, pool)
 	metrics.IPAMEvent.WithLabelValues(metricAllocate, string(family)).Inc()
@@ -135,11 +132,11 @@ func (ipam *IPAM) allocateNextFamily(family Family, owner string, pool Pool, nee
 	var allocator Allocator
 	switch family {
 	case IPv6:
-		allocator = ipam.IPv6Allocator
-		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.IPv6Allocator.Capacity()))
+		allocator = ipam.ipv6Allocator
+		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.ipv6Allocator.Capacity()))
 	case IPv4:
-		allocator = ipam.IPv4Allocator
-		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.IPv4Allocator.Capacity()))
+		allocator = ipam.ipv4Allocator
+		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.ipv4Allocator.Capacity()))
 
 	default:
 		err = fmt.Errorf("unknown address \"%s\" family requested", family)
@@ -175,11 +172,12 @@ func (ipam *IPAM) allocateNextFamily(family Family, owner string, pool Pool, nee
 		}
 
 		if _, ok := ipam.isIPExcluded(result.IP, pool); !ok {
-			log.WithFields(logrus.Fields{
-				"ip":    result.IP.String(),
-				"pool":  result.IPPoolName,
-				"owner": owner,
-			}).Debugf("Allocated random IP")
+			ipam.logger.Debug(
+				"Allocated random IP",
+				logfields.IPAddr, result.IP,
+				logfields.PoolName, result.IPPoolName,
+				logfields.Owner, owner,
+			)
 			ipam.registerIPOwner(result.IP, owner, pool)
 			metrics.IPAMEvent.WithLabelValues(metricAllocate, string(family)).Inc()
 			return
@@ -218,7 +216,7 @@ func (ipam *IPAM) AllocateNextFamilyWithoutSyncUpstream(family Family, owner str
 // allocation is limited to the specified address family. If the pool has been
 // drained of addresses, an error will be returned.
 func (ipam *IPAM) AllocateNext(family, owner string, pool Pool) (ipv4Result, ipv6Result *AllocationResult, err error) {
-	if (family == "ipv6" || family == "") && ipam.IPv6Allocator != nil {
+	if (family == "ipv6" || family == "") && ipam.ipv6Allocator != nil {
 		ipv6Result, err = ipam.AllocateNextFamily(IPv6, owner, pool)
 		if err != nil {
 			return
@@ -226,7 +224,7 @@ func (ipam *IPAM) AllocateNext(family, owner string, pool Pool) (ipv4Result, ipv
 
 	}
 
-	if (family == "ipv4" || family == "") && ipam.IPv4Allocator != nil {
+	if (family == "ipv4" || family == "") && ipam.ipv4Allocator != nil {
 		ipv4Result, err = ipam.AllocateNextFamily(IPv4, owner, pool)
 		if err != nil {
 			if ipv6Result != nil {
@@ -275,27 +273,28 @@ func (ipam *IPAM) releaseIPLocked(ip net.IP, pool Pool) error {
 
 	family := IPv4
 	if ip.To4() != nil {
-		if ipam.IPv4Allocator == nil {
+		if ipam.ipv4Allocator == nil {
 			return ErrIPv4Disabled
 		}
 
-		ipam.IPv4Allocator.Release(ip, pool)
-		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.IPv4Allocator.Capacity()))
+		ipam.ipv4Allocator.Release(ip, pool)
+		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.ipv4Allocator.Capacity()))
 	} else {
 		family = IPv6
-		if ipam.IPv6Allocator == nil {
+		if ipam.ipv6Allocator == nil {
 			return ErrIPv6Disabled
 		}
 
-		ipam.IPv6Allocator.Release(ip, pool)
-		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.IPv6Allocator.Capacity()))
+		ipam.ipv6Allocator.Release(ip, pool)
+		metrics.IPAMCapacity.WithLabelValues(string(family)).Set(float64(ipam.ipv6Allocator.Capacity()))
 	}
 
 	owner := ipam.releaseIPOwner(ip, pool)
-	log.WithFields(logrus.Fields{
-		"ip":    ip.String(),
-		"owner": owner,
-	}).Debugf("Released IP")
+	ipam.logger.Debug(
+		"Released IP",
+		logfields.IPAddr, ip,
+		logfields.Owner, owner,
+	)
 
 	key := timerKey{ip: ip.String(), pool: pool}
 	if t, ok := ipam.expirationTimers[key]; ok {
@@ -327,8 +326,8 @@ func (ipam *IPAM) Dump() (allocv4 map[string]string, allocv6 map[string]string, 
 	ipam.allocatorMutex.RLock()
 	defer ipam.allocatorMutex.RUnlock()
 
-	if ipam.IPv4Allocator != nil {
-		allocPerPool4, st4 = ipam.IPv4Allocator.Dump()
+	if ipam.ipv4Allocator != nil {
+		allocPerPool4, st4 = ipam.ipv4Allocator.Dump()
 		st4 = "IPv4: " + st4
 		for pool, alloc := range allocPerPool4 {
 			for ip := range alloc {
@@ -343,8 +342,8 @@ func (ipam *IPAM) Dump() (allocv4 map[string]string, allocv6 map[string]string, 
 		}
 	}
 
-	if ipam.IPv6Allocator != nil {
-		allocPerPool6, st6 = ipam.IPv6Allocator.Dump()
+	if ipam.ipv6Allocator != nil {
+		allocPerPool6, st6 = ipam.ipv6Allocator.Dump()
 		st6 = "IPv6: " + st6
 		for pool, alloc := range allocPerPool6 {
 			for ip := range alloc {
@@ -409,11 +408,21 @@ func (ipam *IPAM) StartExpirationTimer(ip net.IP, pool Pool, timeout time.Durati
 
 		if t, ok := ipam.expirationTimers[key]; ok {
 			if t.uuid == allocationUUID {
-				scopedLog := log.WithFields(logrus.Fields{"ip": ip, "pool": pool, "uuid": allocationUUID})
 				if err := ipam.releaseIPLocked(ip, pool); err != nil {
-					scopedLog.WithError(err).Warning("Unable to release IP after expiration")
+					ipam.logger.Warn(
+						"Unable to release IP after expiration",
+						logfields.Error, err,
+						logfields.IPAddr, ip,
+						logfields.PoolName, pool,
+						logfields.UUID, allocationUUID,
+					)
 				} else {
-					scopedLog.Warning("Released IP after expiration")
+					ipam.logger.Warn(
+						"Released IP after expiration",
+						logfields.IPAddr, ip,
+						logfields.PoolName, pool,
+						logfields.UUID, allocationUUID,
+					)
 				}
 			} else {
 				// This is an obsolete expiration timer. The IP

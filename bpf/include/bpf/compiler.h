@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
 
-#ifndef __BPF_COMPILER_H_
-#define __BPF_COMPILER_H_
+#pragma once
 
 # include "stddef.h"
 
@@ -27,11 +26,7 @@
 #endif
 
 #ifndef __nobuiltin
-# if __clang_major__ >= 10
-#  define __nobuiltin(X)	__attribute__((no_builtin(X)))
-# else
-#  define __nobuiltin(X)
-# endif
+# define __nobuiltin(X)	__attribute__((no_builtin(X)))
 #endif
 
 #ifndef likely
@@ -48,6 +43,10 @@
 
 #undef __always_inline		/* stddef.h defines its own */
 #define __always_inline		inline __attribute__((always_inline))
+
+#ifndef __noinline
+# define __noinline		__attribute__((noinline))
+#endif
 
 #ifndef __stringify
 # define __stringify(X)		#X
@@ -118,5 +117,3 @@ static __always_inline void bpf_barrier(void)
 #ifndef fallthrough
 # define fallthrough		__attribute__((fallthrough))
 #endif
-
-#endif /* __BPF_COMPILER_H_ */

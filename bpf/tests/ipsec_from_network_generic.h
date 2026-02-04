@@ -1,29 +1,19 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
 
-#include "common.h"
-#include <bpf/ctx/skb.h>
-#include "pktgen.h"
-#define ROUTER_IP
-#define SECLABEL
-#define SECLABEL_IPV4
-#define SECLABEL_IPV6
-#include "config_replacement.h"
-#undef ROUTER_IP
-#undef SECLABEL
-#undef SECLABEL_IPV4
-#undef SECLABEL_IPV6
-
 #define NODE_ID 2333
 #define ENCRYPT_KEY 3
 #define ENABLE_IPV4
 #define ENABLE_IPV6
-#define ENABLE_IPSEC
+#define ENABLE_IPSEC 1
 #define TUNNEL_MODE
-#define HAVE_ENCAP
 #define ENCAP_IFINDEX 4
 #define DEST_IFINDEX 5
 #define DEST_LXC_ID 200
+
+#include <bpf/ctx/skb.h>
+#include "common.h"
+#include "pktgen.h"
 
 #define ctx_redirect mock_ctx_redirect
 int mock_ctx_redirect(const struct __sk_buff *ctx __maybe_unused, int ifindex, __u32 flags)
@@ -46,45 +36,27 @@ int mock_skb_change_type(__maybe_unused struct __sk_buff *skb, __u32 type)
 static volatile const __u8 *DEST_EP_MAC = mac_three;
 static volatile const __u8 *DEST_NODE_MAC = mac_four;
 
-#include "bpf_network.c"
+#include "lib/bpf_network.h"
 
 #include "lib/endpoint.h"
+#include "lib/node.h"
 
-#define FROM_NETWORK 0
 #define ESP_SEQUENCE 69865
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 1);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[FROM_NETWORK] = &cil_from_network,
-	},
-};
 
 PKTGEN("tc", "ipv4_not_decrypted_ipsec_from_network")
 int ipv4_not_decrypted_ipsec_from_network_pktgen(struct __ctx_buff *ctx)
 {
 	struct pktgen builder;
-	struct ethhdr *l2;
 	struct iphdr *l3;
 	struct ip_esp_hdr *l4;
 	void *data;
 
 	pktgen__init(&builder, ctx);
 
-	l2 = pktgen__push_ethhdr(&builder);
-	if (!l2)
-		return TEST_ERROR;
-	ethhdr__set_macs(l2, (__u8 *)mac_one, (__u8 *)mac_two);
-
-	l3 = pktgen__push_default_iphdr(&builder);
+	l3 = pktgen__push_ipv4_packet(&builder, (__u8 *)mac_one, (__u8 *)mac_two,
+				      v4_pod_one, v4_pod_two);
 	if (!l3)
 		return TEST_ERROR;
-	l3->saddr = v4_pod_one;
-	l3->daddr = v4_pod_two;
 
 	l4 = pktgen__push_default_esphdr(&builder);
 	if (!l4)
@@ -103,8 +75,12 @@ int ipv4_not_decrypted_ipsec_from_network_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "ipv4_not_decrypted_ipsec_from_network")
 int ipv4_not_decrypted_ipsec_from_network_setup(struct __ctx_buff *ctx)
 {
-	tail_call_static(ctx, &entry_call_map, FROM_NETWORK);
-	return TEST_ERROR;
+	/* We need to populate the node ID map because we'll lookup into it on
+	 * ingress to find the node ID to use to match against XFRM IN states.
+	 */
+	node_v4_add_entry(v4_pod_one, NODE_ID, ENCRYPT_KEY);
+
+	return network_receive_packet(ctx);
 }
 
 CHECK("tc", "ipv4_not_decrypted_ipsec_from_network")
@@ -128,7 +104,7 @@ int ipv4_not_decrypted_ipsec_from_network_check(__maybe_unused const struct __ct
 
 	status_code = data;
 	assert(*status_code == CTX_ACT_OK);
-	assert(ctx->mark == MARK_MAGIC_DECRYPT);
+	assert(ctx->mark == (MARK_MAGIC_DECRYPT | NODE_ID << 16));
 
 	l2 = data + sizeof(*status_code);
 
@@ -155,6 +131,9 @@ int ipv4_not_decrypted_ipsec_from_network_check(__maybe_unused const struct __ct
 	if (l3->daddr != v4_pod_two)
 		test_fatal("dest IP was changed");
 
+	if (l3->check != bpf_htons(0xf948))
+		test_fatal("L3 checksum is invalid: %x", bpf_htons(l3->check));
+
 	l4 = (void *)l3 + sizeof(struct iphdr);
 
 	if ((void *)l4 + sizeof(struct ip_esp_hdr) > data_end)
@@ -180,22 +159,16 @@ PKTGEN("tc", "ipv6_not_decrypted_ipsec_from_network")
 int ipv6_not_decrypted_ipsec_from_network_pktgen(struct __ctx_buff *ctx)
 {
 	struct pktgen builder;
-	struct ethhdr *l2;
 	struct ipv6hdr *l3;
 	struct ip_esp_hdr *l4;
 	void *data;
 
 	pktgen__init(&builder, ctx);
 
-	l2 = pktgen__push_ethhdr(&builder);
-	if (!l2)
-		return TEST_ERROR;
-	ethhdr__set_macs(l2, (__u8 *)mac_one, (__u8 *)mac_two);
-
-	l3 = pktgen__push_default_ipv6hdr(&builder);
+	l3 = pktgen__push_ipv6_packet(&builder, (__u8 *)mac_one, (__u8 *)mac_two,
+				      (__u8 *)v6_pod_one, (__u8 *)v6_pod_two);
 	if (!l3)
 		return TEST_ERROR;
-	ipv6hdr__set_addrs(l3, (__u8 *)v6_pod_one, (__u8 *)v6_pod_two);
 
 	l4 = pktgen__push_default_esphdr(&builder);
 	if (!l4)
@@ -214,8 +187,12 @@ int ipv6_not_decrypted_ipsec_from_network_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "ipv6_not_decrypted_ipsec_from_network")
 int ipv6_not_decrypted_ipsec_from_network_setup(struct __ctx_buff *ctx)
 {
-	tail_call_static(ctx, &entry_call_map, FROM_NETWORK);
-	return TEST_ERROR;
+	/* We need to populate the node ID map because we'll lookup into it on
+	 * ingress to find the node ID to use to match against XFRM IN states.
+	 */
+	node_v6_add_entry((union v6addr *)v6_pod_one, NODE_ID, ENCRYPT_KEY);
+
+	return network_receive_packet(ctx);
 }
 
 CHECK("tc", "ipv6_not_decrypted_ipsec_from_network")
@@ -239,7 +216,7 @@ int ipv6_not_decrypted_ipsec_from_network_check(__maybe_unused const struct __ct
 
 	status_code = data;
 	assert(*status_code == CTX_ACT_OK);
-	assert(ctx->mark == MARK_MAGIC_DECRYPT);
+	assert(ctx->mark == (MARK_MAGIC_DECRYPT | NODE_ID << 16));
 
 	l2 = data + sizeof(*status_code);
 
@@ -314,12 +291,12 @@ int ipv4_decrypted_ipsec_from_network_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "ipv4_decrypted_ipsec_from_network")
 int ipv4_decrypted_ipsec_from_network_setup(struct __ctx_buff *ctx)
 {
-	endpoint_v4_add_entry(v4_pod_two, DEST_IFINDEX, DEST_LXC_ID, 0,
+	endpoint_v4_add_entry(v4_pod_two, DEST_IFINDEX, DEST_LXC_ID, 0, 0, 0,
 			      (__u8 *)DEST_EP_MAC, (__u8 *)DEST_NODE_MAC);
 
 	ctx->mark = MARK_MAGIC_DECRYPT;
-	tail_call_static(ctx, &entry_call_map, FROM_NETWORK);
-	return TEST_ERROR;
+
+	return network_receive_packet(ctx);
 }
 
 CHECK("tc", "ipv4_decrypted_ipsec_from_network")
@@ -370,6 +347,9 @@ int ipv4_decrypted_ipsec_from_network_check(__maybe_unused const struct __ctx_bu
 	if (l3->daddr != v4_pod_two)
 		test_fatal("dest IP was changed");
 
+	if (l3->check != bpf_htons(0xf968))
+		test_fatal("L3 checksum is invalid: %x", bpf_htons(l3->check));
+
 	l4 = (void *)l3 + sizeof(struct iphdr);
 
 	if ((void *)l4 + sizeof(struct tcphdr) > data_end)
@@ -380,6 +360,9 @@ int ipv4_decrypted_ipsec_from_network_check(__maybe_unused const struct __ctx_bu
 
 	if (l4->dest != tcp_svc_one)
 		test_fatal("dst TCP port was changed");
+
+	if (l4->check != bpf_htons(0x589c))
+		test_fatal("L4 checksum is invalid: %x", bpf_htons(l4->check));
 
 	payload = (void *)l4 + sizeof(struct tcphdr);
 	if ((void *)payload + sizeof(default_data) > data_end)
@@ -419,11 +402,11 @@ SETUP("tc", "ipv6_decrypted_ipsec_from_network")
 int ipv6_decrypted_ipsec_from_network_setup(struct __ctx_buff *ctx)
 {
 	endpoint_v6_add_entry((union v6addr *)v6_pod_two, DEST_IFINDEX, DEST_LXC_ID,
-			      0, (__u8 *)DEST_EP_MAC, (__u8 *)DEST_NODE_MAC);
+			      0, 0, (__u8 *)DEST_EP_MAC, (__u8 *)DEST_NODE_MAC);
 
 	ctx->mark = MARK_MAGIC_DECRYPT;
-	tail_call_static(ctx, &entry_call_map, FROM_NETWORK);
-	return TEST_ERROR;
+
+	return network_receive_packet(ctx);
 }
 
 CHECK("tc", "ipv6_decrypted_ipsec_from_network")
@@ -484,6 +467,9 @@ int ipv6_decrypted_ipsec_from_network_check(__maybe_unused const struct __ctx_bu
 
 	if (l4->dest != tcp_svc_one)
 		test_fatal("dst TCP port was changed");
+
+	if (l4->check != bpf_htons(0xdfe3))
+		test_fatal("L4 checksum is invalid: %x", bpf_htons(l4->check));
 
 	payload = (void *)l4 + sizeof(struct tcphdr);
 	if ((void *)payload + sizeof(default_data) > data_end)

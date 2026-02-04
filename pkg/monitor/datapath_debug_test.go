@@ -8,15 +8,13 @@ import (
 	"encoding/binary"
 	"testing"
 
-	. "github.com/cilium/checkmate"
-
-	"github.com/cilium/cilium/pkg/byteorder"
+	"github.com/stretchr/testify/require"
 )
 
-func (s *MonitorSuite) TestDecodeDebugCapture(c *C) {
+func TestDecodeDebugCapture(t *testing.T) {
 	// This check on the struct length constant is there to ensure that this
 	// test is updated when the struct changes.
-	c.Assert(DebugCaptureLen, Equals, 24)
+	require.Equal(t, 24, DebugCaptureLen)
 
 	input := DebugCapture{
 		Type:    0x00,
@@ -29,36 +27,115 @@ func (s *MonitorSuite) TestDecodeDebugCapture(c *C) {
 	}
 
 	buf := bytes.NewBuffer(nil)
-	err := binary.Write(buf, byteorder.Native, input)
-	c.Assert(err, IsNil)
+	err := binary.Write(buf, binary.NativeEndian, input)
+	require.NoError(t, err)
 
 	output := &DebugCapture{}
-	err = DecodeDebugCapture(buf.Bytes(), output)
-	c.Assert(err, IsNil)
+	err = output.Decode(buf.Bytes())
+	require.NoError(t, err)
 
-	c.Assert(output.Type, Equals, input.Type)
-	c.Assert(output.SubType, Equals, input.SubType)
-	c.Assert(output.Source, Equals, input.Source)
-	c.Assert(output.Hash, Equals, input.Hash)
-	c.Assert(output.OrigLen, Equals, input.OrigLen)
-	c.Assert(output.Arg1, Equals, input.Arg1)
-	c.Assert(output.Arg2, Equals, input.Arg2)
+	require.Equal(t, input.Type, output.Type)
+	require.Equal(t, input.SubType, output.SubType)
+	require.Equal(t, input.Source, output.Source)
+	require.Equal(t, input.Hash, output.Hash)
+	require.Equal(t, input.OrigLen, output.OrigLen)
+	require.Equal(t, input.Arg1, output.Arg1)
+	require.Equal(t, input.Arg2, output.Arg2)
+}
+
+func TestDecodeDebugCaptureExt(t *testing.T) {
+	setTmpExtVer := func(extVer uint8, extLen uint) {
+		oldLen, ok := debugCaptureExtensionLengthFromVersion[extVer]
+		if !ok {
+			t.Cleanup(func() { delete(debugCaptureExtensionLengthFromVersion, extVer) })
+		} else {
+			t.Cleanup(func() { debugCaptureExtensionLengthFromVersion[extVer] = oldLen })
+		}
+		debugCaptureExtensionLengthFromVersion[extVer] = extLen
+	}
+
+	setTmpExtVer(1, 4)
+	setTmpExtVer(2, 8)
+	setTmpExtVer(3, 16)
+
+	tcs := []struct {
+		name      string
+		dc        DebugCapture
+		extension []uint32
+	}{
+		{
+			name: "no extension",
+			dc: DebugCapture{
+				Version:    1,
+				ExtVersion: 0,
+			},
+		},
+		{
+			name: "extension 1",
+			dc: DebugCapture{
+				Version:    1,
+				ExtVersion: 1,
+			},
+			extension: []uint32{
+				0xC0FFEE,
+			},
+		},
+		{
+			name: "extension 2",
+			dc: DebugCapture{
+				Version:    1,
+				ExtVersion: 2,
+			},
+			extension: []uint32{
+				0xC0FFEE,
+				0xDECAFBAD,
+			},
+		},
+		{
+			name: "extension 2",
+			dc: DebugCapture{
+				Version:    1,
+				ExtVersion: 3,
+			},
+			extension: []uint32{
+				0xC0FFEE,
+				0xDECAFBAD,
+				0xFA1AFE1,
+				0xF00DF00D,
+			},
+		},
+	}
+
+	for _, tc := range tcs {
+		buf := bytes.NewBuffer(nil)
+		err := binary.Write(buf, binary.NativeEndian, tc.dc)
+		require.NoError(t, err)
+		err = binary.Write(buf, binary.NativeEndian, tc.extension)
+		require.NoError(t, err)
+		err = binary.Write(buf, binary.NativeEndian, uint32(0xDEADBEEF))
+		require.NoError(t, err)
+
+		output := &DebugCapture{}
+		err = output.Decode(buf.Bytes())
+		require.NoError(t, err)
+
+		require.Equal(t, uint32(0xDEADBEEF), binary.NativeEndian.Uint32(buf.Bytes()[output.DataOffset():]))
+	}
 }
 
 func BenchmarkNewDecodeDebugCapture(b *testing.B) {
 	input := &DebugCapture{}
 	buf := bytes.NewBuffer(nil)
 
-	if err := binary.Write(buf, byteorder.Native, input); err != nil {
+	if err := binary.Write(buf, binary.NativeEndian, input); err != nil {
 		b.Fatal(err)
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		dbg := &DebugCapture{}
-		if err := DecodeDebugCapture(buf.Bytes(), dbg); err != nil {
+		if err := dbg.Decode(buf.Bytes()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -68,25 +145,24 @@ func BenchmarkOldDecodeDebugCapture(b *testing.B) {
 	input := &DebugCapture{}
 	buf := bytes.NewBuffer(nil)
 
-	if err := binary.Write(buf, byteorder.Native, input); err != nil {
+	if err := binary.Write(buf, binary.NativeEndian, input); err != nil {
 		b.Fatal(err)
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		dbg := &DebugCapture{}
-		if err := binary.Read(bytes.NewBuffer(buf.Bytes()), byteorder.Native, dbg); err != nil {
+		if err := binary.Read(bytes.NewBuffer(buf.Bytes()), binary.NativeEndian, dbg); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
-func (s *MonitorSuite) TestDecodeDebugMsg(c *C) {
+func TestDecodeDebugMsg(t *testing.T) {
 	// This check on the struct length constant is there to ensure that this
 	// test is updated when the struct changes.
-	c.Assert(DebugMsgLen, Equals, 20)
+	require.Equal(t, 20, DebugMsgLen)
 
 	input := DebugMsg{
 		Type:    0x00,
@@ -99,36 +175,35 @@ func (s *MonitorSuite) TestDecodeDebugMsg(c *C) {
 	}
 
 	buf := bytes.NewBuffer(nil)
-	err := binary.Write(buf, byteorder.Native, input)
-	c.Assert(err, IsNil)
+	err := binary.Write(buf, binary.NativeEndian, input)
+	require.NoError(t, err)
 
 	output := &DebugMsg{}
-	err = DecodeDebugMsg(buf.Bytes(), output)
-	c.Assert(err, IsNil)
+	err = output.Decode(buf.Bytes())
+	require.NoError(t, err)
 
-	c.Assert(output.Type, Equals, input.Type)
-	c.Assert(output.SubType, Equals, input.SubType)
-	c.Assert(output.Source, Equals, input.Source)
-	c.Assert(output.Hash, Equals, input.Hash)
-	c.Assert(output.Arg1, Equals, input.Arg1)
-	c.Assert(output.Arg2, Equals, input.Arg2)
-	c.Assert(output.Arg3, Equals, input.Arg3)
+	require.Equal(t, input.Type, output.Type)
+	require.Equal(t, input.SubType, output.SubType)
+	require.Equal(t, input.Source, output.Source)
+	require.Equal(t, input.Hash, output.Hash)
+	require.Equal(t, input.Arg1, output.Arg1)
+	require.Equal(t, input.Arg2, output.Arg2)
+	require.Equal(t, input.Arg3, output.Arg3)
 }
 
 func BenchmarkNewDecodeDebugMsg(b *testing.B) {
 	input := &DebugMsg{}
 	buf := bytes.NewBuffer(nil)
 
-	if err := binary.Write(buf, byteorder.Native, input); err != nil {
+	if err := binary.Write(buf, binary.NativeEndian, input); err != nil {
 		b.Fatal(err)
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		dbg := &DebugMsg{}
-		if err := DecodeDebugMsg(buf.Bytes(), dbg); err != nil {
+		if err := dbg.Decode(buf.Bytes()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -138,16 +213,15 @@ func BenchmarkOldDecodeDebugMsg(b *testing.B) {
 	input := &DebugMsg{}
 	buf := bytes.NewBuffer(nil)
 
-	if err := binary.Write(buf, byteorder.Native, input); err != nil {
+	if err := binary.Write(buf, binary.NativeEndian, input); err != nil {
 		b.Fatal(err)
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		dbg := &DebugMsg{}
-		if err := binary.Read(bytes.NewBuffer(buf.Bytes()), byteorder.Native, dbg); err != nil {
+		if err := binary.Read(bytes.NewBuffer(buf.Bytes()), binary.NativeEndian, dbg); err != nil {
 			b.Fatal(err)
 		}
 	}

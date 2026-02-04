@@ -9,6 +9,8 @@ package operator
 // Editing this file might prove futile when you re-run the swagger generate command
 
 import (
+	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 
@@ -22,7 +24,7 @@ type GetHealthzReader struct {
 }
 
 // ReadResponse reads a server response into the received o.
-func (o *GetHealthzReader) ReadResponse(response runtime.ClientResponse, consumer runtime.Consumer) (interface{}, error) {
+func (o *GetHealthzReader) ReadResponse(response runtime.ClientResponse, consumer runtime.Consumer) (any, error) {
 	switch response.Code() {
 	case 200:
 		result := NewGetHealthzOK()
@@ -43,7 +45,7 @@ func (o *GetHealthzReader) ReadResponse(response runtime.ClientResponse, consume
 		}
 		return nil, result
 	default:
-		return nil, runtime.NewAPIError("response status code does not match any response statuses defined for this endpoint in the swagger spec", response, response.Code())
+		return nil, runtime.NewAPIError("[GET /healthz] GetHealthz", response, response.Code())
 	}
 }
 
@@ -86,12 +88,19 @@ func (o *GetHealthzOK) IsCode(code int) bool {
 	return code == 200
 }
 
+// Code gets the status code for the get healthz o k response
+func (o *GetHealthzOK) Code() int {
+	return 200
+}
+
 func (o *GetHealthzOK) Error() string {
-	return fmt.Sprintf("[GET /healthz][%d] getHealthzOK  %+v", 200, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /healthz][%d] getHealthzOK %s", 200, payload)
 }
 
 func (o *GetHealthzOK) String() string {
-	return fmt.Sprintf("[GET /healthz][%d] getHealthzOK  %+v", 200, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /healthz][%d] getHealthzOK %s", 200, payload)
 }
 
 func (o *GetHealthzOK) GetPayload() string {
@@ -101,7 +110,7 @@ func (o *GetHealthzOK) GetPayload() string {
 func (o *GetHealthzOK) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
 
 	// response payload
-	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && err != io.EOF {
+	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && !stderrors.Is(err, io.EOF) {
 		return err
 	}
 
@@ -147,12 +156,19 @@ func (o *GetHealthzInternalServerError) IsCode(code int) bool {
 	return code == 500
 }
 
+// Code gets the status code for the get healthz internal server error response
+func (o *GetHealthzInternalServerError) Code() int {
+	return 500
+}
+
 func (o *GetHealthzInternalServerError) Error() string {
-	return fmt.Sprintf("[GET /healthz][%d] getHealthzInternalServerError  %+v", 500, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /healthz][%d] getHealthzInternalServerError %s", 500, payload)
 }
 
 func (o *GetHealthzInternalServerError) String() string {
-	return fmt.Sprintf("[GET /healthz][%d] getHealthzInternalServerError  %+v", 500, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /healthz][%d] getHealthzInternalServerError %s", 500, payload)
 }
 
 func (o *GetHealthzInternalServerError) GetPayload() string {
@@ -162,7 +178,7 @@ func (o *GetHealthzInternalServerError) GetPayload() string {
 func (o *GetHealthzInternalServerError) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
 
 	// response payload
-	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && err != io.EOF {
+	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && !stderrors.Is(err, io.EOF) {
 		return err
 	}
 
@@ -208,12 +224,19 @@ func (o *GetHealthzNotImplemented) IsCode(code int) bool {
 	return code == 501
 }
 
+// Code gets the status code for the get healthz not implemented response
+func (o *GetHealthzNotImplemented) Code() int {
+	return 501
+}
+
 func (o *GetHealthzNotImplemented) Error() string {
-	return fmt.Sprintf("[GET /healthz][%d] getHealthzNotImplemented  %+v", 501, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /healthz][%d] getHealthzNotImplemented %s", 501, payload)
 }
 
 func (o *GetHealthzNotImplemented) String() string {
-	return fmt.Sprintf("[GET /healthz][%d] getHealthzNotImplemented  %+v", 501, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[GET /healthz][%d] getHealthzNotImplemented %s", 501, payload)
 }
 
 func (o *GetHealthzNotImplemented) GetPayload() string {
@@ -223,7 +246,7 @@ func (o *GetHealthzNotImplemented) GetPayload() string {
 func (o *GetHealthzNotImplemented) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
 
 	// response payload
-	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && err != io.EOF {
+	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && !stderrors.Is(err, io.EOF) {
 		return err
 	}
 

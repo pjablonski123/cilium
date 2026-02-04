@@ -7,10 +7,9 @@ package allocator
 import (
 	"errors"
 	"math/big"
+	"math/rand/v2"
 
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/rand"
-	"github.com/cilium/cilium/pkg/time"
 )
 
 // AllocationBitmap is a contiguous block of resources that can be allocated atomically.
@@ -50,9 +49,7 @@ type bitAllocator interface {
 // NewAllocationMap creates an allocation bitmap using the random scan strategy.
 func NewAllocationMap(max int, rangeSpec string) *AllocationBitmap {
 	a := AllocationBitmap{
-		strategy: randomScanStrategy{
-			rand: rand.NewSafeRand(time.Now().UnixNano()),
-		},
+		strategy:  randomScanStrategy{},
 		allocated: big.NewInt(0),
 		count:     0,
 		max:       max,
@@ -75,31 +72,31 @@ func NewContiguousAllocationMap(max int, rangeSpec string) *AllocationBitmap {
 
 // Allocate attempts to reserve the provided item.
 // Returns true if it was allocated, false if it was already in use
-func (r *AllocationBitmap) Allocate(offset int) (bool, error) {
+func (r *AllocationBitmap) Allocate(offset int) bool {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
 	if r.allocated.Bit(offset) == 1 {
-		return false, nil
+		return false
 	}
 	r.allocated = r.allocated.SetBit(r.allocated, offset, 1)
 	r.count++
-	return true, nil
+	return true
 }
 
 // AllocateNext reserves one of the items from the pool.
 // (0, false, nil) may be returned if there are no items left.
-func (r *AllocationBitmap) AllocateNext() (int, bool, error) {
+func (r *AllocationBitmap) AllocateNext() (int, bool) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
 	next, ok := r.strategy.AllocateBit(r.allocated, r.max, r.count)
 	if !ok {
-		return 0, false, nil
+		return 0, false
 	}
 	r.count++
 	r.allocated = r.allocated.SetBit(r.allocated, next, 1)
-	return next, true, nil
+	return next, true
 }
 
 // Release releases the item back to the pool. Releasing an
@@ -186,16 +183,14 @@ func (r *AllocationBitmap) Restore(rangeSpec string, data []byte) error {
 // randomScanStrategy chooses a random address from the provided big.Int, and then
 // scans forward looking for the next available address (it will wrap the range if
 // necessary).
-type randomScanStrategy struct {
-	rand *rand.SafeRand
-}
+type randomScanStrategy struct{}
 
 func (rss randomScanStrategy) AllocateBit(allocated *big.Int, max, count int) (int, bool) {
 	if count >= max {
 		return 0, false
 	}
-	offset := rss.rand.Intn(max)
-	for i := 0; i < max; i++ {
+	offset := rand.IntN(max)
+	for i := range max {
 		at := (offset + i) % max
 		if allocated.Bit(at) == 0 {
 			return at, true
@@ -213,7 +208,7 @@ func (contiguousScanStrategy) AllocateBit(allocated *big.Int, max, count int) (i
 	if count >= max {
 		return 0, false
 	}
-	for i := 0; i < max; i++ {
+	for i := range max {
 		if allocated.Bit(i) == 0 {
 			return i, true
 		}

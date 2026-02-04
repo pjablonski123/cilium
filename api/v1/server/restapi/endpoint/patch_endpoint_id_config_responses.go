@@ -36,7 +36,7 @@ func NewPatchEndpointIDConfigOK() *PatchEndpointIDConfigOK {
 // WriteResponse to the client
 func (o *PatchEndpointIDConfigOK) WriteResponse(rw http.ResponseWriter, producer runtime.Producer) {
 
-	rw.Header().Del(runtime.HeaderContentType) //Remove Content-Type on empty responses
+	rw.Header().Del(runtime.HeaderContentType) // Remove Content-Type on empty responses
 
 	rw.WriteHeader(200)
 }
@@ -61,7 +61,7 @@ func NewPatchEndpointIDConfigInvalid() *PatchEndpointIDConfigInvalid {
 // WriteResponse to the client
 func (o *PatchEndpointIDConfigInvalid) WriteResponse(rw http.ResponseWriter, producer runtime.Producer) {
 
-	rw.Header().Del(runtime.HeaderContentType) //Remove Content-Type on empty responses
+	rw.Header().Del(runtime.HeaderContentType) // Remove Content-Type on empty responses
 
 	rw.WriteHeader(400)
 }
@@ -86,7 +86,7 @@ func NewPatchEndpointIDConfigForbidden() *PatchEndpointIDConfigForbidden {
 // WriteResponse to the client
 func (o *PatchEndpointIDConfigForbidden) WriteResponse(rw http.ResponseWriter, producer runtime.Producer) {
 
-	rw.Header().Del(runtime.HeaderContentType) //Remove Content-Type on empty responses
+	rw.Header().Del(runtime.HeaderContentType) // Remove Content-Type on empty responses
 
 	rw.WriteHeader(403)
 }
@@ -111,7 +111,7 @@ func NewPatchEndpointIDConfigNotFound() *PatchEndpointIDConfigNotFound {
 // WriteResponse to the client
 func (o *PatchEndpointIDConfigNotFound) WriteResponse(rw http.ResponseWriter, producer runtime.Producer) {
 
-	rw.Header().Del(runtime.HeaderContentType) //Remove Content-Type on empty responses
+	rw.Header().Del(runtime.HeaderContentType) // Remove Content-Type on empty responses
 
 	rw.WriteHeader(404)
 }
@@ -136,7 +136,7 @@ func NewPatchEndpointIDConfigTooManyRequests() *PatchEndpointIDConfigTooManyRequ
 // WriteResponse to the client
 func (o *PatchEndpointIDConfigTooManyRequests) WriteResponse(rw http.ResponseWriter, producer runtime.Producer) {
 
-	rw.Header().Del(runtime.HeaderContentType) //Remove Content-Type on empty responses
+	rw.Header().Del(runtime.HeaderContentType) // Remove Content-Type on empty responses
 
 	rw.WriteHeader(429)
 }
@@ -182,4 +182,29 @@ func (o *PatchEndpointIDConfigFailed) WriteResponse(rw http.ResponseWriter, prod
 	if err := producer.Produce(rw, payload); err != nil {
 		panic(err) // let the recovery middleware deal with this
 	}
+}
+
+// PatchEndpointIDConfigServiceUnavailableCode is the HTTP code returned for type PatchEndpointIDConfigServiceUnavailable
+const PatchEndpointIDConfigServiceUnavailableCode int = 503
+
+/*
+PatchEndpointIDConfigServiceUnavailable Service Unavailable
+
+swagger:response patchEndpointIdConfigServiceUnavailable
+*/
+type PatchEndpointIDConfigServiceUnavailable struct {
+}
+
+// NewPatchEndpointIDConfigServiceUnavailable creates PatchEndpointIDConfigServiceUnavailable with default headers values
+func NewPatchEndpointIDConfigServiceUnavailable() *PatchEndpointIDConfigServiceUnavailable {
+
+	return &PatchEndpointIDConfigServiceUnavailable{}
+}
+
+// WriteResponse to the client
+func (o *PatchEndpointIDConfigServiceUnavailable) WriteResponse(rw http.ResponseWriter, producer runtime.Producer) {
+
+	rw.Header().Del(runtime.HeaderContentType) // Remove Content-Type on empty responses
+
+	rw.WriteHeader(503)
 }

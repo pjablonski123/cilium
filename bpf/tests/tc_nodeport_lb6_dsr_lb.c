@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
-
 #include <bpf/ctx/skb.h>
+#include "common.h"
 #include "pktgen.h"
-
-/* Set ETH_HLEN to 14 to indicate that the packet has a 14 byte ethernet header */
-#define ETH_HLEN 14
 
 /* Enable code paths under test */
 #define ENABLE_IPV6
@@ -15,11 +11,8 @@
 #define ENABLE_DSR
 #define DSR_ENCAP_GENEVE	3
 
-#define DISABLE_LOOPBACK_LB
-
-/* Skip ingress policy checks, not needed to validate hairpin flow */
+/* Skip ingress policy checks */
 #define USE_BPF_PROG_FOR_INGRESS_POLICY
-#undef FORCE_LOCAL_POLICY_EVAL_AT_SOURCE
 
 #define CLIENT_IP		{ .addr = { 0x1, 0x0, 0x0, 0x0, 0x0, 0x0 } }
 #define CLIENT_PORT		__bpf_htons(111)
@@ -36,8 +29,7 @@
 #define fib_lookup mock_fib_lookup
 
 static volatile const __u8 *client_mac = mac_one;
-/* this matches the default node_config.h: */
-static volatile const __u8 lb_mac[ETH_ALEN] = { 0xce, 0x72, 0xa7, 0x03, 0x88, 0x56 };
+static volatile const __u8 *lb_mac = mac_host;
 static volatile const __u8 *remote_backend_mac = mac_five;
 
 long mock_fib_lookup(__maybe_unused void *ctx, struct bpf_fib_lookup *params,
@@ -56,27 +48,10 @@ long mock_fib_lookup(__maybe_unused void *ctx, struct bpf_fib_lookup *params,
 	return BPF_FIB_LKUP_RET_SUCCESS;
 }
 
-#define SECCTX_FROM_IPCACHE 1
-
-#include <bpf_host.c>
+#include "lib/bpf_host.h"
 
 #include "lib/ipcache.h"
 #include "lib/lb.h"
-
-#define FROM_NETDEV	0
-#define TO_NETDEV	1
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 2);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[FROM_NETDEV] = &cil_from_netdev,
-		[TO_NETDEV] = &cil_to_netdev,
-	},
-};
 
 /* Test that a SVC request that is LBed to a DSR remote backend
  * - gets DNATed,
@@ -119,16 +94,13 @@ int nodeport_dsr_fwd_setup(struct __ctx_buff *ctx)
 	union v6addr backend_ip = BACKEND_IP;
 	__u16 revnat_id = 1;
 
-	lb_v6_add_service(&frontend_ip, FRONTEND_PORT, 1, revnat_id);
+	lb_v6_add_service(&frontend_ip, FRONTEND_PORT, IPPROTO_TCP, 1, revnat_id);
 	lb_v6_add_backend(&frontend_ip, FRONTEND_PORT, 1, 124,
 			  &backend_ip, BACKEND_PORT, IPPROTO_TCP, 0);
 
 	ipcache_v6_add_entry(&backend_ip, 0, 112233, 0, 0);
 
-	/* Jump into the entrypoint */
-	tail_call_static(ctx, &entry_call_map, FROM_NETDEV);
-	/* Fail if we didn't jump */
-	return TEST_ERROR;
+	return netdev_receive_packet(ctx);
 }
 
 CHECK("tc", "tc_nodeport_dsr_fwd")
@@ -142,7 +114,6 @@ int nodeport_dsr_fwd_check(__maybe_unused const struct __ctx_buff *ctx)
 	__u32 *status_code;
 	struct ipv6hdr *l3;
 	struct tcphdr *l4;
-	struct ethhdr *l2;
 
 	test_init();
 
@@ -156,11 +127,7 @@ int nodeport_dsr_fwd_check(__maybe_unused const struct __ctx_buff *ctx)
 
 	assert(*status_code == CTX_ACT_REDIRECT);
 
-	l2 = data + sizeof(__u32);
-	if ((void *)l2 + sizeof(struct ethhdr) > data_end)
-		test_fatal("l2 out of bounds");
-
-	l3 = (void *)l2 + sizeof(struct ethhdr);
+	l3 = data + sizeof(__u32) + sizeof(struct ethhdr);
 	if ((void *)l3 + sizeof(struct ipv6hdr) > data_end)
 		test_fatal("l3 out of bounds");
 
@@ -171,11 +138,6 @@ int nodeport_dsr_fwd_check(__maybe_unused const struct __ctx_buff *ctx)
 	l4 = (void *)opt + sizeof(*opt);
 	if ((void *)l4 + sizeof(struct tcphdr) > data_end)
 		test_fatal("l4 out of bounds");
-
-	if (memcmp(l2->h_source, (__u8 *)lb_mac, ETH_ALEN) != 0)
-		test_fatal("src MAC is not the LB MAC")
-	if (memcmp(l2->h_dest, (__u8 *)remote_backend_mac, ETH_ALEN) != 0)
-		test_fatal("dst MAC is not the backend MAC")
 
 	if (l3->nexthdr != NEXTHDR_DEST)
 		test_fatal("l3 header doesn't indicate DSR extension");
@@ -204,6 +166,9 @@ int nodeport_dsr_fwd_check(__maybe_unused const struct __ctx_buff *ctx)
 
 	if (l4->dest != BACKEND_PORT)
 		test_fatal("dst port hasn't been NATed to backend port");
+
+	if (l4->check != bpf_htons(0x0d7c))
+		test_fatal("L4 checksum is invalid: %x", bpf_htons(l4->check));
 
 	test_finish();
 }

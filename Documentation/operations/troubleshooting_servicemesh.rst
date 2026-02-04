@@ -20,17 +20,13 @@ Generic
 Manual Verification of Setup
 ----------------------------
 
- #. Validate that ``nodePort.enabled`` is true.
+ #. Validate that ``kubeProxyReplacement`` is true.
 
     .. code-block:: shell-session
 
-        $ kubectl exec -n kube-system ds/cilium -- cilium-dbg status --verbose
+        $ kubectl exec -n kube-system ds/cilium -- cilium-dbg status
         ...
-        KubeProxyReplacement Details:
-        ...
-          Services:
-          - ClusterIP:      Enabled
-          - NodePort:       Enabled (Range: 30000-32767)
+        KubeProxyReplacement:    True
         ...
 
  #. Validate that runtime the values of ``enable-envoy-config`` and ``enable-ingress-controller``
@@ -104,8 +100,7 @@ note that any change of Cilium flags requires a restart of the Cilium agent and 
 
 .. note::
 
-    The Ingress traffic is always allowed to pass through Cilium, regardless of the related
-    CiliumNetworkPolicy for underlying pods or endpoints.
+    The originating source IP is used for enforcing ingress traffic.
 
 The request normally traverses from LoadBalancer service to pre-assigned port of your
 node, then gets forwarded to the Cilium Envoy proxy, and finally gets proxied to the actual

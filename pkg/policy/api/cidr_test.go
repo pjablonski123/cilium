@@ -5,157 +5,14 @@ package api
 
 import (
 	"regexp"
+	"testing"
 
-	. "github.com/cilium/checkmate"
-
-	"github.com/cilium/cilium/pkg/checker"
-	"github.com/cilium/cilium/pkg/labels"
-	"github.com/cilium/cilium/pkg/option"
+	"github.com/stretchr/testify/require"
 )
-
-func (s *PolicyAPITestSuite) TestGetAsEndpointSelectors(c *C) {
-	world := labels.ParseLabelArray("reserved:world")
-
-	labelWorld := labels.ParseSelectLabel("reserved:world")
-	esWorld := NewESFromLabels(labelWorld)
-
-	labelWorldIPv4 := labels.ParseSelectLabel("reserved:world-ipv4")
-	esWorldIPv4 := NewESFromLabels(labelWorldIPv4)
-
-	labelWorldIPv6 := labels.ParseSelectLabel("reserved:world-ipv6")
-	esWorldIPv6 := NewESFromLabels(labelWorldIPv6)
-
-	labelAllV4, err := labels.IPStringToLabel("0.0.0.0/0")
-	c.Assert(err, IsNil)
-	v4World := NewESFromLabels(labelAllV4)
-
-	labelAllV6, err := labels.IPStringToLabel("::/0")
-	c.Assert(err, IsNil)
-	v6World := NewESFromLabels(labelAllV6)
-
-	labelOtherCIDR, err := labels.IPStringToLabel("192.168.128.0/24")
-	c.Assert(err, IsNil)
-	esOtherCIDR := NewESFromLabels(labelOtherCIDR)
-
-	tt := []struct {
-		name              string
-		cidrs             CIDRSlice
-		expectedSelectors EndpointSelectorSlice
-		matchesWorld,
-		enableIPv4, enableIPv6 bool
-	}{
-		{
-			name: "ipv4 dualstack",
-			cidrs: CIDRSlice{
-				"0.0.0.0/0",
-			},
-			expectedSelectors: EndpointSelectorSlice{
-				v4World,
-				esWorldIPv4,
-			},
-			matchesWorld: false,
-			enableIPv4:   true,
-			enableIPv6:   true,
-		},
-		{
-			name: "ipv6 dualstack",
-			cidrs: CIDRSlice{
-				"::/0",
-			},
-			expectedSelectors: EndpointSelectorSlice{
-				v6World,
-				esWorldIPv6,
-			},
-			matchesWorld: false,
-			enableIPv4:   true,
-			enableIPv6:   true,
-		},
-		{
-			name: "ipv4 and ipv6 dualstack",
-			cidrs: CIDRSlice{
-				"0.0.0.0/0",
-				"::/0",
-				"192.168.128.10/24",
-			},
-			expectedSelectors: EndpointSelectorSlice{
-				v4World,
-				v6World,
-				esOtherCIDR,
-				esWorld,
-				esWorldIPv4,
-				esWorldIPv6,
-			},
-			matchesWorld: true,
-			enableIPv4:   true,
-			enableIPv6:   true,
-		},
-		{
-			name: "ipv4 in ipv4 only",
-			cidrs: CIDRSlice{
-				"0.0.0.0/0",
-			},
-			expectedSelectors: EndpointSelectorSlice{
-				v4World,
-				esWorld,
-			},
-			matchesWorld: true,
-			enableIPv4:   true,
-			enableIPv6:   false,
-		},
-		{
-			name: "ipv6 in ipv4 only",
-			cidrs: CIDRSlice{
-				"::/0",
-			},
-			expectedSelectors: EndpointSelectorSlice{
-				v6World,
-			},
-			matchesWorld: false,
-			enableIPv4:   true,
-			enableIPv6:   false,
-		},
-		{
-			name: "ipv4 in ipv6 only",
-			cidrs: CIDRSlice{
-				"0.0.0.0/0",
-			},
-			expectedSelectors: EndpointSelectorSlice{
-				v4World,
-			},
-			matchesWorld: false,
-			enableIPv4:   false,
-			enableIPv6:   true,
-		},
-		{
-			name: "ipv6 in ipv6 only",
-			cidrs: CIDRSlice{
-				"::/0",
-			},
-			expectedSelectors: EndpointSelectorSlice{
-				v6World,
-				esWorld,
-			},
-			matchesWorld: true,
-			enableIPv4:   false,
-			enableIPv6:   true,
-		},
-	}
-
-	for _, t := range tt {
-		c.Logf("running test %s:", t.name)
-		option.Config.EnableIPv6 = t.enableIPv6
-		option.Config.EnableIPv4 = t.enableIPv4
-		result := t.cidrs.GetAsEndpointSelectors()
-		c.Assert(result.Matches(world), Equals, t.matchesWorld)
-		c.Assert(result, checker.DeepEquals, t.expectedSelectors)
-	}
-	option.Config.EnableIPv4 = true
-	option.Config.EnableIPv6 = true
-}
 
 const CIDRRegex = `^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\/([0-9]|[1-2][0-9]|3[0-2])$|^s*((([0-9A-Fa-f]{1,4}:){7}(:|([0-9A-Fa-f]{1,4})))|(([0-9A-Fa-f]{1,4}:){6}:([0-9A-Fa-f]{1,4})?)|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){0,1}):([0-9A-Fa-f]{1,4})?))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){0,2}):([0-9A-Fa-f]{1,4})?))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){0,3}):([0-9A-Fa-f]{1,4})?))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){0,4}):([0-9A-Fa-f]{1,4})?))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){0,5}):([0-9A-Fa-f]{1,4})?))|(:(:|((:[0-9A-Fa-f]{1,4}){1,7}))))(%.+)?s*/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8])$`
 
-func (s *PolicyAPITestSuite) TestCIDRRegex(c *C) {
+func TestCIDRRegex(t *testing.T) {
 	reg := regexp.MustCompile(CIDRRegex)
 
 	goodCIDRs := []string{
@@ -181,7 +38,7 @@ continueTest:
 		}
 		// The below is always false, valid CIDR prefixes should
 		// always skip this by continuing in the above loop.
-		c.Assert(input, Equals, "failed to match CIDR.OneOf[*].Pattern")
+		require.Equal(t, "failed to match CIDR.OneOf[*].Pattern", input)
 	}
 
 	badCIDRs := []string{
@@ -215,7 +72,7 @@ continueTest:
 		if matched := reg.MatchString(input); matched {
 			// The below is always false, invalid CIDR
 			// prefixes are not supposed to match the regex.
-			c.Assert(input, Equals, "unexpectedly matched CIDR.OneOf[*].Pattern")
+			require.Equal(t, "unexpectedly matched CIDR.OneOf[*].Pattern", input)
 		}
 	}
 }

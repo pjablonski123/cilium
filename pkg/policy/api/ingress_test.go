@@ -4,232 +4,225 @@
 package api
 
 import (
-	. "github.com/cilium/checkmate"
+	"context"
+	"encoding/json"
+	"testing"
 
-	"github.com/cilium/cilium/pkg/checker"
+	"github.com/stretchr/testify/require"
+
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 )
 
-func (s *PolicyAPITestSuite) TestIsLabelBasedIngress(c *C) {
-	type args struct {
-		eg *IngressRule
+func TestIngressRequiresDerivativeRuleWithoutToGroups(t *testing.T) {
+	ig := IngressRule{}
+	require.False(t, ig.RequiresDerivative())
+}
+
+func TestRequiresDerivativeRuleWithFromGroups(t *testing.T) {
+	ig := IngressRule{}
+	ig.FromGroups = []Groups{
+		GetGroupsRule(),
 	}
-	type wanted struct {
-		isLabelBased bool
+	require.True(t, ig.RequiresDerivative())
+}
+
+func TestCreateDerivativeRuleWithoutFromGroups(t *testing.T) {
+	ig := &IngressRule{
+		IngressCommonRule: IngressCommonRule{
+			FromEndpoints: []EndpointSelector{
+				{
+					LabelSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{
+						"test": "true",
+					},
+					},
+				},
+			},
+		},
+	}
+	newRule, err := ig.CreateDerivative(context.TODO())
+	require.Equal(t, newRule, ig)
+	require.NoError(t, err)
+}
+
+func TestCreateDerivativeRuleWithFromGroups(t *testing.T) {
+	cb := GetCallBackWithRule("192.168.1.1")
+	RegisterToGroupsProvider(AWSProvider, cb)
+
+	ig := &IngressRule{
+		IngressCommonRule: IngressCommonRule{
+			FromGroups: []Groups{
+				GetGroupsRule(),
+			},
+		},
 	}
 
-	tests := []struct {
-		name        string
-		setupArgs   func() args
-		setupWanted func() wanted
+	// Checking that the derivative rule is working correctly
+	require.True(t, ig.RequiresDerivative())
+
+	newRule, err := ig.CreateDerivative(context.TODO())
+	require.NoError(t, err)
+	require.Empty(t, newRule.FromGroups)
+	require.Len(t, newRule.FromCIDRSet, 1)
+}
+
+func TestIngressCommonRuleDeepEqual(t *testing.T) {
+	testCases := []struct {
+		name      string
+		in, other *IngressCommonRule
+		expected  bool
 	}{
 		{
-			name: "label-based-rule",
-			setupArgs: func() args {
-				return args{
-					eg: &IngressRule{
-						IngressCommonRule: IngressCommonRule{
-							FromEndpoints: []EndpointSelector{
-								{
-									LabelSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{
-										"test": "true",
-									},
-									},
-								},
-							},
-						},
-					},
-				}
-			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
-			},
+			name:     "All fields are nil in both",
+			in:       &IngressCommonRule{},
+			other:    &IngressCommonRule{},
+			expected: true,
 		},
 		{
-			name: "cidr-based-rule",
-			setupArgs: func() args {
-				return args{
-					&IngressRule{
-						IngressCommonRule: IngressCommonRule{
-							FromCIDR: CIDRSlice{"192.0.0.0/3"},
-						},
-					},
-				}
+			name: "All fields are empty in both",
+			in: &IngressCommonRule{
+				FromEndpoints: []EndpointSelector{},
+				FromCIDR:      []CIDR{},
+				FromCIDRSet:   []CIDRRule{},
+				FromEntities:  []Entity{},
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &IngressCommonRule{
+				FromEndpoints: []EndpointSelector{},
+				FromCIDR:      []CIDR{},
+				FromCIDRSet:   []CIDRRule{},
+				FromEntities:  []Entity{},
 			},
+			expected: true,
 		},
 		{
-			name: "cidrset-based-rule",
-			setupArgs: func() args {
-				return args{
-					&IngressRule{
-						IngressCommonRule: IngressCommonRule{
-							FromCIDRSet: CIDRRuleSlice{
-								{
-									Cidr: "192.0.0.0/3",
-								},
-							},
-						},
-					},
-				}
+			name: "FromEndpoints is nil in left operand",
+			in: &IngressCommonRule{
+				FromEndpoints: nil,
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &IngressCommonRule{
+				FromEndpoints: []EndpointSelector{},
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-requirements",
-			setupArgs: func() args {
-				return args{
-					&IngressRule{
-						IngressCommonRule: IngressCommonRule{
-							FromRequires: []EndpointSelector{
-								{
-									LabelSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{
-										"test": "true",
-									},
-									},
-								},
-							},
-						},
-					},
-				}
+			name: "FromEndpoints is empty in left operand",
+			in: &IngressCommonRule{
+				FromEndpoints: []EndpointSelector{},
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: false,
-				}
+			other: &IngressCommonRule{
+				FromEndpoints: nil,
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-entities",
-			setupArgs: func() args {
-				return args{
-					&IngressRule{
-						IngressCommonRule: IngressCommonRule{
-							FromEntities: EntitySlice{
-								EntityHost,
-							},
-						},
-					},
-				}
+			name: "FromCIDR is nil in left operand",
+			in: &IngressCommonRule{
+				FromCIDR: nil,
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &IngressCommonRule{
+				FromCIDR: []CIDR{},
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-no-l3-specification",
-			setupArgs: func() args {
-				return args{
-					&IngressRule{
-						ToPorts: []PortRule{
-							{
-								Ports: []PortProtocol{
-									{
-										Port:     "80",
-										Protocol: ProtoTCP,
-									},
-								},
-							},
-						},
-					},
-				}
+			name: "FromCIDR is empty in left operand",
+			in: &IngressCommonRule{
+				FromCIDR: []CIDR{},
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &IngressCommonRule{
+				FromCIDR: nil,
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-named-port",
-			setupArgs: func() args {
-				return args{
-					&IngressRule{
-						ToPorts: []PortRule{
-							{
-								Ports: []PortProtocol{
-									{
-										Port:     "port-80",
-										Protocol: ProtoTCP,
-									},
-								},
-							},
-						},
-					},
-				}
+			name: "FromCIDRSet is nil in left operand",
+			in: &IngressCommonRule{
+				FromCIDRSet: nil,
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &IngressCommonRule{
+				FromCIDRSet: []CIDRRule{},
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-icmp",
-			setupArgs: func() args {
-				return args{
-					&IngressRule{
-						ICMPs: ICMPRules{
-							{
-								Fields: []ICMPField{
-									{
-										Type: 8,
-									},
-								},
-							},
-						},
-					},
-				}
+			name: "FromCIDRSet is empty in left operand",
+			in: &IngressCommonRule{
+				FromCIDRSet: []CIDRRule{},
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &IngressCommonRule{
+				FromCIDRSet: nil,
 			},
+			expected: false,
 		},
 		{
-			name: "rule-with-icmp6",
-			setupArgs: func() args {
-				return args{
-					&IngressRule{
-						ICMPs: ICMPRules{
-							{
-								Fields: []ICMPField{
-									{
-										Family: IPv6Family,
-										Type:   128,
-									},
-								},
-							},
-						},
-					},
-				}
+			name: "FromEntities is nil in left operand",
+			in: &IngressCommonRule{
+				FromEntities: nil,
 			},
-			setupWanted: func() wanted {
-				return wanted{
-					isLabelBased: true,
-				}
+			other: &IngressCommonRule{
+				FromEntities: []Entity{},
 			},
+			expected: false,
+		},
+		{
+			name: "FromEntities is empty in left operand",
+			in: &IngressCommonRule{
+				FromEntities: []Entity{},
+			},
+			other: &IngressCommonRule{
+				FromEntities: nil,
+			},
+			expected: false,
 		},
 	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.expected, tc.in.DeepEqual(tc.other))
+		})
+	}
+}
 
-	for _, tt := range tests {
-		args := tt.setupArgs()
-		want := tt.setupWanted()
-		c.Assert(args.eg.sanitize(), Equals, nil, Commentf("Test name: %q", tt.name))
-		isLabelBased := args.eg.AllowsWildcarding()
-		c.Assert(isLabelBased, checker.DeepEquals, want.isLabelBased, Commentf("Test name: %q", tt.name))
+func TestIngressCommonRuleMarshalling(t *testing.T) {
+	testCases := []struct {
+		name     string
+		in       *IngressCommonRule
+		expected string
+	}{
+		{
+			name: "ToCIDRSet is nil",
+			in: &IngressCommonRule{
+				FromCIDRSet: nil,
+			},
+			expected: `{}`,
+		},
+		{
+			name: "ToCIDRSet is empty",
+			in: &IngressCommonRule{
+				FromCIDRSet: []CIDRRule{},
+			},
+			expected: `{"fromCIDRSet":[]}`,
+		},
+		{
+			name: "ToCIDRSet has CIDR",
+			in: &IngressCommonRule{
+				FromCIDRSet: []CIDRRule{
+					{
+						Cidr: "192.168.1.0/24",
+					},
+				},
+			},
+			expected: `{"fromCIDRSet":[{"cidr":"192.168.1.0/24"}]}`,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.in)
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, string(data))
+
+			rule := IngressCommonRule{}
+			err = json.Unmarshal(data, &rule)
+			require.NoError(t, err)
+			require.True(t, tc.in.DeepEqual(&rule))
+		})
 	}
 }

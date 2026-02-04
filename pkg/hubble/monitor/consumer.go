@@ -4,16 +4,19 @@
 package monitor
 
 import (
+	"log/slog"
 	"strings"
 
-	"github.com/google/uuid"
-	"github.com/sirupsen/logrus"
+	"github.com/prometheus/client_golang/prometheus"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
+	"github.com/cilium/cilium/pkg/bufuuid"
+	"github.com/cilium/cilium/pkg/counter"
 	"github.com/cilium/cilium/pkg/hubble/metrics"
 	observerTypes "github.com/cilium/cilium/pkg/hubble/observer/types"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	monitorConsumer "github.com/cilium/cilium/pkg/monitor/agent/consumer"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/time"
@@ -22,125 +25,139 @@ import (
 // Observer is the receiver of MonitorEvents
 type Observer interface {
 	GetEventsChannel() chan *observerTypes.MonitorEvent
-	GetLogger() logrus.FieldLogger
+	GetLogger() *slog.Logger
 }
 
-// consumer implements monitorConsumer.MonitorConsumer
+var _ monitorConsumer.MonitorConsumer = (*consumer)(nil)
+
+// consumer is a monitor consumer that sends events to an Observer.
 type consumer struct {
-	observer      Observer
-	numEventsLost uint64
-	lostLock      lock.Mutex
-	logLimiter    logging.Limiter
+	uuider   *bufuuid.Generator
+	observer Observer
+
+	lostLock         lock.Mutex
+	lostEventCounter *counter.IntervalRangeCounter
+	logLimiter       logging.Limiter
+
+	metricLostPerfEvents     prometheus.Counter
+	metricLostObserverEvents prometheus.Counter
 }
 
-// NewConsumer returns an initialized pointer to consumer.
-func NewConsumer(observer Observer) monitorConsumer.MonitorConsumer {
+// NewConsumer returns a new consumer that sends events to the provided Observer.
+func NewConsumer(observer Observer, lostEventSendInterval time.Duration) *consumer {
 	mc := &consumer{
-		observer:      observer,
-		numEventsLost: 0,
-		logLimiter:    logging.NewLimiter(30*time.Second, 1),
+		uuider:           bufuuid.New(),
+		observer:         observer,
+		lostEventCounter: counter.NewIntervalRangeCounter(lostEventSendInterval),
+		logLimiter:       logging.NewLimiter(30*time.Second, 1),
+
+		metricLostPerfEvents: metrics.LostEvents.WithLabelValues(
+			strings.ToLower(flowpb.LostEventSource_PERF_EVENT_RING_BUFFER.String())),
+		metricLostObserverEvents: metrics.LostEvents.WithLabelValues(
+			strings.ToLower(flowpb.LostEventSource_OBSERVER_EVENTS_QUEUE.String())),
 	}
 	return mc
 }
 
-// sendEventQueueLostEvents tries to send the current value of the lost events
-// counter to the observer. If it succeeds to enqueue a notification, it
-// resets the counter.
-func (c *consumer) sendNumLostEvents() {
-	c.lostLock.Lock()
-	defer c.lostLock.Unlock()
-	// check again, in case multiple
-	// routines contended the lock
-	if c.numEventsLost == 0 {
-		return
-	}
-
-	numEventsLostNotification := &observerTypes.MonitorEvent{
-		UUID:      uuid.New(),
-		Timestamp: time.Now(),
-		NodeName:  nodeTypes.GetAbsoluteNodeName(),
-		Payload: &observerTypes.LostEvent{
-			Source:        observerTypes.LostEventSourceEventsQueue,
-			NumLostEvents: c.numEventsLost,
-		},
-	}
-	select {
-	case c.observer.GetEventsChannel() <- numEventsLostNotification:
-		// We now now safely reset the counter, as at this point have
-		// successfully notified the observer about the amount of events
-		// that were lost since the previous LostEvent message
-		c.numEventsLost = 0
-	default:
-		// We do not need to bump the numEventsLost counter here, as we will
-		// try to send a new LostEvent notification again during the next
-		// invocation of sendEvent
-	}
-}
-
-// sendEvent enqueues an event in the observer. If this is not possible, it
-// keeps a counter of lost events, which it will regularly try to send to the
-// observer as well
-func (c *consumer) sendEvent(event *observerTypes.MonitorEvent) {
-	if c.numEventsLost > 0 {
-		c.sendNumLostEvents()
-	}
-	select {
-	case c.observer.GetEventsChannel() <- event:
-	default:
-		c.countDroppedEvent()
-	}
-}
-
-// countDroppedEvent logs that the events channel is full
-// and counts how many messages it has lost.
-func (c *consumer) countDroppedEvent() {
-	c.lostLock.Lock()
-	defer c.lostLock.Unlock()
-	if c.numEventsLost == 0 && c.logLimiter.Allow() {
-		c.observer.GetLogger().WithField("related-metric", "hubble_lost_events_total").
-			Warning("hubble events queue is full: dropping messages; consider increasing the queue size (hubble-event-queue-size) or provisioning more CPU")
-	}
-	c.numEventsLost++
-	metrics.LostEvents.WithLabelValues(strings.ToLower(flowpb.LostEventSource_OBSERVER_EVENTS_QUEUE.String())).Inc()
-}
-
-// NotifyAgentEvent implements monitorConsumer.MonitorConsumer
-func (c *consumer) NotifyAgentEvent(typ int, message interface{}) {
-	c.sendEvent(&observerTypes.MonitorEvent{
-		UUID:      uuid.New(),
-		Timestamp: time.Now(),
-		NodeName:  nodeTypes.GetAbsoluteNodeName(),
-		Payload: &observerTypes.AgentEvent{
+// NotifyAgentEvent implements monitorConsumer.MonitorConsumer.
+func (c *consumer) NotifyAgentEvent(typ int, message any) {
+	c.sendEvent(func() any {
+		return &observerTypes.AgentEvent{
 			Type:    typ,
 			Message: message,
-		},
+		}
 	})
 }
 
-// NotifyPerfEvent implements monitorConsumer.MonitorConsumer
+// NotifyPerfEvent implements monitorConsumer.MonitorConsumer.
 func (c *consumer) NotifyPerfEvent(data []byte, cpu int) {
-	c.sendEvent(&observerTypes.MonitorEvent{
-		UUID:      uuid.New(),
-		Timestamp: time.Now(),
-		NodeName:  nodeTypes.GetAbsoluteNodeName(),
-		Payload: &observerTypes.PerfEvent{
+	c.sendEvent(func() any {
+		return &observerTypes.PerfEvent{
 			Data: data,
 			CPU:  cpu,
-		},
+		}
 	})
 }
 
-// NotifyPerfEventLost implements monitorConsumer.MonitorConsumer
+// NotifyPerfEventLost implements monitorConsumer.MonitorConsumer.
 func (c *consumer) NotifyPerfEventLost(numLostEvents uint64, cpu int) {
-	c.sendEvent(&observerTypes.MonitorEvent{
-		UUID:      uuid.New(),
-		Timestamp: time.Now(),
-		NodeName:  nodeTypes.GetAbsoluteNodeName(),
-		Payload: &observerTypes.LostEvent{
+	c.sendEvent(func() any {
+		return &observerTypes.LostEvent{
 			Source:        observerTypes.LostEventSourcePerfRingBuffer,
 			NumLostEvents: numLostEvents,
 			CPU:           cpu,
-		},
+		}
 	})
-	metrics.LostEvents.WithLabelValues(strings.ToLower(flowpb.LostEventSource_PERF_EVENT_RING_BUFFER.String())).Add(float64(numLostEvents))
+	c.metricLostPerfEvents.Inc()
+}
+
+// sendEvent enqueues an event in the observer. If this is not possible, it
+// keeps a counter of lost events, which it will try to send at most once per
+// configured interval, and on every call to sendEvent until it succeeds.
+func (c *consumer) sendEvent(payloader func() any) {
+	c.lostLock.Lock()
+	defer c.lostLock.Unlock()
+
+	now := time.Now()
+	c.trySendLostEventLocked(now)
+
+	select {
+	case c.observer.GetEventsChannel() <- c.newEvent(now, payloader):
+	default:
+		c.incrementLostEventLocked(now)
+	}
+}
+
+func (c *consumer) newEvent(ts time.Time, payloader func() any) *observerTypes.MonitorEvent {
+	ev := &observerTypes.MonitorEvent{
+		Timestamp: ts,
+		NodeName:  nodeTypes.GetAbsoluteNodeName(),
+		Payload:   payloader(),
+	}
+
+	c.uuider.NewInto(&ev.UUID)
+	return ev
+}
+
+// trySendLostEventLocked tries to send a lost event as needed. If it succeeds, it clears the
+// lost event counter, otherwise it does nothing so we keep the existing count. It assumes that
+// the caller holds c.lostLock.
+func (c *consumer) trySendLostEventLocked(ts time.Time) {
+	// check if we should send a lost event
+	shouldSend := c.lostEventCounter.IsElapsed(ts)
+	if !shouldSend {
+		return
+	}
+
+	count := c.lostEventCounter.Peek()
+	lostEvent := c.newEvent(ts, func() any {
+		return &observerTypes.LostEvent{
+			Source:        observerTypes.LostEventSourceEventsQueue,
+			NumLostEvents: count.Count,
+			First:         count.First,
+			Last:          count.Last,
+		}
+	})
+
+	select {
+	case c.observer.GetEventsChannel() <- lostEvent:
+		// only clear the counter if we successfully sent the lost event
+		c.lostEventCounter.Clear()
+	default:
+	}
+}
+
+// incrementLostEventLocked increments the lost event counter. It also logs a warning message if the
+// counter was previously empty and the log limiter allows it. It assumes that the caller holds
+// c.lostLock.
+func (c *consumer) incrementLostEventLocked(ts time.Time) {
+	if c.lostEventCounter.Peek().Count == 0 && c.logLimiter.Allow() {
+		c.observer.GetLogger().
+			Warn(
+				"hubble events queue is full: dropping messages; consider increasing the queue size (hubble-event-queue-size) or provisioning more CPU",
+				logfields.RelatedMetric, "hubble_lost_events_total",
+			)
+	}
+	c.lostEventCounter.Increment(ts)
+	c.metricLostObserverEvents.Inc()
 }

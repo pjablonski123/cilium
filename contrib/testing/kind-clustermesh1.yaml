@@ -11,7 +11,7 @@ operator:
 ipam:
   mode: kubernetes
 ipv6:
-  enabled: false
+  enabled: true
 ipv4:
   enabled: true
 bpf:
@@ -24,8 +24,15 @@ startupProbe:
   failureThreshold: 9999
 clustermesh:
   useAPIServer: true
+  config:
+    enabled: true
   apiserver:
     image:
       pullPolicy: Never
     service:
       nodePort: 32379
+    readinessProbe:
+      periodSeconds: 1
+    kvstoremesh:
+      readinessProbe:
+        periodSeconds: 1

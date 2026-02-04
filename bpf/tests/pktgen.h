@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
 
-#ifndef __TEST_PKTGEN__
-#define __TEST_PKTGEN__
+#pragma once
 
 #include <bpf/compiler.h>
 #include <bpf/builtins.h>
@@ -19,23 +18,31 @@
 #include <linux/if_ether.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
+#include <linux/icmp.h>
+#include <linux/icmpv6.h>
+#include <linux/igmp.h>
 
 /* A collection of pre-defined Ethernet MAC addresses, so tests can reuse them
  * without having to come up with custom addresses.
- *
- * These are declared as volatile const to make them end up in .rodata. Cilium
- * inlines global data from .data into bytecode as immediate values for compat
- * with kernels before 5.2 that lack read-only map support. This test suite
- * doesn't make the same assumptions, so disable the static data inliner by
- * putting variables in another section.
  */
-static volatile const __u8 mac_one[] =   {0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xEF};
-static volatile const __u8 mac_two[] =   {0x13, 0x37, 0x13, 0x37, 0x13, 0x37};
-static volatile const __u8 mac_three[] = {0x31, 0x41, 0x59, 0x26, 0x35, 0x89};
-static volatile const __u8 mac_four[] =  {0x0D, 0x1D, 0x22, 0x59, 0xA9, 0xC2};
-static volatile const __u8 mac_five[] =  {0x15, 0x21, 0x39, 0x45, 0x4D, 0x5D};
-static volatile const __u8 mac_six[] =   {0x08, 0x14, 0x1C, 0x32, 0x52, 0x7E};
-static volatile const __u8 mac_zero[] =  {0x0, 0x0, 0x0, 0x0, 0x0, 0x0};
+#define mac_one_addr {0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xEF}
+#define mac_two_addr {0x13, 0x37, 0x13, 0x37, 0x13, 0x37}
+#define mac_three_addr {0x31, 0x41, 0x59, 0x26, 0x35, 0x89}
+#define mac_four_addr {0x0D, 0x1D, 0x22, 0x59, 0xA9, 0xC2}
+#define mac_five_addr {0x15, 0x21, 0x39, 0x45, 0x4D, 0x5D}
+#define mac_six_addr {0x08, 0x14, 0x1C, 0x32, 0x52, 0x7E}
+#define mac_zero_addr {0x0, 0x0, 0x0, 0x0, 0x0, 0x0}
+#define host_mac_addr { 0xce, 0x72, 0xa7, 0x03, 0x88, 0x56 }
+
+volatile const __u8 mac_one[] = mac_one_addr;
+volatile const __u8 mac_two[] = mac_two_addr;
+volatile const __u8 mac_three[] = mac_three_addr;
+volatile const __u8 mac_four[] = mac_four_addr;
+volatile const __u8 mac_five[] = mac_five_addr;
+volatile const __u8 mac_six[] = mac_six_addr;
+volatile const __u8 mac_zero[] = mac_zero_addr;
+/* this matches the default node_config.h: */
+volatile const __u8 mac_host[] = host_mac_addr;
 
 /* A collection of pre-defined IP addresses, so tests can reuse them without
  *  having to come up with custom ips.
@@ -63,21 +70,48 @@ static volatile const __u8 mac_zero[] =  {0x0, 0x0, 0x0, 0x0, 0x0, 0x0};
 #define v4_pod_two	IPV4(192, 168, 0, 2)
 #define v4_pod_three	IPV4(192, 168, 0, 3)
 
+/* Node-specific PodCIDR */
+#define v4_pod_one_on_node_two		IPV4(192, 168, 1, 1)
+#define v4_pod_two_on_node_two		IPV4(192, 168, 1, 2)
+#define v4_pod_three_on_node_two	IPV4(192, 168, 1, 3)
+#define v4_pod_cidr_on_node_two		IPV4(192, 168, 1, 0)
+
+#define v4_pod_cidr_size		24
+
+#define v4_svc_loopback	IPV4(10, 245, 255, 31)
+#define v6_svc_loopback {0xfd, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+
+#define v4_all		IPV4(0, 0, 0, 0)
+#define v6_all_addr	{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+
+volatile const __u8 v6_all[] = v6_all_addr;
+
 /* IPv6 addresses for pods in the cluster */
-static volatile const __u8 v6_pod_one[] = {0xfd, 0x04, 0, 0, 0, 0, 0, 0,
-					   0, 0, 0, 0, 0, 0, 0, 1};
-static volatile const __u8 v6_pod_two[] = {0xfd, 0x04, 0, 0, 0, 0, 0, 0,
-					   0, 0, 0, 0, 0, 0, 0, 2};
-static volatile const __u8 v6_pod_three[] = {0xfd, 0x04, 0, 0, 0, 0, 0, 0,
-					   0, 0, 0, 0, 0, 0, 0, 3};
+#define v6_pod_one_addr {0xfd, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+#define v6_pod_two_addr {0xfd, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+#define v6_pod_three_addr {0xfd, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3}
+
+volatile const __u8 v6_pod_one[] = v6_pod_one_addr;
+volatile const __u8 v6_pod_two[] = v6_pod_two_addr;
+volatile const __u8 v6_pod_three[] = v6_pod_three_addr;
 
 /* IPv6 addresses for nodes in the cluster */
-static volatile const __u8 v6_node_one[] = {0xfd, 0x05, 0, 0, 0, 0, 0, 0,
-					   0, 0, 0, 0, 0, 0, 0, 1};
-static volatile const __u8 v6_node_two[] = {0xfd, 0x06, 0, 0, 0, 0, 0, 0,
-					   0, 0, 0, 0, 0, 0, 0, 2};
-static volatile const __u8 v6_node_three[] = {0xfd, 0x07, 0, 0, 0, 0, 0, 0,
-					   0, 0, 0, 0, 0, 0, 0, 3};
+#define v6_node_one_addr {0xfd, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+#define v6_node_two_addr {0xfd, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+#define v6_node_three_addr {0xfd, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3}
+
+#define v6_ext_node_one_addr {0x20, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+
+volatile const __u8 v6_ext_node_one[] = v6_ext_node_one_addr;
+
+volatile const __u8 v6_node_one[] = v6_node_one_addr;
+volatile const __u8 v6_node_two[] = v6_node_two_addr;
+volatile const __u8 v6_node_three[] = v6_node_three_addr;
+
+/* IPv6 addresses for services in the cluster */
+#define v6_svc_one_addr {0xfd, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+
+volatile const __u8 v6_svc_one[] = v6_svc_one_addr;
 
 /* Source port to be used by a client */
 #define tcp_src_one	__bpf_htons(22330)
@@ -146,8 +180,10 @@ enum pkt_layer {
 
 	/* IPv6 extension headers */
 	PKT_LAYER_IPV6_HOP_BY_HOP,
+	PKT_LAYER_IPV6_ROUTING,
 	PKT_LAYER_IPV6_AUTH,
 	PKT_LAYER_IPV6_DEST,
+	PKT_LAYER_IPV6_FRAGMENT,
 
 	/* L4 layers */
 	PKT_LAYER_TCP,
@@ -156,6 +192,7 @@ enum pkt_layer {
 	PKT_LAYER_ICMPV6,
 	PKT_LAYER_SCTP,
 	PKT_LAYER_ESP,
+	PKT_LAYER_IGMP,
 
 	/* Tunnel layers */
 	PKT_LAYER_GENEVE,
@@ -213,7 +250,7 @@ void *pktgen__push_rawhdr(struct pktgen *builder, __u32 hdrsize, enum pkt_layer 
 	int layer_idx;
 
 	/* Request additional tailroom, and check that we got it. */
-	ctx_adjust_troom(ctx, builder->cur_off + hdrsize - ctx_full_len(ctx));
+	ctx_adjust_troom(ctx, (__s32)(builder->cur_off + hdrsize - ctx_full_len(ctx)));
 	if (ctx_data(ctx) + builder->cur_off + hdrsize > ctx_data_end(ctx))
 		return NULL;
 
@@ -326,6 +363,10 @@ struct ipv6_opt_hdr *pktgen__append_ipv6_extension_header(struct pktgen *builder
 		length = (0 + 1) << 3;
 		hdr = pktgen__push_rawhdr(builder, length, PKT_LAYER_IPV6_HOP_BY_HOP);
 		break;
+	case NEXTHDR_ROUTING:
+		hdr = pktgen__push_rawhdr(builder, length, PKT_LAYER_IPV6_ROUTING);
+		hdrlen = length;
+		break;
 	case NEXTHDR_AUTH:
 		length = (2 + 2) << 2;
 		hdr = pktgen__push_rawhdr(builder, length, PKT_LAYER_IPV6_AUTH);
@@ -334,6 +375,11 @@ struct ipv6_opt_hdr *pktgen__append_ipv6_extension_header(struct pktgen *builder
 	case NEXTHDR_DEST:
 		hdr = pktgen__push_rawhdr(builder, length, PKT_LAYER_IPV6_DEST);
 		hdrlen = (length - 8) / 8;
+		break;
+	case NEXTHDR_FRAGMENT:
+		length = 8;
+		hdr = pktgen__push_rawhdr(builder, length, PKT_LAYER_IPV6_FRAGMENT);
+		hdrlen = 0;
 		break;
 	default:
 		break;
@@ -418,6 +464,27 @@ struct tcphdr *pktgen__push_default_tcphdr(struct pktgen *builder)
 	return hdr;
 }
 
+static __always_inline
+__attribute__((warn_unused_result))
+struct icmphdr *pktgen__push_icmphdr(struct pktgen *builder)
+{
+	return pktgen__push_rawhdr(builder, sizeof(struct icmphdr), PKT_LAYER_ICMP);
+}
+
+static __always_inline
+__attribute__((warn_unused_result))
+struct icmp6hdr *pktgen__push_icmp6hdr(struct pktgen *builder)
+{
+	return pktgen__push_rawhdr(builder, sizeof(struct icmp6hdr), PKT_LAYER_ICMPV6);
+}
+
+static __always_inline
+__attribute__((warn_unused_result))
+struct igmphdr *pktgen__push_igmphdr(struct pktgen *builder)
+{
+	return pktgen__push_rawhdr(builder, sizeof(struct igmphdr), PKT_LAYER_IGMP);
+}
+
 /* Push an empty ESP header onto the packet */
 static __always_inline
 __attribute__((warn_unused_result))
@@ -448,6 +515,20 @@ __attribute__((warn_unused_result))
 struct sctphdr *pktgen__push_sctphdr(struct pktgen *builder)
 {
 	return pktgen__push_rawhdr(builder, sizeof(struct sctphdr), PKT_LAYER_SCTP);
+}
+
+static __always_inline
+__attribute__((warn_unused_result))
+struct sctphdr *pktgen__push_default_sctphdr(struct pktgen *builder)
+{
+	struct sctphdr *hdr = pktgen__push_sctphdr(builder);
+
+	if (!hdr)
+		return NULL;
+
+	memset(hdr, 0, sizeof(*hdr));
+
+	return hdr;
 }
 
 /* Push an empty UDP header onto the packet */
@@ -546,7 +627,7 @@ void *pktgen__push_data_room(struct pktgen *builder, int len)
 	int layer_idx;
 
 	/* Request additional tailroom, and check that we got it. */
-	ctx_adjust_troom(ctx, builder->cur_off + len - ctx_full_len(ctx));
+	ctx_adjust_troom(ctx, (__s32)(builder->cur_off + len - ctx_full_len(ctx)));
 	if (ctx_data(ctx) + builder->cur_off + len > ctx_data_end(ctx))
 		return 0;
 
@@ -610,6 +691,29 @@ pktgen__push_ipv4_packet(struct pktgen *builder,
 	return l3;
 }
 
+static __always_inline struct ipv6hdr *
+pktgen__push_ipv6_packet(struct pktgen *builder,
+			 __u8 *smac, __u8 *dmac,
+			 __u8 *saddr, __u8 *daddr)
+{
+	struct ethhdr *l2;
+	struct ipv6hdr *l3;
+
+	l2 = pktgen__push_ethhdr(builder);
+	if (!l2)
+		return NULL;
+
+	ethhdr__set_macs(l2, smac, dmac);
+
+	l3 = pktgen__push_default_ipv6hdr(builder);
+	if (!l3)
+		return NULL;
+
+	ipv6hdr__set_addrs(l3, saddr, daddr);
+
+	return l3;
+}
+
 static __always_inline struct tcphdr *
 pktgen__push_ipv4_tcp_packet(struct pktgen *builder,
 			     __u8 *smac, __u8 *dmac,
@@ -656,6 +760,80 @@ pktgen__push_ipv4_udp_packet(struct pktgen *builder,
 	return l4;
 }
 
+static __always_inline struct vxlanhdr *
+pktgen__push_ipv4_vxlan_packet(struct pktgen *builder,
+			       __u8 *smac, __u8 *dmac,
+			       __be32 saddr, __be32 daddr,
+			       __be16 sport, __be16 dport)
+{
+	struct udphdr *l4;
+
+	l4 = pktgen__push_ipv4_udp_packet(builder, smac, dmac, saddr, daddr,
+					  sport, dport);
+	if (!l4)
+		return NULL;
+
+	return pktgen__push_default_vxlanhdr(builder);
+}
+
+static __always_inline struct icmphdr *
+pktgen__push_ipv4_icmp_packet(struct pktgen *builder,
+			      __u8 *smac, __u8 *dmac,
+			      __be32 saddr, __be32 daddr,
+			      __u8 icmp_type)
+{
+	struct iphdr *l3;
+	struct icmphdr *l4;
+
+	l3 = pktgen__push_ipv4_packet(builder, smac, dmac, saddr, daddr);
+	if (!l3)
+		return NULL;
+
+	l4 = pktgen__push_icmphdr(builder);
+	if (!l4)
+		return NULL;
+
+	l4->type = icmp_type;
+	l4->code = 0;
+	l4->checksum = 0;
+
+	return l4;
+}
+
+static __always_inline struct igmphdr *
+pktgen__push_ipv4_igmp_packet(struct pktgen *builder,
+			      __u8 *smac, __u8 *dmac,
+			      __be32 saddr, __be32 daddr,
+			      __u8 igmp_type)
+{
+	struct ethhdr *l2;
+	struct iphdr *l3;
+	struct igmphdr *l4;
+
+	l2 = pktgen__push_ethhdr(builder);
+	if (!l2)
+		return NULL;
+
+	ethhdr__set_macs(l2, smac, dmac);
+
+	l3 = pktgen__push_default_iphdr(builder);
+	if (!l3)
+		return NULL;
+
+	l3->saddr = saddr;
+	l3->daddr = daddr;
+
+	l4 = pktgen__push_igmphdr(builder);
+	if (!l4)
+		return NULL;
+
+	l4->type = igmp_type;
+	l4->code = 0;
+	l4->csum = 0;
+
+	return l4;
+}
+
 static __always_inline struct tcphdr *
 pktgen__push_ipv6_tcp_packet(struct pktgen *builder,
 			     __u8 *smac, __u8 *dmac,
@@ -664,19 +842,10 @@ pktgen__push_ipv6_tcp_packet(struct pktgen *builder,
 {
 	struct ipv6hdr *l3;
 	struct tcphdr *l4;
-	struct ethhdr *l2;
 
-	l2 = pktgen__push_ethhdr(builder);
-	if (!l2)
-		return NULL;
-
-	ethhdr__set_macs(l2, smac, dmac);
-
-	l3 = pktgen__push_default_ipv6hdr(builder);
+	l3 = pktgen__push_ipv6_packet(builder, smac, dmac, saddr, daddr);
 	if (!l3)
 		return NULL;
-
-	ipv6hdr__set_addrs(l3, saddr, daddr);
 
 	l4 = pktgen__push_default_tcphdr(builder);
 	if (!l4)
@@ -684,6 +853,69 @@ pktgen__push_ipv6_tcp_packet(struct pktgen *builder,
 
 	l4->source = sport;
 	l4->dest = dport;
+
+	return l4;
+}
+
+static __always_inline struct udphdr *
+pktgen__push_ipv6_udp_packet(struct pktgen *builder,
+			     __u8 *smac, __u8 *dmac,
+			     __u8 *saddr, __u8 *daddr,
+			     __be16 sport, __be16 dport)
+{
+	struct ipv6hdr *l3;
+	struct udphdr *l4;
+
+	l3 = pktgen__push_ipv6_packet(builder, smac, dmac, saddr, daddr);
+	if (!l3)
+		return NULL;
+
+	l4 = pktgen__push_default_udphdr(builder);
+	if (!l4)
+		return NULL;
+
+	l4->source = sport;
+	l4->dest = dport;
+
+	return l4;
+}
+
+static __always_inline struct vxlanhdr *
+pktgen__push_ipv6_vxlan_packet(struct pktgen *builder,
+			       __u8 *smac, __u8 *dmac,
+			       __u8 *saddr, __u8 *daddr,
+			       __be16 sport, __be16 dport)
+{
+	struct udphdr *l4;
+
+	l4 = pktgen__push_ipv6_udp_packet(builder, smac, dmac, saddr, daddr,
+					  sport, dport);
+	if (!l4)
+		return NULL;
+
+	return pktgen__push_default_vxlanhdr(builder);
+}
+
+static __always_inline struct icmp6hdr *
+pktgen__push_ipv6_icmp6_packet(struct pktgen *builder,
+			       __u8 *smac, __u8 *dmac,
+			       __u8 *saddr, __u8 *daddr,
+			       __u8 icmp6_type)
+{
+	struct ipv6hdr *l3;
+	struct icmp6hdr *l4;
+
+	l3 = pktgen__push_ipv6_packet(builder, smac, dmac, saddr, daddr);
+	if (!l3)
+		return NULL;
+
+	l4 = pktgen__push_icmp6hdr(builder);
+	if (!l4)
+		return NULL;
+
+	l4->icmp6_type = icmp6_type;
+	l4->icmp6_code = 0;
+	l4->icmp6_cksum = 0;
 
 	return l4;
 }
@@ -759,6 +991,9 @@ static __always_inline void pktgen__finish_ipv4(const struct pktgen *builder, in
 	case PKT_LAYER_ESP:
 		ipv4_layer->protocol = IPPROTO_ESP;
 		break;
+	case PKT_LAYER_IGMP:
+		ipv4_layer->protocol = IPPROTO_IGMP;
+		break;
 	default:
 		break;
 	}
@@ -766,6 +1001,7 @@ static __always_inline void pktgen__finish_ipv4(const struct pktgen *builder, in
 	v4len = (__be16)(builder->cur_off - builder->layer_offsets[i]);
 	/* Calculate total length, which is IPv4 hdr + all layers after it */
 	ipv4_layer->tot_len = __bpf_htons(v4len);
+	ipv4_layer->check = csum_fold(csum_diff(NULL, 0, ipv4_layer, sizeof(struct iphdr), 0));
 }
 
 static __always_inline void pktgen__finish_ipv6(const struct pktgen *builder, int i)
@@ -793,11 +1029,17 @@ static __always_inline void pktgen__finish_ipv6(const struct pktgen *builder, in
 	case PKT_LAYER_IPV6_HOP_BY_HOP:
 		ipv6_layer->nexthdr = NEXTHDR_HOP;
 		break;
+	case PKT_LAYER_IPV6_ROUTING:
+		ipv6_layer->nexthdr = NEXTHDR_ROUTING;
+		break;
 	case PKT_LAYER_IPV6_AUTH:
 		ipv6_layer->nexthdr = NEXTHDR_AUTH;
 		break;
 	case PKT_LAYER_IPV6_DEST:
 		ipv6_layer->nexthdr = NEXTHDR_DEST;
+		break;
+	case PKT_LAYER_IPV6_FRAGMENT:
+		ipv6_layer->nexthdr = NEXTHDR_FRAGMENT;
 		break;
 	case PKT_LAYER_TCP:
 		ipv6_layer->nexthdr = IPPROTO_TCP;
@@ -818,7 +1060,7 @@ static __always_inline void pktgen__finish_ipv6(const struct pktgen *builder, in
 		break;
 	}
 
-	v6len = (__be16)(builder->cur_off + sizeof(struct ipv6hdr) -
+	v6len = (__u16)(builder->cur_off - sizeof(struct ipv6hdr) -
 		builder->layer_offsets[i]);
 
 	/* Calculate payload length, which doesn't include the header size */
@@ -845,11 +1087,17 @@ static __always_inline void pktgen__finish_ipv6_opt(const struct pktgen *builder
 	case PKT_LAYER_IPV6_HOP_BY_HOP:
 		ipv6_opt_layer->nexthdr = NEXTHDR_HOP;
 		break;
+	case PKT_LAYER_IPV6_ROUTING:
+		ipv6_opt_layer->nexthdr = NEXTHDR_ROUTING;
+		break;
 	case PKT_LAYER_IPV6_AUTH:
 		ipv6_opt_layer->nexthdr = NEXTHDR_AUTH;
 		break;
 	case PKT_LAYER_IPV6_DEST:
 		ipv6_opt_layer->nexthdr = NEXTHDR_DEST;
+		break;
+	case PKT_LAYER_IPV6_FRAGMENT:
+		ipv6_opt_layer->nexthdr = NEXTHDR_FRAGMENT;
 		break;
 	case PKT_LAYER_TCP:
 		ipv6_opt_layer->nexthdr = IPPROTO_TCP;
@@ -865,6 +1113,98 @@ static __always_inline void pktgen__finish_ipv6_opt(const struct pktgen *builder
 		break;
 	default:
 		break;
+	}
+}
+
+static __always_inline __u32
+pktgen__ip_csum(const struct pktgen *builder, int i)
+{
+	__u32 csum;
+	__u32 tmp;
+
+	switch (builder->layers[i - 1]) {
+	case PKT_LAYER_IPV4:
+		if (builder->layer_offsets[i - 1] >= MAX_PACKET_OFF - sizeof(struct iphdr))
+			return 0;
+
+		struct iphdr *ipv4_layer;
+
+		ipv4_layer = ctx_data(builder->ctx) + builder->layer_offsets[i - 1];
+		if ((void *)ipv4_layer + sizeof(struct iphdr) > ctx_data_end(builder->ctx))
+			return 0;
+
+		csum = csum_diff(NULL, 0, &ipv4_layer->saddr, sizeof(__be32), 0);
+		csum = csum_diff(NULL, 0, &ipv4_layer->daddr, sizeof(__be32), csum);
+		tmp = (__u16)ipv4_layer->protocol << 8;
+		csum = csum_diff(NULL, 0, &tmp, sizeof(__u32), csum);
+		return csum;
+	case PKT_LAYER_IPV6:
+		if (builder->layer_offsets[i - 1] >= MAX_PACKET_OFF - sizeof(struct ipv6hdr))
+			return 0;
+
+		struct ipv6hdr *ipv6_layer;
+
+		ipv6_layer = ctx_data(builder->ctx) + builder->layer_offsets[i - 1];
+		if ((void *)ipv6_layer + sizeof(struct ipv6hdr) > ctx_data_end(builder->ctx))
+			return 0;
+
+		csum = csum_diff(NULL, 0, &ipv6_layer->saddr, sizeof(struct in6_addr), 0);
+		csum = csum_diff(NULL, 0, &ipv6_layer->daddr, sizeof(struct in6_addr), csum);
+		tmp = (__u16)ipv6_layer->nexthdr << 8;
+		csum = csum_diff(NULL, 0, &tmp, sizeof(__u32), csum);
+		return csum;
+	default:
+		return 0;
+	}
+}
+
+static __always_inline void
+pktgen__udp_csum(const struct pktgen *builder, int i, struct udphdr *udp_layer)
+{
+	if (i == 0)
+		return;
+
+	if (builder->layers[i - 1] == PKT_LAYER_IPV4 ||
+	    builder->layers[i - 1] == PKT_LAYER_IPV6) {
+		__u16 len;
+		__u32 csum;
+
+		udp_layer->check = 0;
+		csum = pktgen__ip_csum(builder, i);
+		csum = csum_diff(NULL, 0, &udp_layer->len, sizeof(__u32), csum);
+
+		len = sizeof(struct udphdr) + sizeof(default_data);
+		if ((void *)udp_layer + len > ctx_data_end(builder->ctx))
+			return;
+
+		csum = csum_diff(NULL, 0, udp_layer, len, csum);
+		udp_layer->check = csum_fold(csum);
+	}
+}
+
+static __always_inline void
+pktgen__tcp_csum(const struct pktgen *builder, int i, struct tcphdr *tcp_layer)
+{
+	if (i == 0)
+		return;
+
+	if (builder->layers[i - 1] == PKT_LAYER_IPV4 ||
+	    builder->layers[i - 1] == PKT_LAYER_IPV6) {
+		__u32 len;
+		__u32 csum;
+		__u32 tmp;
+
+		tcp_layer->check = 0;
+		csum = pktgen__ip_csum(builder, i);
+		tmp = bpf_htons((__be16)(builder->cur_off - builder->layer_offsets[i]));
+		csum = csum_diff(NULL, 0, &tmp, sizeof(__u32), csum);
+
+		len = sizeof(struct tcphdr) + sizeof(default_data);
+		if ((void *)tcp_layer + len > ctx_data_end(builder->ctx))
+			return;
+
+		csum = csum_diff(NULL, 0, tcp_layer, len, csum);
+		tcp_layer->check = csum_fold(csum);
 	}
 }
 
@@ -902,6 +1242,7 @@ static __always_inline void pktgen__finish_tcp(const struct pktgen *builder, int
 	}
 
 	tcp_layer->doff = (__u16)hdr_size / 4;
+	pktgen__tcp_csum(builder, i, tcp_layer);
 }
 
 static __always_inline void pktgen__finish_udp(const struct pktgen *builder, int i)
@@ -920,6 +1261,9 @@ static __always_inline void pktgen__finish_udp(const struct pktgen *builder, int
 	if ((void *)udp_layer + sizeof(struct udphdr) >
 		ctx_data_end(builder->ctx))
 		return;
+
+	udp_layer->len = bpf_htons((__be16)(builder->cur_off - builder->layer_offsets[i]));
+	pktgen__udp_csum(builder, i, udp_layer);
 }
 
 static __always_inline void pktgen__finish_geneve(const struct pktgen *builder, int i)
@@ -981,8 +1325,10 @@ void pktgen__finish(const struct pktgen *builder)
 			break;
 
 		case PKT_LAYER_IPV6_HOP_BY_HOP:
+		case PKT_LAYER_IPV6_ROUTING:
 		case PKT_LAYER_IPV6_AUTH:
 		case PKT_LAYER_IPV6_DEST:
+		case PKT_LAYER_IPV6_FRAGMENT:
 			pktgen__finish_ipv6_opt(builder, i);
 			break;
 
@@ -1021,11 +1367,12 @@ void pktgen__finish(const struct pktgen *builder)
 		case PKT_LAYER_VXLAN:
 			break;
 
+		case PKT_LAYER_IGMP:
+			break;
+
 		case PKT_LAYER_DATA:
 			/* User defined data, nothing to do */
 			break;
 		}
 	}
 };
-
-#endif /* __TEST_PKTGEN__ */

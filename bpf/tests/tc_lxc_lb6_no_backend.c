@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
-
 #include <bpf/ctx/skb.h>
+#include "common.h"
 #include "pktgen.h"
-
-/* Set ETH_HLEN to 14 to indicate that the packet has a 14 byte ethernet header */
-#define ETH_HLEN 14
 
 /* Enable code paths under test */
 #define ENABLE_IPV6
@@ -24,26 +20,14 @@
 #define BACKEND_PORT		__bpf_htons(8080)
 
 static volatile const __u8 *client_mac = mac_one;
-/* this matches the default node_config.h: */
-static volatile const __u8 lb_mac[ETH_ALEN] = { 0xce, 0x72, 0xa7, 0x03, 0x88, 0x56 };
+static volatile const __u8 *lb_mac = mac_host;
 
-#include <bpf_lxc.c>
+#include "lib/bpf_lxc.h"
+
+ASSIGN_CONFIG(bool, enable_no_service_endpoints_routable, true)
 
 #include "lib/ipcache.h"
 #include "lib/lb.h"
-
-#define FROM_CONTAINER	0
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 2);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[FROM_CONTAINER] = &cil_from_container,
-	},
-};
 
 /* Test that a SVC without backends returns a TCP RST or ICMP error */
 PKTGEN("tc", "tc_lxc_no_backend")
@@ -83,7 +67,7 @@ int lxc_no_backend_setup(struct __ctx_buff *ctx)
 
 	memcpy(frontend_ip.addr, (void *)FRONTEND_IP, 16);
 
-	lb_v6_add_service(&frontend_ip, FRONTEND_PORT, 1, revnat_id);
+	lb_v6_add_service(&frontend_ip, FRONTEND_PORT, IPPROTO_TCP, 1, revnat_id);
 
 	union v6addr backend_ip = {};
 
@@ -91,11 +75,7 @@ int lxc_no_backend_setup(struct __ctx_buff *ctx)
 
 	ipcache_v6_add_entry(&backend_ip, 0, 112233, 0, 0);
 
-	/* Jump into the entrypoint */
-	tail_call_static(ctx, &entry_call_map, FROM_CONTAINER);
-
-	/* Fail if we didn't jump */
-	return TEST_ERROR;
+	return pod_send_packet(ctx);
 }
 
 CHECK("tc", "tc_lxc_no_backend")
@@ -124,8 +104,8 @@ int lxc_no_backend_check(__maybe_unused const struct __ctx_buff *ctx)
 	if ((void *)l2 + sizeof(struct ethhdr) > data_end)
 		test_fatal("l2 header out of bounds");
 
-	assert(memcmp(l2->h_dest, (__u8 *)client_mac, sizeof(lb_mac)) == 0);
-	assert(memcmp(l2->h_source, (__u8 *)lb_mac, sizeof(lb_mac)) == 0);
+	assert(memcmp(l2->h_dest, (__u8 *)client_mac, ETH_ALEN) == 0);
+	assert(memcmp(l2->h_source, (__u8 *)lb_mac, ETH_ALEN) == 0);
 	assert(l2->h_proto == __bpf_htons(ETH_P_IPV6));
 
 	l3 = data + sizeof(__u32) + sizeof(struct ethhdr);
@@ -147,7 +127,7 @@ int lxc_no_backend_check(__maybe_unused const struct __ctx_buff *ctx)
 	 * context with the runner option and importing the packet into
 	 * wireshark
 	 */
-	assert(l4->icmp6_cksum == bpf_htons(0x7da8));
+	assert(l4->icmp6_cksum == bpf_htons(0x9e14));
 
 	test_finish();
 }

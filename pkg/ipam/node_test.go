@@ -3,7 +3,17 @@
 
 package ipam
 
-import check "github.com/cilium/checkmate"
+import (
+	"testing"
+
+	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/require"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
+
+	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/time"
+)
 
 type testNeededDef struct {
 	available   int
@@ -49,16 +59,54 @@ var excessDef = []testExcessDef{
 	{20, 4, 8, 0, 8, 0},
 }
 
-func (e *IPAMSuite) TestCalculateNeededIPs(c *check.C) {
+func TestCalculateNeededIPs(t *testing.T) {
 	for _, d := range neededDef {
 		result := calculateNeededIPs(d.available, d.used, d.preallocate, d.minallocate, d.maxallocate)
-		c.Assert(result, check.Equals, d.result)
+		require.Equal(t, d.result, result)
 	}
 }
 
-func (e *IPAMSuite) TestCalculateExcessIPs(c *check.C) {
+func TestCalculateExcessIPs(t *testing.T) {
 	for _, d := range excessDef {
 		result := calculateExcessIPs(d.available, d.used, d.preallocate, d.minallocate, d.maxabovewatermark)
-		c.Assert(result, check.Equals, d.result)
+		require.Equal(t, d.result, result)
 	}
+}
+
+type k8sMockNode struct{}
+
+func (k *k8sMockNode) Update(origNode, newNode *v2.CiliumNode) (*v2.CiliumNode, error) {
+	return nil, k8sErrors.NewNotFound(v2.Resource("ciliumnodes"), newNode.Name)
+}
+
+func (k *k8sMockNode) UpdateStatus(origNode, newNode *v2.CiliumNode) (*v2.CiliumNode, error) {
+	return nil, k8sErrors.NewNotFound(v2.Resource("ciliumnodes"), newNode.Name)
+}
+
+func (k *k8sMockNode) Get(node string) (*v2.CiliumNode, error) {
+	return nil, k8sErrors.NewNotFound(v2.Resource("ciliumnodes"), node)
+}
+
+func (k *k8sMockNode) Create(*v2.CiliumNode) (*v2.CiliumNode, error) {
+	return &v2.CiliumNode{}, nil
+}
+
+func TestSyncToAPIServerForNonExistingNode(t *testing.T) {
+	node := &Node{
+		rootLogger: hivetest.Logger(t),
+		name:       "test-node",
+		manager: &NodeManager{
+			k8sAPI: &k8sMockNode{},
+		},
+		logLimiter: logging.NewLimiter(10*time.Second, 3), // 1 log / 10 secs, burst of 3
+		ipv4Alloc: ipAllocAttrs{
+			ipsMarkedForRelease: make(map[string]time.Time),
+			ipReleaseStatus:     make(map[string]string),
+		},
+		resource: newCiliumNode("test-node", 0, 0, 0),
+		ops:      &nodeOperationsMock{},
+	}
+	node.updateLogger()
+
+	require.NoError(t, node.syncToAPIServer())
 }

@@ -17,10 +17,6 @@ concurrency:
   cancel-in-progress: ${{ !github.event.merge_group }}
 
 env:
-  cilium_cli_ci_version:
-  CILIUM_CLI_MODE: helm
-  # renovate: datasource=github-releases depName=kubernetes-sigs/kind
-  KIND_VERSION: v0.20.0
   KIND_CONFIG: .github/kind-config.yaml
   CONFORMANCE_TEMPLATE: examples/kubernetes/connectivity-check/connectivity-check.yaml
   TIMEOUT: 2m
@@ -30,17 +26,18 @@ env:
 jobs:
   check_changes:
     name: Deduce required tests from code changes
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     outputs:
       tested: ${{ steps.tested-tree.outputs.src }}
     steps:
       - name: Checkout code
         if: ${{ !github.event.pull_request }}
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Check code changes
-        uses: dorny/paths-filter@4512585405083f25c027a35db413c2b3b9006d50 # v2.11.1
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
         id: tested-tree
         with:
           # For `push` events, compare against the `ref` base branch
@@ -49,13 +46,14 @@ jobs:
           filters: |
             src:
               - '!(test|Documentation)/**'
+              - '!**/*.md'
 
   preflight-clusterrole:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: Preflight Clusterrole Check
     steps:
       - name: Checkout code
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -63,11 +61,11 @@ jobs:
         run: make check-k8s-clusterrole
 
   helm-charts:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: Helm Charts Check
     steps:
       - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -77,29 +75,31 @@ jobs:
           test -z "$(git status --porcelain)" || (echo "please run 'make -C install/kubernetes' and submit your changes"; exit 1)
 
   conformance-test:
+    env:
+      job_name: "Conformance Smoke Test"
     needs: check_changes
     if: ${{ needs.check_changes.outputs.tested == 'true' && github.event_name != 'merge_group' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: Installation and Conformance Test
     steps:
-      - name: Checkout main branch to access local actions
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - name: Collect Workflow Telemetry
+        uses: catchpoint/workflow-telemetry-action@94c3c3d9567a0205de6da68a76c428ce4e769af1 # v2.0.0
         with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-      - name: Set Environment Variables
-        uses: ./.github/actions/set-env-variables
+          comment_on_pr: false
 
       - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      - name: Set Environment Variables
+        uses: ./.github/actions/set-env-variables
 
       - name: Get Cilium's default values
         id: default_vars
         uses: ./.github/actions/helm-default
         with:
-          image-tag: ${{ github.event.pull_request.head.sha }}
+          image-tag: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set image tag
         id: sha
@@ -113,10 +113,13 @@ jobs:
           test -z "$(git status --porcelain)" || (echo "please run 'make -C examples/kubernetes/connectivity-check fmt all' and submit your changes"; exit 1)
 
       - name: Create kind cluster
-        uses: helm/kind-action@dda0770415bac9fc20092cacbc54aa298604d140 # v1.8.0
+        uses: helm/kind-action@92086f6be054225fa813e0a4b13787fc9088faab # v1.13.0
         with:
           version: ${{ env.KIND_VERSION }}
+          node_image: ${{ env.KIND_K8S_IMAGE }}
+          kubectl_version: ${{ env.KIND_K8S_VERSION }}
           config: ${{ env.KIND_CONFIG }}
+          wait: 0 # The control-plane never becomes ready, since no CNI is present
 
       - name: Wait for images to be available
         timeout-minutes: 30
@@ -125,6 +128,41 @@ jobs:
           for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
             until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ steps.sha.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
+
+      - name: Generate CA, Server and Client certs for Operator Prometheus
+        id: gen_certs
+        run: |
+          CA_CERT=ca.crt
+          CLIENT_CERT=client.crt
+          CLIENT_KEY=client.key
+          SERVER_NAME=server.operator.prometheus
+
+          openssl genrsa -out ca.key 4096
+          openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \
+            -subj "/CN=operator.prometheus" -out ${CA_CERT}
+
+          openssl genrsa -out tls.key 2048
+          openssl req -new -key tls.key -subj "/CN=${SERVER_NAME}" -out server.csr
+
+          openssl x509 -req -in server.csr -CA ${CA_CERT} -CAkey ca.key -CAcreateserial \
+            -out tls.crt -days 365 -sha256
+
+          openssl genrsa -out ${CLIENT_KEY} 2048
+          openssl req -new -key ${CLIENT_KEY} -subj "/CN=client.operator.prometheus" -out client.csr
+
+          openssl x509 -req -in client.csr -CA ${CA_CERT} -CAkey ca.key -CAcreateserial \
+            -out ${CLIENT_CERT} -days 365 -sha256
+
+          OPERATOR_PROMETHEUS_TLS_SECRET_NAME=operator-prometheus-tls-secret
+          kubectl -n kube-system create secret generic ${OPERATOR_PROMETHEUS_TLS_SECRET_NAME} \
+            --from-file=ca.crt=${CA_CERT} \
+            --from-file=tls.crt=tls.crt \
+            --from-file=tls.key=tls.key \
+            --from-file=${CLIENT_CERT}=${CLIENT_CERT} \
+            --from-file=${CLIENT_KEY}=${CLIENT_KEY}
+
+          echo operator_prometheus_tls_secret_name=${OPERATOR_PROMETHEUS_TLS_SECRET_NAME} >> $GITHUB_OUTPUT
+          echo server_name=${SERVER_NAME} >> $GITHUB_OUTPUT
 
       - name: Set up install variables
         id: vars
@@ -136,6 +174,9 @@ jobs:
              --helm-set hubble.relay.enabled=true \
              --helm-set prometheus.enabled=true \
              --helm-set operator.prometheus.enabled=true \
+             --helm-set operator.prometheus.tls.enabled=true \
+             --helm-set operator.prometheus.tls.server.existingSecret=${{ steps.gen_certs.outputs.operator_prometheus_tls_secret_name }} \
+             --helm-set operator.prometheus.tls.server.mtls.enabled=true \
              --helm-set hubble.enabled=true \
              --helm-set=hubble.metrics.enabled=\"{dns,drop,tcp,flow,port-distribution,icmp,http}\" \
              --helm-set ingressController.enabled=true"
@@ -143,11 +184,13 @@ jobs:
           echo cilium_install_defaults=${CILIUM_INSTALL_DEFAULTS} >> $GITHUB_OUTPUT
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@c1fa8afda634f0457e9905d4f638e5164c4e0fc8 # v0.15.17
+        uses: cilium/cilium-cli@eb32911890466ddec93da63cf83f5bcb2ae23e26 # v0.19.0
         with:
+          skip-build: ${{ env.CILIUM_CLI_SKIP_BUILD }}
+          image-repo: ${{ env.CILIUM_CLI_IMAGE_REPO }}
+          image-tag: ${{ steps.sha.outputs.sha }}
           repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
           release-version: ${{ env.CILIUM_CLI_VERSION }}
-          ci-version: ${{ env.cilium_cli_ci_version }}
 
       - name: Install Cilium
         id: install-cilium
@@ -156,16 +199,11 @@ jobs:
 
       - name: Wait for Cilium status to be ready
         run: |
-          cilium status --wait
+          cilium status --wait --interactive=false
           kubectl -n kube-system get pods
 
-      - name: Port forward Relay
-        run: |
-          cilium hubble port-forward&
-          sleep 10s
-          [[ $(pgrep -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay" | wc -l) == 2 ]]
-
       - name: Run conformance test (e.g. connectivity check)
+        id: run-tests
         run: |
           kubectl apply -f ${{ env.CONFORMANCE_TEMPLATE }}
           kubectl wait --for=condition=Available --all deployment --timeout=${{ env.TIMEOUT }}
@@ -174,32 +212,67 @@ jobs:
         if: ${{ success() }}
         run: |
           cd $HOME
-          cilium_pod=$(kubectl -n kube-system get po -o name --field-selector=status.phase==Running -l 'k8s-app=cilium' -o jsonpath='{.items[0].metadata.name}' )
-          kubectl -n kube-system exec $cilium_pod -- sh -c "apt update && apt install curl -y"
-          kubectl -n kube-system exec $cilium_pod -- curl http://localhost:9962/metrics > metrics.prom
+          cilium_pod_ip=$(kubectl -n kube-system get po -o name --field-selector=status.phase==Running -l 'k8s-app=cilium' -o jsonpath='{.items[0].status.podIP}' )
+          curl http://${cilium_pod_ip}:9962/metrics > metrics-agent.prom
+
+          kubectl get secret ${{ steps.gen_certs.outputs.operator_prometheus_tls_secret_name }} \
+            -n kube-system \
+            -o jsonpath='{.data.client\.crt}' \
+            | base64 -d > client.crt
+
+          kubectl get secret ${{ steps.gen_certs.outputs.operator_prometheus_tls_secret_name }} \
+            -n kube-system \
+            -o jsonpath='{.data.client\.key}' \
+            | base64 -d > client.key
+
+          kubectl get secret ${{ steps.gen_certs.outputs.operator_prometheus_tls_secret_name }} \
+            -n kube-system \
+            -o jsonpath='{.data.ca\.crt}' \
+            | base64 -d > ca.crt
+
+          operator_ip=$(kubectl get pods -n kube-system -l io.cilium/app=operator -o jsonpath='{range .items[*]}{.status.podIP}{"\n"}{end}')
+          curl --retry 5 \
+            --cert client.crt \
+            --key client.key \
+            --cacert ca.crt \
+            --resolve ${{ steps.gen_certs.outputs.server_name }}:9963:${operator_ip} \
+            https://${{ steps.gen_certs.outputs.server_name }}:9963/metrics > metrics-operator.prom
           # Install promtool binary release. `go install` doesn't work due to
           # https://github.com/prometheus/prometheus/issues/8852 and related issues.
           curl -sSL --remote-name-all https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/{prometheus-${PROM_VERSION}.linux-amd64.tar.gz,sha256sums.txt}
           sha256sum --check --ignore-missing sha256sums.txt
-          tar xzvf prometheus-${PROM_VERSION}.linux-amd64.tar.gz prometheus-${PROM_VERSION}.linux-amd64/promtool
+          tar -xzvf prometheus-${PROM_VERSION}.linux-amd64.tar.gz prometheus-${PROM_VERSION}.linux-amd64/promtool
           rm -f prometheus-${PROM_VERSION}.linux-amd64.tar.gz
           sudo mv prometheus-${PROM_VERSION}.linux-amd64/promtool /usr/bin
-          cat metrics.prom | promtool check metrics
+          cat metrics-agent.prom | promtool check metrics
+          cat metrics-operator.prom | promtool check metrics
 
-      - name: Report cluster failure status and capture cilium-sysdump
-        if: ${{ failure() && steps.install-cilium.outcome != 'skipped' }}
-        # The following is needed to prevent hubble from receiving an empty
-        # file (EOF) on stdin and displaying no flows.
-        shell: 'script -q -e -c "bash --noprofile --norc -eo pipefail {0}"'
+      - name: Check prometheus feature metrics documentation
+        if: ${{ success() }}
         run: |
-          echo "=== Retrieve cluster state ==="
-          kubectl get pods --all-namespaces -o wide
-          cilium status
-          cilium sysdump --output-filename cilium-sysdump-out
+          cd $HOME
+          cat metrics-agent.prom | grep cilium_feature > metrics-agent-features.prom
+          cat metrics-operator.prom | grep cilium_operator_feature > metrics-operator-features.prom
+          cd -
+          go run ./tools/feature-helm-generator \
+             --prom-file "$HOME/metrics-agent-features.prom" \
+             --metrics-prefix cilium_feature \
+             --metrics-separators adv_connect_and_lb,controlplane,datapath,network_policies \
+             > Documentation/observability/feature-metrics-agent.txt
+          go run ./tools/feature-helm-generator \
+             --prom-file "$HOME/metrics-operator-features.prom" \
+             --metrics-prefix cilium_operator_feature \
+             --metrics-separators adv_connect_and_lb \
+             > Documentation/observability/feature-metrics-operator.txt
+          if ! git diff; then
+            echo "Feature documentation metrics out-of-sync"
+            exit 1
+          fi
 
-      - name: Upload cilium-sysdump
-        uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
-        if: ${{ failure() }}
+      - name: Run common post steps
+        if: ${{ always() && steps.install-cilium.outcome != 'skipped' }}
+        uses: ./.github/actions/post-logic
         with:
-          name: cilium-sysdump-out.zip
-          path: cilium-sysdump-out.zip
+          artifacts_suffix: "${{ env.job_name }}"
+          job_status: "${{ job.status }}"
+          capture_features_tested: ${{ steps.run-tests.outcome != 'skipped' }}

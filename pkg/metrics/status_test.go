@@ -5,19 +5,17 @@ package metrics
 
 import (
 	"strings"
+	"testing"
 
-	. "github.com/cilium/checkmate"
+	"github.com/cilium/hive/hivetest"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/api/v1/client/daemon"
 	"github.com/cilium/cilium/api/v1/health/client/connectivity"
 	healthModels "github.com/cilium/cilium/api/v1/health/models"
 	"github.com/cilium/cilium/api/v1/models"
 )
-
-type StatusCollectorTest struct{}
-
-var _ = Suite(&StatusCollectorTest{})
 
 var sampleHealthResponse = &daemon.GetHealthzOK{
 	Payload: &models.StatusResponse{
@@ -125,7 +123,8 @@ func (f *fakeDaemonClient) GetHealthz(params *daemon.GetHealthzParams, opts ...d
 	return f.response, nil
 }
 
-func (s *StatusCollectorTest) Test_statusCollector_Collect(c *C) {
+func Test_statusCollector_Collect(t *testing.T) {
+	logger := hivetest.Logger(t)
 	tests := []struct {
 		name                 string
 		healthResponse       *daemon.GetHealthzOK
@@ -140,28 +139,45 @@ func (s *StatusCollectorTest) Test_statusCollector_Collect(c *C) {
 			expectedCount:        5,
 			expectedMetric:       expectedStatusMetric,
 		},
+		{
+			name:           "check status metrics without health checking",
+			healthResponse: sampleHealthResponse,
+			expectedCount:  3, // Only non-health metrics: controllers_failing, ip_addresses (IPv4 + IPv6)
+			expectedMetric: `# HELP cilium_controllers_failing Number of failing controllers
+# TYPE cilium_controllers_failing gauge
+cilium_controllers_failing 1
+# HELP cilium_ip_addresses Number of allocated IP addresses
+# TYPE cilium_ip_addresses gauge
+cilium_ip_addresses{family="ipv4"} 3
+cilium_ip_addresses{family="ipv6"} 3
+`,
+		},
 	}
 
 	for _, tt := range tests {
-		c.Log("Test :", tt.name)
-		collector := newStatusCollectorWithClients(&fakeDaemonClient{
+		t.Log("Test :", tt.name)
+		var connectivityClient connectivityStatusGetter
+		if tt.connectivityResponse != nil {
+			connectivityClient = &fakeConnectivityClient{
+				response: tt.connectivityResponse,
+			}
+		}
+		collector := newStatusCollectorWithClients(logger, &fakeDaemonClient{
 			response: tt.healthResponse,
-		}, &fakeConnectivityClient{
-			response: tt.connectivityResponse,
-		})
+		}, connectivityClient)
 
 		// perform static checks such as prometheus naming convention, number of labels matching, etc
 		lintProblems, err := testutil.CollectAndLint(collector)
-		c.Assert(err, IsNil)
-		c.Assert(lintProblems, HasLen, 0)
+		require.NoError(t, err)
+		require.Empty(t, lintProblems)
 
 		// check the number of metrics
 		count := testutil.CollectAndCount(collector)
-		c.Assert(count, Equals, tt.expectedCount)
+		require.Equal(t, tt.expectedCount, count)
 
 		// compare the metric output
 		err = testutil.CollectAndCompare(collector, strings.NewReader(tt.expectedMetric))
-		c.Assert(err, IsNil)
+		require.NoError(t, err)
 	}
 
 }

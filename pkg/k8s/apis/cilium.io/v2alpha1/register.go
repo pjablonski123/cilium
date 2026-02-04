@@ -29,17 +29,6 @@ const (
 	// CESName is the full name of Cilium Endpoint Slice
 	CESName = CESPluralName + "." + CustomResourceDefinitionGroup
 
-	// Cilium BGP Peering Policy (BGPP)
-
-	// BGPPPluralName is the plural name of Cilium BGP Peering Policy
-	BGPPPluralName = "ciliumbgppeeringpolicies"
-
-	// BGPPKindDefinition is the kind name of Cilium BGP Peering Policy
-	BGPPKindDefinition = "CiliumBGPPeeringPolicy"
-
-	// BGPPName is the full name of Cilium BGP Peering Policy
-	BGPPName = BGPPPluralName + "." + CustomResourceDefinitionGroup
-
 	// BGPClusterConfig (BGPCC)
 	BGPCCPluralName     = "ciliumbgpclusterconfigs"
 	BGPCCKindDefinition = "CiliumBGPClusterConfig"
@@ -77,14 +66,15 @@ const (
 	LBIPPoolName = PoolPluralName + "." + CustomResourceDefinitionGroup
 
 	// CiliumNodeConfig (CNC)
-	CNCPluralName     = "ciliumnodeconfigs"
-	CNCKindDefinition = "CiliumNodeConfig"
-	CNCName           = CNCPluralName + "." + CustomResourceDefinitionGroup
 
-	// CiliumCIDRGroup (CCG)
-	CCGPluralName     = "ciliumcidrgroups"
-	CCGKindDefinition = "CiliumCIDRGroup"
-	CCGName           = CCGPluralName + "." + CustomResourceDefinitionGroup
+	// CNCPluralName is the plural name of Cilium Node Config
+	CNCPluralName = "ciliumnodeconfigs"
+
+	// CNCKindDefinition is the kind name of Cilium Node Config
+	CNCKindDefinition = "CiliumNodeConfig"
+
+	// CNCName is the full name of Cilium Node Config
+	CNCName = CNCPluralName + "." + CustomResourceDefinitionGroup
 
 	// Cilium L2 Announcement policy
 
@@ -104,6 +94,12 @@ const (
 	CPIPPluralName     = "ciliumpodippools"
 	CPIPKindDefinition = "CiliumPodIPPool"
 	CPIPName           = CPIPPluralName + "." + CustomResourceDefinitionGroup
+
+	// CiliumGatewayClassConfig (CGCC)
+	CGCCPluralName     = "ciliumgatewayclassconfigs"
+	CGCCListName       = "ciliumgatewayclassconfiglists"
+	CGCCKindDefinition = "CiliumGatewayClassConfig"
+	CGCCName           = CGCCPluralName + "." + CustomResourceDefinitionGroup
 )
 
 // SchemeGroupVersion is group version used to register these objects
@@ -149,18 +145,14 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&CiliumEndpointSlice{},
 		&CiliumEndpointSliceList{},
-		&CiliumBGPPeeringPolicy{},
-		&CiliumBGPPeeringPolicyList{},
 		&CiliumLoadBalancerIPPool{},
 		&CiliumLoadBalancerIPPoolList{},
-		&CiliumNodeConfig{},
-		&CiliumNodeConfigList{},
-		&CiliumCIDRGroup{},
-		&CiliumCIDRGroupList{},
 		&CiliumL2AnnouncementPolicy{},
 		&CiliumL2AnnouncementPolicyList{},
 		&CiliumPodIPPool{},
 		&CiliumPodIPPoolList{},
+		&CiliumNodeConfig{},
+		&CiliumNodeConfigList{},
 
 		// new BGP types
 		&CiliumBGPClusterConfig{},
@@ -173,6 +165,10 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&CiliumBGPNodeConfigList{},
 		&CiliumBGPNodeConfigOverride{},
 		&CiliumBGPNodeConfigOverrideList{},
+
+		// new Gateway API types
+		&CiliumGatewayClassConfig{},
+		&CiliumGatewayClassConfigList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)

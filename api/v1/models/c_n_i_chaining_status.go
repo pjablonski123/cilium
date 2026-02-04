@@ -20,13 +20,11 @@ import (
 
 // CNIChainingStatus Status of CNI chaining
 //
-// +k8s:deepcopy-gen=true
-//
 // swagger:model CNIChainingStatus
 type CNIChainingStatus struct {
 
 	// mode
-	// Enum: [none aws-cni flannel generic-veth portmap]
+	// Enum: ["none","aws-cni","flannel","generic-veth","portmap"]
 	Mode string `json:"mode,omitempty"`
 }
 
@@ -44,7 +42,7 @@ func (m *CNIChainingStatus) Validate(formats strfmt.Registry) error {
 	return nil
 }
 
-var cNIChainingStatusTypeModePropEnum []interface{}
+var cNIChainingStatusTypeModePropEnum []any
 
 func init() {
 	var res []string

@@ -59,12 +59,15 @@ func init() {
 	// From preflight_migrate_crd_identity.go
 	miCmd := migrateIdentityCmd()
 	miCmd.Flags().StringVar(&kvStore, "kvstore", "", "Key-value store type")
-	miCmd.Flags().Var(option.NewNamedMapOptions("kvstore-opts", &kvStoreOpts, nil), "kvstore-opt", "Key-value store options e.g. etcd.address=127.0.0.1:4001")
+	miCmd.Flags().Var(option.NewMapOptions(&kvStoreOpts), "kvstore-opt", "Key-value store options e.g. etcd.address=127.0.0.1:4001")
 	PreflightCmd.AddCommand(miCmd)
 
 	PreflightCmd.AddCommand(validateCNPCmd())
 
 	RootCmd.AddCommand(PreflightCmd)
+
+	PreflightCmd.AddCommand(validateConfigmapCmd())
+
 }
 
 // preflightPoller collects IP data in toCIDRSet rules that are siblings to
@@ -113,7 +116,7 @@ func preflightPoller() {
 // different combination of names, the IPs set per name will reflects IPs that
 // actuall belong to other names also seen in the toFQDNs section of that rule.
 func getDNSMappings() (DNSData map[string][]netip.Addr, err error) {
-	policy, err := client.PolicyGet(nil)
+	policy, err := client.PolicyGet()
 	if err != nil {
 		return nil, err
 	}

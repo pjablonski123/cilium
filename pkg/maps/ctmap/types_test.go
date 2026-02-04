@@ -20,26 +20,6 @@ func TestMapKey(t *testing.T) {
 	assert.Panics(t, func() { mapTypeMax.key() })
 }
 
-func TestMapBPFDefine(t *testing.T) {
-	for mapType := mapType(0); mapType < mapTypeMax; mapType++ {
-		if mapType.isIPv6() {
-			assert.Contains(t, mapType.bpfDefine(), "6")
-		}
-		if mapType.isIPv4() {
-			assert.Contains(t, mapType.bpfDefine(), "4")
-		}
-
-		if mapType.isTCP() {
-			assert.Contains(t, mapType.bpfDefine(), "TCP")
-		} else {
-			assert.Contains(t, mapType.bpfDefine(), "ANY")
-		}
-	}
-
-	assert.Panics(t, func() { mapType(-1).bpfDefine() })
-	assert.Panics(t, func() { mapTypeMax.bpfDefine() })
-}
-
 func TestMaxEntries(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -66,16 +46,10 @@ func TestMaxEntries(t *testing.T) {
 			option.Config.CTMapEntriesGlobalAny = tt.any
 
 			for mapType := mapType(0); mapType < mapTypeMax; mapType++ {
-				if mapType.isLocal() {
-					assert.Equal(t, mapNumEntriesLocal, mapType.maxEntries())
-				}
-
-				if mapType.isGlobal() {
-					if mapType.isTCP() {
-						assert.Equal(t, tt.etcp, mapType.maxEntries())
-					} else {
-						assert.Equal(t, tt.eany, mapType.maxEntries())
-					}
+				if mapType.isTCP() {
+					assert.Equal(t, tt.etcp, mapType.maxEntries())
+				} else {
+					assert.Equal(t, tt.eany, mapType.maxEntries())
 				}
 			}
 

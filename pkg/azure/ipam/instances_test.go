@@ -4,13 +4,15 @@
 package ipam
 
 import (
-	"context"
+	"fmt"
+	"net/netip"
+	"testing"
 
-	check "github.com/cilium/checkmate"
+	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/require"
 
 	apimock "github.com/cilium/cilium/pkg/azure/api/mock"
 	"github.com/cilium/cilium/pkg/azure/types"
-	"github.com/cilium/cilium/pkg/cidr"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 )
 
@@ -18,7 +20,7 @@ var (
 	subnets = []*ipamTypes.Subnet{
 		{
 			ID:               "subnet-1",
-			CIDR:             cidr.MustParseCIDR("1.1.0.0/16"),
+			CIDR:             netip.MustParsePrefix("1.1.0.0/16"),
 			VirtualNetworkID: "vpc-1",
 			Tags: map[string]string{
 				"tag1": "tag1",
@@ -26,7 +28,7 @@ var (
 		},
 		{
 			ID:               "subnet-2",
-			CIDR:             cidr.MustParseCIDR("2.2.0.0/16"),
+			CIDR:             netip.MustParsePrefix("2.2.0.0/16"),
 			VirtualNetworkID: "vpc-2",
 			Tags: map[string]string{
 				"tag1": "tag1",
@@ -37,7 +39,7 @@ var (
 	subnets2 = []*ipamTypes.Subnet{
 		{
 			ID:               "subnet-1",
-			CIDR:             cidr.MustParseCIDR("1.1.0.0/16"),
+			CIDR:             netip.MustParsePrefix("1.1.0.0/16"),
 			VirtualNetworkID: "vpc-1",
 			Tags: map[string]string{
 				"tag1": "tag1",
@@ -45,7 +47,7 @@ var (
 		},
 		{
 			ID:               "subnet-2",
-			CIDR:             cidr.MustParseCIDR("2.2.0.0/16"),
+			CIDR:             netip.MustParsePrefix("2.2.0.0/16"),
 			VirtualNetworkID: "vpc-2",
 			Tags: map[string]string{
 				"tag1": "tag1",
@@ -53,7 +55,7 @@ var (
 		},
 		{
 			ID:               "subnet-3",
-			CIDR:             cidr.MustParseCIDR("3.3.0.0/16"),
+			CIDR:             netip.MustParsePrefix("3.3.0.0/16"),
 			VirtualNetworkID: "vpc-1",
 			Tags: map[string]string{
 				"tag2": "tag2",
@@ -67,7 +69,7 @@ var (
 	}
 )
 
-func iteration1(api *apimock.API, mngr *InstancesManager) {
+func iteration1(t *testing.T, api *apimock.API, mngr *InstancesManager) {
 	instances := ipamTypes.NewInstanceMap()
 
 	resource := &types.AzureInterface{
@@ -103,10 +105,10 @@ func iteration1(api *apimock.API, mngr *InstancesManager) {
 	})
 
 	api.UpdateInstances(instances)
-	mngr.Resync(context.Background())
+	mngr.Resync(t.Context())
 }
 
-func iteration2(api *apimock.API, mngr *InstancesManager) {
+func iteration2(t *testing.T, api *apimock.API, mngr *InstancesManager) {
 	api.UpdateSubnets(subnets2)
 
 	instances := ipamTypes.NewInstanceMap()
@@ -160,29 +162,89 @@ func iteration2(api *apimock.API, mngr *InstancesManager) {
 	})
 
 	api.UpdateInstances(instances)
-	mngr.Resync(context.TODO())
+	mngr.Resync(t.Context())
 }
 
-func (e *IPAMSuite) TestGetVpcsAndSubnets(c *check.C) {
+func TestSubnetDiscovery(t *testing.T) {
 	api := apimock.NewAPI(subnets, vnets)
-	c.Assert(api, check.Not(check.IsNil))
+	require.NotNil(t, api)
 
-	mngr := NewInstancesManager(api)
-	c.Assert(mngr, check.Not(check.IsNil))
+	mngr := NewInstancesManager(hivetest.Logger(t), api)
+	require.NotNil(t, mngr)
 
-	c.Assert(mngr.subnets["subnet-1"], check.IsNil)
-	c.Assert(mngr.subnets["subnet-2"], check.IsNil)
-	c.Assert(mngr.subnets["subnet-3"], check.IsNil)
+	require.Nil(t, mngr.subnets["subnet-1"])
+	require.Nil(t, mngr.subnets["subnet-2"])
+	require.Nil(t, mngr.subnets["subnet-3"])
 
-	iteration1(api, mngr)
+	iteration1(t, api, mngr)
 
-	c.Assert(mngr.subnets["subnet-1"], check.Not(check.IsNil))
-	c.Assert(mngr.subnets["subnet-2"], check.Not(check.IsNil))
-	c.Assert(mngr.subnets["subnet-3"], check.IsNil)
+	// Only subnets referenced by actual instances should be discovered
+	// iteration1 creates instances using only subnet-1, not subnet-2 or subnet-3
+	require.NotNil(t, mngr.subnets["subnet-1"])
+	require.Nil(t, mngr.subnets["subnet-2"]) // Should NOT be discovered (no instances use it)
+	require.Nil(t, mngr.subnets["subnet-3"]) // Should NOT be discovered (no instances use it)
 
-	iteration2(api, mngr)
+	iteration2(t, api, mngr)
 
-	c.Assert(mngr.subnets["subnet-1"], check.Not(check.IsNil))
-	c.Assert(mngr.subnets["subnet-2"], check.Not(check.IsNil))
-	c.Assert(mngr.subnets["subnet-3"], check.Not(check.IsNil))
+	// iteration2 uses subnet-1 and subnet-3, but still NOT subnet-2
+	require.NotNil(t, mngr.subnets["subnet-1"])
+	require.Nil(t, mngr.subnets["subnet-2"]) // Still should NOT be discovered (no instances use it)
+	require.NotNil(t, mngr.subnets["subnet-3"])
+}
+
+func TestExtractSubnetIDs(t *testing.T) {
+	api := apimock.NewAPI(subnets, vnets)
+	require.NotNil(t, api)
+
+	mngr := NewInstancesManager(hivetest.Logger(t), api)
+	require.NotNil(t, mngr)
+
+	// Create 100 instances across only 2 different subnets to test deduplication
+	instances := ipamTypes.NewInstanceMap()
+
+	for i := 0; i < 100; i++ {
+		instanceID := fmt.Sprintf("vm-%d", i)
+		interfaceID := fmt.Sprintf("/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Compute/virtualMachineScaleSets/vmss1/virtualMachines/%s/networkInterfaces/eth0", instanceID)
+
+		// Alternate between subnet-1 and subnet-3 (50 instances each)
+		var subnetID string
+		if i%2 == 0 {
+			subnetID = "subnet-1"
+		} else {
+			subnetID = "subnet-3"
+		}
+
+		resource := &types.AzureInterface{
+			Name:          "eth0",
+			SecurityGroup: "sg1",
+			Addresses: []types.AzureAddress{
+				{
+					IP:     fmt.Sprintf("10.0.%d.%d", (i%254)+1, (i%254)+10),
+					Subnet: subnetID,
+					State:  types.StateSucceeded,
+				},
+			},
+		}
+		resource.SetID(interfaceID)
+
+		instances.Update(instanceID, ipamTypes.InterfaceRevision{
+			Resource: resource.DeepCopy(),
+		})
+	}
+
+	// Extract subnet IDs and verify deduplication
+	subnetIDs := mngr.extractSubnetIDs(instances)
+
+	// Should return exactly 2 unique subnet IDs despite 100 instances
+	require.Len(t, subnetIDs, 2, "Expected exactly 2 unique subnet IDs from 100 instances")
+
+	// Verify the correct subnet IDs are present
+	subnetSet := make(map[string]bool)
+	for _, subnetID := range subnetIDs {
+		subnetSet[subnetID] = true
+	}
+
+	require.True(t, subnetSet["subnet-1"], "Should contain subnet-1")
+	require.True(t, subnetSet["subnet-3"], "Should contain subnet-3")
+	require.False(t, subnetSet["subnet-2"], "Should NOT contain subnet-2 (no instances use it)")
 }

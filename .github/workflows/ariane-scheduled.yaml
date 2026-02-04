@@ -1,9 +1,12 @@
 name: Ariane scheduled workflows
 
 on:
-  # Run every 6 hours
+  # Run every 1 hours
+  # Tests are only run when current hour % 6 corresponds
+  # to the branch hourModulo value in the matrix
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */1 * * *'
+
 
 permissions:
   # To be able to access the repository with actions/checkout
@@ -17,29 +20,46 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        branch:
-          - "1.12"
-          - "1.13"
-          - "1.14"
-          - "1.15"
-    runs-on: ubuntu-latest
+        include:
+        # DON'T USE hourModulo=0 to avoid running ariane scheduled-workflows
+        # at the same time as regular main scheduled workflows
+          - branch: 'v1.17'
+            hourModulo: 1
+          - branch: 'v1.18'
+            hourModulo: 2
+          - branch: 'v1.19'
+            hourModulo: 3
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout branch
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: v${{ matrix.branch }}
+          ref: ${{ matrix.branch }}
           persist-credentials: false
 
       - name: Manually run Ariane workflows from the branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BRANCH="${{ matrix.branch }}"
-          REF="v${BRANCH}"
-          SHA=$(git rev-parse ${REF})
-          readarray workflows < <(TRIGGER="/test-backport-${BRANCH}" yq '.triggers[env(TRIGGER)].workflows[]' .github/ariane-config.yaml)
+          HOUR=$(date -u +"%H")
+          if (( HOUR % 6 == ${{ matrix.hourModulo }} )); then
+            echo "Running scheduled workflows for branch ${{ matrix.branch }}"
+          else
+            echo "Skipping scheduled workflows for branch ${{ matrix.branch }}"
+            exit 0
+          fi
 
-          for workflow in ${workflows[@]}; do
+          REF="${{ matrix.branch }}"
+          SHA=$(git rev-parse ${REF})
+          # /test for 1.18 branch and lower
+          # /test\s* for 1.19 branch and higher
+          readarray workflows < <((
+            yq '.triggers["/test"].workflows[]' .github/ariane-config.yaml
+            yq '.triggers["/test\s*"].workflows[]' .github/ariane-config.yaml
+            yq '.schedule.nightly.workflows[]' .github/ariane-config.yaml
+          ) | sort -u)
+
+          for workflow in "${workflows[@]}"; do
             echo triggering ${workflow}
             gh workflow run ${workflow} \
               --ref ${REF} \

@@ -10,6 +10,7 @@ package models
 
 import (
 	"context"
+	stderrors "errors"
 	"strconv"
 
 	"github.com/go-openapi/errors"
@@ -18,8 +19,6 @@ import (
 )
 
 // L4Policy L4 endpoint policy
-//
-// +k8s:deepcopy-gen=true
 //
 // swagger:model L4Policy
 type L4Policy struct {
@@ -61,11 +60,15 @@ func (m *L4Policy) validateEgress(formats strfmt.Registry) error {
 
 		if m.Egress[i] != nil {
 			if err := m.Egress[i].Validate(formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
+				ve := new(errors.Validation)
+				if stderrors.As(err, &ve) {
 					return ve.ValidateName("egress" + "." + strconv.Itoa(i))
-				} else if ce, ok := err.(*errors.CompositeError); ok {
+				}
+				ce := new(errors.CompositeError)
+				if stderrors.As(err, &ce) {
 					return ce.ValidateName("egress" + "." + strconv.Itoa(i))
 				}
+
 				return err
 			}
 		}
@@ -87,11 +90,15 @@ func (m *L4Policy) validateIngress(formats strfmt.Registry) error {
 
 		if m.Ingress[i] != nil {
 			if err := m.Ingress[i].Validate(formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
+				ve := new(errors.Validation)
+				if stderrors.As(err, &ve) {
 					return ve.ValidateName("ingress" + "." + strconv.Itoa(i))
-				} else if ce, ok := err.(*errors.CompositeError); ok {
+				}
+				ce := new(errors.CompositeError)
+				if stderrors.As(err, &ce) {
 					return ce.ValidateName("ingress" + "." + strconv.Itoa(i))
 				}
+
 				return err
 			}
 		}
@@ -124,12 +131,21 @@ func (m *L4Policy) contextValidateEgress(ctx context.Context, formats strfmt.Reg
 	for i := 0; i < len(m.Egress); i++ {
 
 		if m.Egress[i] != nil {
+
+			if swag.IsZero(m.Egress[i]) { // not required
+				return nil
+			}
+
 			if err := m.Egress[i].ContextValidate(ctx, formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
+				ve := new(errors.Validation)
+				if stderrors.As(err, &ve) {
 					return ve.ValidateName("egress" + "." + strconv.Itoa(i))
-				} else if ce, ok := err.(*errors.CompositeError); ok {
+				}
+				ce := new(errors.CompositeError)
+				if stderrors.As(err, &ce) {
 					return ce.ValidateName("egress" + "." + strconv.Itoa(i))
 				}
+
 				return err
 			}
 		}
@@ -144,12 +160,21 @@ func (m *L4Policy) contextValidateIngress(ctx context.Context, formats strfmt.Re
 	for i := 0; i < len(m.Ingress); i++ {
 
 		if m.Ingress[i] != nil {
+
+			if swag.IsZero(m.Ingress[i]) { // not required
+				return nil
+			}
+
 			if err := m.Ingress[i].ContextValidate(ctx, formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
+				ve := new(errors.Validation)
+				if stderrors.As(err, &ve) {
 					return ve.ValidateName("ingress" + "." + strconv.Itoa(i))
-				} else if ce, ok := err.(*errors.CompositeError); ok {
+				}
+				ce := new(errors.CompositeError)
+				if stderrors.As(err, &ce) {
 					return ce.ValidateName("ingress" + "." + strconv.Itoa(i))
 				}
+
 				return err
 			}
 		}

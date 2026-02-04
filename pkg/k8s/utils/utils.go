@@ -4,25 +4,27 @@
 package utils
 
 import (
-	"net"
-	"sort"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	v1meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/cilium/cilium/pkg/ip"
 	k8sconst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels"
 	"github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/selection"
 	labelsPkg "github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/slices"
 )
 
 const (
 	// ServiceProxyNameLabel is the label for service proxy name in k8s service related
 	// objects.
 	serviceProxyNameLabel = "service.kubernetes.io/service-proxy-name"
+	// EndpointSliceMeshControllerName is a unique value used with LabelManagedBy to indicate
+	// the component managing an EndpointSlice.
+	EndpointSliceMeshControllerName = "endpointslice-mesh-controller.cilium.io"
 )
 
 type NamespaceNameGetter interface {
@@ -62,40 +64,35 @@ func GetObjNamespaceName(obj NamespaceNameGetter) string {
 	return ns + "/" + obj.GetName()
 }
 
-// IngressConfiguration is the required configuration for GetServiceAndEndpointListOptionsModifier
-type IngressConfiguration interface {
-	// K8sIngressControllerEnabled returns true if ingress controller feature is enabled in Cilium
-	K8sIngressControllerEnabled() bool
-}
-
-// GatewayAPIConfiguration is the required configuration for GetServiceAndEndpointListOptionsModifier
-type GatewayAPIConfiguration interface {
-	// K8sGatewayAPIEnabled returns true if gateway API is enabled in Cilium
-	K8sGatewayAPIEnabled() bool
-}
-
-// PolicyConfiguration is the required configuration for K8s NetworkPolicy
-type PolicyConfiguration interface {
-	// K8sNetworkPolicyEnabled returns true if cilium agent needs to support K8s NetworkPolicy
-	K8sNetworkPolicyEnabled() bool
-}
-
 // GetEndpointSliceListOptionsModifier returns the options modifier for endpointSlice object list.
 // This methods returns a ListOptions modifier which adds a label selector to
-// select all endpointSlice objects that do not contain the k8s headless service label.
-// This is the same behavior as kube-proxy.
+// select all endpointSlice objects they are not from remote clusters in Cilium cluster mesh.
+// This is mostly the same behavior as kube-proxy except the cluster mesh behavior which is
+// tied to how Cilium internally works with clustermesh endpoints and that this function doesn't ignore
+// headless Services when includeHeadlessServices is true.
 // Given label mirroring from the service objects to endpoint slice objects were introduced in Kubernetes PR 94443,
 // and released as part of Kubernetes v1.20; we can start using GetServiceAndEndpointListOptionsModifier for
 // endpoint slices when dropping support for Kubernetes v1.19 and older. We can do that since the
 // serviceProxyNameLabel label will then be mirrored to endpoint slices for services with that label.
-func GetEndpointSliceListOptionsModifier() (func(options *v1meta.ListOptions), error) {
-	nonHeadlessServiceSelector, err := labels.NewRequirement(v1.IsHeadlessService, selection.DoesNotExist, nil)
+// We also ignore Kubernetes endpoints coming from other clusters in the Cilium clustermesh here as
+// Cilium does not rely on mirrored Kubernetes EndpointSlice for any of its functionalities.
+func GetEndpointSliceListOptionsModifier(includeHeadlessServices bool) (func(options *v1meta.ListOptions), error) {
+	nonRemoteEndpointSelector, err := labels.NewRequirement(discoveryv1.LabelManagedBy, selection.NotEquals, []string{EndpointSliceMeshControllerName})
 	if err != nil {
 		return nil, err
 	}
 
 	labelSelector := labels.NewSelector()
-	labelSelector = labelSelector.Add(*nonHeadlessServiceSelector)
+	labelSelector = labelSelector.Add(*nonRemoteEndpointSelector)
+
+	if !includeHeadlessServices {
+		nonHeadlessServiceSelector, err := labels.NewRequirement(v1.IsHeadlessService, selection.DoesNotExist, nil)
+
+		if err != nil {
+			return nil, err
+		}
+		labelSelector = labelSelector.Add(*nonHeadlessServiceSelector)
+	}
 
 	return func(options *v1meta.ListOptions) {
 		options.LabelSelector = labelSelector.String()
@@ -105,21 +102,16 @@ func GetEndpointSliceListOptionsModifier() (func(options *v1meta.ListOptions), e
 // GetServiceAndEndpointListOptionsModifier returns the options modifier for service and endpoint object lists.
 // This methods returns a ListOptions modifier which adds a label selector to only
 // select services that are in context of Cilium.
-// Like kube-proxy Cilium does not select services/endpoints containing k8s headless service label.
+// Unlike kube-proxy Cilium also watches headless services and their endpoint slices when includeHeadlessServices is true.
 // We honor service.kubernetes.io/service-proxy-name label in the service object and only
 // handle services that match our service proxy name. If the service proxy name for Cilium
 // is an empty string, we assume that Cilium is the default service handler in which case
 // we select all services that don't have the above mentioned label.
-func GetServiceAndEndpointListOptionsModifier(k8sServiceProxy string) (func(options *v1meta.ListOptions), error) {
+func GetServiceAndEndpointListOptionsModifier(k8sServiceProxy string, includeHeadlessServices bool) (func(options *v1meta.ListOptions), error) {
 	var (
-		serviceNameSelector, nonHeadlessServiceSelector *labels.Requirement
-		err                                             error
+		serviceNameSelector *labels.Requirement
+		err                 error
 	)
-
-	nonHeadlessServiceSelector, err = labels.NewRequirement(v1.IsHeadlessService, selection.DoesNotExist, nil)
-	if err != nil {
-		return nil, err
-	}
 
 	if k8sServiceProxy == "" {
 		serviceNameSelector, err = labels.NewRequirement(
@@ -134,7 +126,16 @@ func GetServiceAndEndpointListOptionsModifier(k8sServiceProxy string) (func(opti
 	}
 
 	labelSelector := labels.NewSelector()
-	labelSelector = labelSelector.Add(*serviceNameSelector, *nonHeadlessServiceSelector)
+	labelSelector = labelSelector.Add(*serviceNameSelector)
+
+	if !includeHeadlessServices {
+		nonHeadlessServiceSelector, err := labels.NewRequirement(v1.IsHeadlessService, selection.DoesNotExist, nil)
+
+		if err != nil {
+			return nil, err
+		}
+		labelSelector = labelSelector.Add(*nonHeadlessServiceSelector)
+	}
 
 	return func(options *v1meta.ListOptions) {
 		options.LabelSelector = labelSelector.String()
@@ -159,22 +160,18 @@ func ValidIPs(podStatus slim_corev1.PodStatus) []string {
 	}
 
 	// make it a set first to avoid repeated IP addresses
-	ipsMap := make(map[string]struct{}, 1+len(podStatus.PodIPs))
+	ips := []string{}
 	if podStatus.PodIP != "" {
-		ipsMap[podStatus.PodIP] = struct{}{}
+		ips = append(ips, podStatus.PodIP)
 	}
+
 	for _, podIP := range podStatus.PodIPs {
 		if podIP.IP != "" {
-			ipsMap[podIP.IP] = struct{}{}
+			ips = append(ips, podIP.IP)
 		}
 	}
 
-	ips := make([]string, 0, len(ipsMap))
-	for ipStr := range ipsMap {
-		ips = append(ips, ipStr)
-	}
-	sort.Strings(ips)
-	return ips
+	return slices.SortedUnique(ips)
 }
 
 // IsPodRunning returns true if the pod is considered to be in running state.
@@ -188,47 +185,36 @@ func IsPodRunning(status slim_corev1.PodStatus) bool {
 	return true
 }
 
-// GetClusterIPByFamily returns a service clusterip by family.
-// From - https://github.com/kubernetes/kubernetes/blob/release-1.20/pkg/proxy/util/utils.go#L386-L411
-func GetClusterIPByFamily(ipFamily slim_corev1.IPFamily, service *slim_corev1.Service) string {
-	// allowing skew
-	if len(service.Spec.IPFamilies) == 0 {
-		if len(service.Spec.ClusterIP) == 0 || service.Spec.ClusterIP == v1.ClusterIPNone {
-			return ""
-		}
-
-		IsIPv6Family := (ipFamily == slim_corev1.IPv6Protocol)
-		if IsIPv6Family == ip.IsIPv6(net.ParseIP(service.Spec.ClusterIP)) {
-			return service.Spec.ClusterIP
-		}
-
-		return ""
-	}
-
-	for idx, family := range service.Spec.IPFamilies {
-		if family == ipFamily {
-			if idx < len(service.Spec.ClusterIPs) {
-				return service.Spec.ClusterIPs[idx]
-			}
-		}
-	}
-
-	return ""
+// nameLabelsGetter is an interface that returns the name and the labels for
+// the namespace.
+type nameLabelsGetter interface {
+	GetName() string
+	GetLabels() map[string]string
 }
 
-// SanitizePodLabels makes sure that no important pod labels were overridden manually
-func SanitizePodLabels(labels map[string]string, namespace *slim_corev1.Namespace, serviceAccount, clusterName string) map[string]string {
-	sanitizedLabels := make(map[string]string)
-
+// RemoveCiliumLabels returns a copy of the given labels map, without the labels owned by Cilium.
+func RemoveCiliumLabels(labels map[string]string) map[string]string {
+	res := map[string]string{}
 	for k, v := range labels {
-		sanitizedLabels[k] = v
+		if strings.HasPrefix(k, k8sconst.LabelPrefix) {
+			continue
+		}
+		res[k] = v
 	}
+	return res
+}
+
+// SanitizePodLabels makes sure that no important pod labels were overridden manually on k8s pod
+// object creation.
+func SanitizePodLabels(podLabels map[string]string, namespace nameLabelsGetter, serviceAccount, clusterName string) map[string]string {
+	sanitizedLabels := RemoveCiliumLabels(podLabels)
+
 	// Sanitize namespace labels
 	for k, v := range namespace.GetLabels() {
 		sanitizedLabels[joinPath(k8sconst.PodNamespaceMetaLabels, k)] = v
 	}
 	// Sanitize namespace name label
-	sanitizedLabels[k8sconst.PodNamespaceLabel] = namespace.ObjectMeta.Name
+	sanitizedLabels[k8sconst.PodNamespaceLabel] = namespace.GetName()
 	// Sanitize service account name
 	if serviceAccount != "" {
 		sanitizedLabels[k8sconst.PolicyLabelServiceAccount] = serviceAccount
@@ -241,25 +227,17 @@ func SanitizePodLabels(labels map[string]string, namespace *slim_corev1.Namespac
 	return sanitizedLabels
 }
 
-// StripPodSpecialLabels strips labels that are not supposed to be coming from a k8s pod object
+// StripPodSpecialLabels strips labels that are not supposed to be coming from a k8s pod object update.
 func StripPodSpecialLabels(labels map[string]string) map[string]string {
 	sanitizedLabels := make(map[string]string)
-	forbiddenKeys := map[string]struct{}{
-		k8sconst.PodNamespaceMetaLabels:    {},
-		k8sconst.PolicyLabelServiceAccount: {},
-		k8sconst.PolicyLabelCluster:        {},
-		k8sconst.PodNamespaceLabel:         {},
-	}
-	for k, v := range labels {
+	for k, v := range RemoveCiliumLabels(labels) {
 		// If the key contains the prefix for namespace labels then we will
 		// ignore it.
 		if strings.HasPrefix(k, k8sconst.PodNamespaceMetaLabels) {
 			continue
 		}
-		// If the key belongs to any of the forbiddenKeys then we will ignore
-		// it.
-		_, ok := forbiddenKeys[k]
-		if ok {
+		// Also ignore it if the key is a kubernetes namespace label.
+		if k == k8sconst.PodNamespaceLabel {
 			continue
 		}
 		sanitizedLabels[k] = v

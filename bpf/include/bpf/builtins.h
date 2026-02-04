@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
 
-#ifndef __BPF_BUILTINS__
-#define __BPF_BUILTINS__
+#pragma once
 
 #include "compiler.h"
 
@@ -44,7 +43,6 @@ __bpf_memset_builtin(void *d, __u8 c, __u64 len)
 
 static __always_inline void __bpf_memzero(void *d, __u64 len)
 {
-#if __clang_major__ >= 10
 	if (!__builtin_constant_p(len))
 		__throw_build_bug();
 
@@ -56,60 +54,76 @@ static __always_inline void __bpf_memzero(void *d, __u64 len)
 	}
 
 	switch (len) {
-	case 96:         __it_set(d, 64); fallthrough;
-	case 88: jmp_88: __it_set(d, 64); fallthrough;
-	case 80: jmp_80: __it_set(d, 64); fallthrough;
-	case 72: jmp_72: __it_set(d, 64); fallthrough;
-	case 64: jmp_64: __it_set(d, 64); fallthrough;
-	case 56: jmp_56: __it_set(d, 64); fallthrough;
-	case 48: jmp_48: __it_set(d, 64); fallthrough;
-	case 40: jmp_40: __it_set(d, 64); fallthrough;
-	case 32: jmp_32: __it_set(d, 64); fallthrough;
-	case 24: jmp_24: __it_set(d, 64); fallthrough;
-	case 16: jmp_16: __it_set(d, 64); fallthrough;
-	case  8: jmp_8:  __it_set(d, 64);
+	case 128:          __it_set(d, 64); fallthrough;
+	case 120: jmp_120: __it_set(d, 64); fallthrough;
+	case 112: jmp_112: __it_set(d, 64); fallthrough;
+	case 104: jmp_104: __it_set(d, 64); fallthrough;
+	case  96: jmp_96:  __it_set(d, 64); fallthrough;
+	case  88: jmp_88:  __it_set(d, 64); fallthrough;
+	case  80: jmp_80:  __it_set(d, 64); fallthrough;
+	case  72: jmp_72:  __it_set(d, 64); fallthrough;
+	case  64: jmp_64:  __it_set(d, 64); fallthrough;
+	case  56: jmp_56:  __it_set(d, 64); fallthrough;
+	case  48: jmp_48:  __it_set(d, 64); fallthrough;
+	case  40: jmp_40:  __it_set(d, 64); fallthrough;
+	case  32: jmp_32:  __it_set(d, 64); fallthrough;
+	case  24: jmp_24:  __it_set(d, 64); fallthrough;
+	case  16: jmp_16:  __it_set(d, 64); fallthrough;
+	case   8: jmp_8:   __it_set(d, 64);
 		break;
 
-	case 94: __it_set(d, 16); __it_set(d, 32); goto jmp_88;
-	case 86: __it_set(d, 16); __it_set(d, 32); goto jmp_80;
-	case 78: __it_set(d, 16); __it_set(d, 32); goto jmp_72;
-	case 70: __it_set(d, 16); __it_set(d, 32); goto jmp_64;
-	case 62: __it_set(d, 16); __it_set(d, 32); goto jmp_56;
-	case 54: __it_set(d, 16); __it_set(d, 32); goto jmp_48;
-	case 46: __it_set(d, 16); __it_set(d, 32); goto jmp_40;
-	case 38: __it_set(d, 16); __it_set(d, 32); goto jmp_32;
-	case 30: __it_set(d, 16); __it_set(d, 32); goto jmp_24;
-	case 22: __it_set(d, 16); __it_set(d, 32); goto jmp_16;
-	case 14: __it_set(d, 16); __it_set(d, 32); goto jmp_8;
-	case  6: __it_set(d, 16); __it_set(d, 32);
+	case 126: __it_set(d, 16); __it_set(d, 32); goto jmp_120;
+	case 118: __it_set(d, 16); __it_set(d, 32); goto jmp_112;
+	case 110: __it_set(d, 16); __it_set(d, 32); goto jmp_104;
+	case 102: __it_set(d, 16); __it_set(d, 32); goto jmp_96;
+	case  94: __it_set(d, 16); __it_set(d, 32); goto jmp_88;
+	case  86: __it_set(d, 16); __it_set(d, 32); goto jmp_80;
+	case  78: __it_set(d, 16); __it_set(d, 32); goto jmp_72;
+	case  70: __it_set(d, 16); __it_set(d, 32); goto jmp_64;
+	case  62: __it_set(d, 16); __it_set(d, 32); goto jmp_56;
+	case  54: __it_set(d, 16); __it_set(d, 32); goto jmp_48;
+	case  46: __it_set(d, 16); __it_set(d, 32); goto jmp_40;
+	case  38: __it_set(d, 16); __it_set(d, 32); goto jmp_32;
+	case  30: __it_set(d, 16); __it_set(d, 32); goto jmp_24;
+	case  22: __it_set(d, 16); __it_set(d, 32); goto jmp_16;
+	case  14: __it_set(d, 16); __it_set(d, 32); goto jmp_8;
+	case   6: __it_set(d, 16); __it_set(d, 32);
 		break;
 
-	case 92: __it_set(d, 32); goto jmp_88;
-	case 84: __it_set(d, 32); goto jmp_80;
-	case 76: __it_set(d, 32); goto jmp_72;
-	case 68: __it_set(d, 32); goto jmp_64;
-	case 60: __it_set(d, 32); goto jmp_56;
-	case 52: __it_set(d, 32); goto jmp_48;
-	case 44: __it_set(d, 32); goto jmp_40;
-	case 36: __it_set(d, 32); goto jmp_32;
-	case 28: __it_set(d, 32); goto jmp_24;
-	case 20: __it_set(d, 32); goto jmp_16;
-	case 12: __it_set(d, 32); goto jmp_8;
-	case  4: __it_set(d, 32);
+	case 124: __it_set(d, 32); goto jmp_120;
+	case 116: __it_set(d, 32); goto jmp_112;
+	case 108: __it_set(d, 32); goto jmp_104;
+	case 100: __it_set(d, 32); goto jmp_96;
+	case  92: __it_set(d, 32); goto jmp_88;
+	case  84: __it_set(d, 32); goto jmp_80;
+	case  76: __it_set(d, 32); goto jmp_72;
+	case  68: __it_set(d, 32); goto jmp_64;
+	case  60: __it_set(d, 32); goto jmp_56;
+	case  52: __it_set(d, 32); goto jmp_48;
+	case  44: __it_set(d, 32); goto jmp_40;
+	case  36: __it_set(d, 32); goto jmp_32;
+	case  28: __it_set(d, 32); goto jmp_24;
+	case  20: __it_set(d, 32); goto jmp_16;
+	case  12: __it_set(d, 32); goto jmp_8;
+	case   4: __it_set(d, 32);
 		break;
 
-	case 90: __it_set(d, 16); goto jmp_88;
-	case 82: __it_set(d, 16); goto jmp_80;
-	case 74: __it_set(d, 16); goto jmp_72;
-	case 66: __it_set(d, 16); goto jmp_64;
-	case 58: __it_set(d, 16); goto jmp_56;
-	case 50: __it_set(d, 16); goto jmp_48;
-	case 42: __it_set(d, 16); goto jmp_40;
-	case 34: __it_set(d, 16); goto jmp_32;
-	case 26: __it_set(d, 16); goto jmp_24;
-	case 18: __it_set(d, 16); goto jmp_16;
-	case 10: __it_set(d, 16); goto jmp_8;
-	case  2: __it_set(d, 16);
+	case 122: __it_set(d, 16); goto jmp_120;
+	case 114: __it_set(d, 16); goto jmp_112;
+	case 106: __it_set(d, 16); goto jmp_104;
+	case  98: __it_set(d, 16); goto jmp_96;
+	case  90: __it_set(d, 16); goto jmp_88;
+	case  82: __it_set(d, 16); goto jmp_80;
+	case  74: __it_set(d, 16); goto jmp_72;
+	case  66: __it_set(d, 16); goto jmp_64;
+	case  58: __it_set(d, 16); goto jmp_56;
+	case  50: __it_set(d, 16); goto jmp_48;
+	case  42: __it_set(d, 16); goto jmp_40;
+	case  34: __it_set(d, 16); goto jmp_32;
+	case  26: __it_set(d, 16); goto jmp_24;
+	case  18: __it_set(d, 16); goto jmp_16;
+	case  10: __it_set(d, 16); goto jmp_8;
+	case   2: __it_set(d, 16);
 		break;
 
 	case  1: __it_set(d, 8);
@@ -123,9 +137,6 @@ static __always_inline void __bpf_memzero(void *d, __u64 len)
 		 */
 		__throw_build_bug();
 	}
-#else
-	__bpf_memset_builtin(d, 0, len);
-#endif
 }
 
 static __always_inline __maybe_unused void
@@ -156,7 +167,6 @@ __bpf_memcpy_builtin(void *d, const void *s, __u64 len)
 
 static __always_inline void __bpf_memcpy(void *d, const void *s, __u64 len)
 {
-#if __clang_major__ >= 10
 	if (!__builtin_constant_p(len))
 		__throw_build_bug();
 
@@ -169,60 +179,76 @@ static __always_inline void __bpf_memcpy(void *d, const void *s, __u64 len)
 	}
 
 	switch (len) {
-	case 96:         __it_mob(d, s, 64); fallthrough;
-	case 88: jmp_88: __it_mob(d, s, 64); fallthrough;
-	case 80: jmp_80: __it_mob(d, s, 64); fallthrough;
-	case 72: jmp_72: __it_mob(d, s, 64); fallthrough;
-	case 64: jmp_64: __it_mob(d, s, 64); fallthrough;
-	case 56: jmp_56: __it_mob(d, s, 64); fallthrough;
-	case 48: jmp_48: __it_mob(d, s, 64); fallthrough;
-	case 40: jmp_40: __it_mob(d, s, 64); fallthrough;
-	case 32: jmp_32: __it_mob(d, s, 64); fallthrough;
-	case 24: jmp_24: __it_mob(d, s, 64); fallthrough;
-	case 16: jmp_16: __it_mob(d, s, 64); fallthrough;
-	case  8: jmp_8:  __it_mob(d, s, 64);
+	case 128:          __it_mob(d, s, 64); fallthrough;
+	case 120: jmp_120: __it_mob(d, s, 64); fallthrough;
+	case 112: jmp_112: __it_mob(d, s, 64); fallthrough;
+	case 104: jmp_104: __it_mob(d, s, 64); fallthrough;
+	case  96: jmp_96:  __it_mob(d, s, 64); fallthrough;
+	case  88: jmp_88:  __it_mob(d, s, 64); fallthrough;
+	case  80: jmp_80:  __it_mob(d, s, 64); fallthrough;
+	case  72: jmp_72:  __it_mob(d, s, 64); fallthrough;
+	case  64: jmp_64:  __it_mob(d, s, 64); fallthrough;
+	case  56: jmp_56:  __it_mob(d, s, 64); fallthrough;
+	case  48: jmp_48:  __it_mob(d, s, 64); fallthrough;
+	case  40: jmp_40:  __it_mob(d, s, 64); fallthrough;
+	case  32: jmp_32:  __it_mob(d, s, 64); fallthrough;
+	case  24: jmp_24:  __it_mob(d, s, 64); fallthrough;
+	case  16: jmp_16:  __it_mob(d, s, 64); fallthrough;
+	case   8: jmp_8:   __it_mob(d, s, 64);
 		break;
 
-	case 94: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_88;
-	case 86: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_80;
-	case 78: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_72;
-	case 70: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_64;
-	case 62: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_56;
-	case 54: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_48;
-	case 46: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_40;
-	case 38: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_32;
-	case 30: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_24;
-	case 22: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_16;
-	case 14: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_8;
-	case  6: __it_mob(d, s, 16); __it_mob(d, s, 32);
+	case 126: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_120;
+	case 118: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_112;
+	case 110: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_104;
+	case 102: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_96;
+	case  94: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_88;
+	case  86: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_80;
+	case  78: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_72;
+	case  70: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_64;
+	case  62: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_56;
+	case  54: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_48;
+	case  46: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_40;
+	case  38: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_32;
+	case  30: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_24;
+	case  22: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_16;
+	case  14: __it_mob(d, s, 16); __it_mob(d, s, 32); goto jmp_8;
+	case   6: __it_mob(d, s, 16); __it_mob(d, s, 32);
 		break;
 
-	case 92: __it_mob(d, s, 32); goto jmp_88;
-	case 84: __it_mob(d, s, 32); goto jmp_80;
-	case 76: __it_mob(d, s, 32); goto jmp_72;
-	case 68: __it_mob(d, s, 32); goto jmp_64;
-	case 60: __it_mob(d, s, 32); goto jmp_56;
-	case 52: __it_mob(d, s, 32); goto jmp_48;
-	case 44: __it_mob(d, s, 32); goto jmp_40;
-	case 36: __it_mob(d, s, 32); goto jmp_32;
-	case 28: __it_mob(d, s, 32); goto jmp_24;
-	case 20: __it_mob(d, s, 32); goto jmp_16;
-	case 12: __it_mob(d, s, 32); goto jmp_8;
-	case  4: __it_mob(d, s, 32);
+	case 124: __it_mob(d, s, 32); goto jmp_120;
+	case 116: __it_mob(d, s, 32); goto jmp_112;
+	case 108: __it_mob(d, s, 32); goto jmp_104;
+	case 100: __it_mob(d, s, 32); goto jmp_96;
+	case  92: __it_mob(d, s, 32); goto jmp_88;
+	case  84: __it_mob(d, s, 32); goto jmp_80;
+	case  76: __it_mob(d, s, 32); goto jmp_72;
+	case  68: __it_mob(d, s, 32); goto jmp_64;
+	case  60: __it_mob(d, s, 32); goto jmp_56;
+	case  52: __it_mob(d, s, 32); goto jmp_48;
+	case  44: __it_mob(d, s, 32); goto jmp_40;
+	case  36: __it_mob(d, s, 32); goto jmp_32;
+	case  28: __it_mob(d, s, 32); goto jmp_24;
+	case  20: __it_mob(d, s, 32); goto jmp_16;
+	case  12: __it_mob(d, s, 32); goto jmp_8;
+	case   4: __it_mob(d, s, 32);
 		break;
 
-	case 90: __it_mob(d, s, 16); goto jmp_88;
-	case 82: __it_mob(d, s, 16); goto jmp_80;
-	case 74: __it_mob(d, s, 16); goto jmp_72;
-	case 66: __it_mob(d, s, 16); goto jmp_64;
-	case 58: __it_mob(d, s, 16); goto jmp_56;
-	case 50: __it_mob(d, s, 16); goto jmp_48;
-	case 42: __it_mob(d, s, 16); goto jmp_40;
-	case 34: __it_mob(d, s, 16); goto jmp_32;
-	case 26: __it_mob(d, s, 16); goto jmp_24;
-	case 18: __it_mob(d, s, 16); goto jmp_16;
-	case 10: __it_mob(d, s, 16); goto jmp_8;
-	case  2: __it_mob(d, s, 16);
+	case 122: __it_mob(d, s, 16); goto jmp_120;
+	case 114: __it_mob(d, s, 16); goto jmp_112;
+	case 106: __it_mob(d, s, 16); goto jmp_104;
+	case  98: __it_mob(d, s, 16); goto jmp_96;
+	case  90: __it_mob(d, s, 16); goto jmp_88;
+	case  82: __it_mob(d, s, 16); goto jmp_80;
+	case  74: __it_mob(d, s, 16); goto jmp_72;
+	case  66: __it_mob(d, s, 16); goto jmp_64;
+	case  58: __it_mob(d, s, 16); goto jmp_56;
+	case  50: __it_mob(d, s, 16); goto jmp_48;
+	case  42: __it_mob(d, s, 16); goto jmp_40;
+	case  34: __it_mob(d, s, 16); goto jmp_32;
+	case  26: __it_mob(d, s, 16); goto jmp_24;
+	case  18: __it_mob(d, s, 16); goto jmp_16;
+	case  10: __it_mob(d, s, 16); goto jmp_8;
+	case   2: __it_mob(d, s, 16);
 		break;
 
 	case  1: __it_mob(d, s, 8);
@@ -236,9 +262,6 @@ static __always_inline void __bpf_memcpy(void *d, const void *s, __u64 len)
 		 */
 		__throw_build_bug();
 	}
-#else
-	__bpf_memcpy_builtin(d, s, len);
-#endif
 }
 
 static __always_inline __maybe_unused void
@@ -275,7 +298,6 @@ __bpf_memcmp_builtin(const void *x, const void *y, __u64 len)
 static __always_inline __u64 __bpf_memcmp(const void *x, const void *y,
 					  __u64 len)
 {
-#if __clang_major__ >= 10
 	__u64 r = 0;
 
 	if (!__builtin_constant_p(len))
@@ -290,48 +312,76 @@ static __always_inline __u64 __bpf_memcmp(const void *x, const void *y,
 	}
 
 	switch (len) {
-	case 72:         __it_xor(x, y, r, 64); fallthrough;
-	case 64: jmp_64: __it_xor(x, y, r, 64); fallthrough;
-	case 56: jmp_56: __it_xor(x, y, r, 64); fallthrough;
-	case 48: jmp_48: __it_xor(x, y, r, 64); fallthrough;
-	case 40: jmp_40: __it_xor(x, y, r, 64); fallthrough;
-	case 32: jmp_32: __it_xor(x, y, r, 64); fallthrough;
-	case 24: jmp_24: __it_xor(x, y, r, 64); fallthrough;
-	case 16: jmp_16: __it_xor(x, y, r, 64); fallthrough;
-	case  8: jmp_8:  __it_xor(x, y, r, 64);
+	case 128:          __it_xor(x, y, r, 64); fallthrough;
+	case 120: jmp_120: __it_xor(x, y, r, 64); fallthrough;
+	case 112: jmp_112: __it_xor(x, y, r, 64); fallthrough;
+	case 104: jmp_104: __it_xor(x, y, r, 64); fallthrough;
+	case  96: jmp_96:  __it_xor(x, y, r, 64); fallthrough;
+	case  88: jmp_88:  __it_xor(x, y, r, 64); fallthrough;
+	case  80: jmp_80:  __it_xor(x, y, r, 64); fallthrough;
+	case  72: jmp_72:  __it_xor(x, y, r, 64); fallthrough;
+	case  64: jmp_64:  __it_xor(x, y, r, 64); fallthrough;
+	case  56: jmp_56:  __it_xor(x, y, r, 64); fallthrough;
+	case  48: jmp_48:  __it_xor(x, y, r, 64); fallthrough;
+	case  40: jmp_40:  __it_xor(x, y, r, 64); fallthrough;
+	case  32: jmp_32:  __it_xor(x, y, r, 64); fallthrough;
+	case  24: jmp_24:  __it_xor(x, y, r, 64); fallthrough;
+	case  16: jmp_16:  __it_xor(x, y, r, 64); fallthrough;
+	case   8: jmp_8:   __it_xor(x, y, r, 64);
 		break;
 
-	case 70: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_64;
-	case 62: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_56;
-	case 54: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_48;
-	case 46: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_40;
-	case 38: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_32;
-	case 30: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_24;
-	case 22: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_16;
-	case 14: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_8;
-	case  6: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32);
+	case 126: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_120;
+	case 118: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_112;
+	case 110: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_104;
+	case 102: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_96;
+	case  94: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_88;
+	case  86: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_80;
+	case  78: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_72;
+	case  70: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_64;
+	case  62: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_56;
+	case  54: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_48;
+	case  46: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_40;
+	case  38: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_32;
+	case  30: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_24;
+	case  22: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_16;
+	case  14: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32); goto jmp_8;
+	case   6: __it_xor(x, y, r, 16); __it_xor(x, y, r, 32);
 		break;
 
-	case 68: __it_xor(x, y, r, 32); goto jmp_64;
-	case 60: __it_xor(x, y, r, 32); goto jmp_56;
-	case 52: __it_xor(x, y, r, 32); goto jmp_48;
-	case 44: __it_xor(x, y, r, 32); goto jmp_40;
-	case 36: __it_xor(x, y, r, 32); goto jmp_32;
-	case 28: __it_xor(x, y, r, 32); goto jmp_24;
-	case 20: __it_xor(x, y, r, 32); goto jmp_16;
-	case 12: __it_xor(x, y, r, 32); goto jmp_8;
-	case  4: __it_xor(x, y, r, 32);
+	case 124: __it_xor(x, y, r, 32); goto jmp_120;
+	case 116: __it_xor(x, y, r, 32); goto jmp_112;
+	case 108: __it_xor(x, y, r, 32); goto jmp_104;
+	case 100: __it_xor(x, y, r, 32); goto jmp_96;
+	case  92: __it_xor(x, y, r, 32); goto jmp_88;
+	case  84: __it_xor(x, y, r, 32); goto jmp_80;
+	case  76: __it_xor(x, y, r, 32); goto jmp_72;
+	case  68: __it_xor(x, y, r, 32); goto jmp_64;
+	case  60: __it_xor(x, y, r, 32); goto jmp_56;
+	case  52: __it_xor(x, y, r, 32); goto jmp_48;
+	case  44: __it_xor(x, y, r, 32); goto jmp_40;
+	case  36: __it_xor(x, y, r, 32); goto jmp_32;
+	case  28: __it_xor(x, y, r, 32); goto jmp_24;
+	case  20: __it_xor(x, y, r, 32); goto jmp_16;
+	case  12: __it_xor(x, y, r, 32); goto jmp_8;
+	case   4: __it_xor(x, y, r, 32);
 		break;
 
-	case 66: __it_xor(x, y, r, 16); goto jmp_64;
-	case 58: __it_xor(x, y, r, 16); goto jmp_56;
-	case 50: __it_xor(x, y, r, 16); goto jmp_48;
-	case 42: __it_xor(x, y, r, 16); goto jmp_40;
-	case 34: __it_xor(x, y, r, 16); goto jmp_32;
-	case 26: __it_xor(x, y, r, 16); goto jmp_24;
-	case 18: __it_xor(x, y, r, 16); goto jmp_16;
-	case 10: __it_xor(x, y, r, 16); goto jmp_8;
-	case  2: __it_xor(x, y, r, 16);
+	case 122: __it_xor(x, y, r, 16); goto jmp_120;
+	case 114: __it_xor(x, y, r, 16); goto jmp_112;
+	case 106: __it_xor(x, y, r, 16); goto jmp_104;
+	case  98: __it_xor(x, y, r, 16); goto jmp_96;
+	case  90: __it_xor(x, y, r, 16); goto jmp_88;
+	case  82: __it_xor(x, y, r, 16); goto jmp_80;
+	case  74: __it_xor(x, y, r, 16); goto jmp_72;
+	case  66: __it_xor(x, y, r, 16); goto jmp_64;
+	case  58: __it_xor(x, y, r, 16); goto jmp_56;
+	case  50: __it_xor(x, y, r, 16); goto jmp_48;
+	case  42: __it_xor(x, y, r, 16); goto jmp_40;
+	case  34: __it_xor(x, y, r, 16); goto jmp_32;
+	case  26: __it_xor(x, y, r, 16); goto jmp_24;
+	case  18: __it_xor(x, y, r, 16); goto jmp_16;
+	case  10: __it_xor(x, y, r, 16); goto jmp_8;
+	case   2: __it_xor(x, y, r, 16);
 		break;
 
 	case  1: __it_xor(x, y, r, 8);
@@ -342,9 +392,6 @@ static __always_inline __u64 __bpf_memcmp(const void *x, const void *y,
 	}
 
 	return r;
-#else
-	return __bpf_memcmp_builtin(x, y, len);
-#endif
 }
 
 static __always_inline __maybe_unused __u64
@@ -383,65 +430,80 @@ static __always_inline void __bpf_memmove_bwd(void *d, const void *s, __u64 len)
 
 static __always_inline void __bpf_memmove_fwd(void *d, const void *s, __u64 len)
 {
-#if __clang_major__ >= 10
 	if (!__builtin_constant_p(len))
 		__throw_build_bug();
 
 	switch (len) {
-	case 96:         __it_mof(d, s, 64); fallthrough;
-	case 88: jmp_88: __it_mof(d, s, 64); fallthrough;
-	case 80: jmp_80: __it_mof(d, s, 64); fallthrough;
-	case 72: jmp_72: __it_mof(d, s, 64); fallthrough;
-	case 64: jmp_64: __it_mof(d, s, 64); fallthrough;
-	case 56: jmp_56: __it_mof(d, s, 64); fallthrough;
-	case 48: jmp_48: __it_mof(d, s, 64); fallthrough;
-	case 40: jmp_40: __it_mof(d, s, 64); fallthrough;
-	case 32: jmp_32: __it_mof(d, s, 64); fallthrough;
-	case 24: jmp_24: __it_mof(d, s, 64); fallthrough;
-	case 16: jmp_16: __it_mof(d, s, 64); fallthrough;
-	case  8: jmp_8:  __it_mof(d, s, 64);
+	case 128:          __it_mof(d, s, 64); fallthrough;
+	case 120: jmp_120: __it_mof(d, s, 64); fallthrough;
+	case 112: jmp_112: __it_mof(d, s, 64); fallthrough;
+	case 104: jmp_104: __it_mof(d, s, 64); fallthrough;
+	case  96: jmp_96:  __it_mof(d, s, 64); fallthrough;
+	case  88: jmp_88:  __it_mof(d, s, 64); fallthrough;
+	case  80: jmp_80:  __it_mof(d, s, 64); fallthrough;
+	case  72: jmp_72:  __it_mof(d, s, 64); fallthrough;
+	case  64: jmp_64:  __it_mof(d, s, 64); fallthrough;
+	case  56: jmp_56:  __it_mof(d, s, 64); fallthrough;
+	case  48: jmp_48:  __it_mof(d, s, 64); fallthrough;
+	case  40: jmp_40:  __it_mof(d, s, 64); fallthrough;
+	case  32: jmp_32:  __it_mof(d, s, 64); fallthrough;
+	case  24: jmp_24:  __it_mof(d, s, 64); fallthrough;
+	case  16: jmp_16:  __it_mof(d, s, 64); fallthrough;
+	case   8: jmp_8:   __it_mof(d, s, 64);
 		break;
 
-	case 94: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_88;
-	case 86: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_80;
-	case 78: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_72;
-	case 70: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_64;
-	case 62: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_56;
-	case 54: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_48;
-	case 46: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_40;
-	case 38: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_32;
-	case 30: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_24;
-	case 22: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_16;
-	case 14: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_8;
-	case  6: __it_mof(d, s, 16); __it_mof(d, s, 32);
+	case 126: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_120;
+	case 118: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_112;
+	case 110: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_104;
+	case 102: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_96;
+	case  94: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_88;
+	case  86: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_80;
+	case  78: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_72;
+	case  70: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_64;
+	case  62: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_56;
+	case  54: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_48;
+	case  46: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_40;
+	case  38: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_32;
+	case  30: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_24;
+	case  22: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_16;
+	case  14: __it_mof(d, s, 16); __it_mof(d, s, 32); goto jmp_8;
+	case   6: __it_mof(d, s, 16); __it_mof(d, s, 32);
 		break;
 
-	case 92: __it_mof(d, s, 32); goto jmp_88;
-	case 84: __it_mof(d, s, 32); goto jmp_80;
-	case 76: __it_mof(d, s, 32); goto jmp_72;
-	case 68: __it_mof(d, s, 32); goto jmp_64;
-	case 60: __it_mof(d, s, 32); goto jmp_56;
-	case 52: __it_mof(d, s, 32); goto jmp_48;
-	case 44: __it_mof(d, s, 32); goto jmp_40;
-	case 36: __it_mof(d, s, 32); goto jmp_32;
-	case 28: __it_mof(d, s, 32); goto jmp_24;
-	case 20: __it_mof(d, s, 32); goto jmp_16;
-	case 12: __it_mof(d, s, 32); goto jmp_8;
-	case  4: __it_mof(d, s, 32);
+	case 124: __it_mof(d, s, 32); goto jmp_120;
+	case 116: __it_mof(d, s, 32); goto jmp_112;
+	case 108: __it_mof(d, s, 32); goto jmp_104;
+	case 100: __it_mof(d, s, 32); goto jmp_96;
+	case  92: __it_mof(d, s, 32); goto jmp_88;
+	case  84: __it_mof(d, s, 32); goto jmp_80;
+	case  76: __it_mof(d, s, 32); goto jmp_72;
+	case  68: __it_mof(d, s, 32); goto jmp_64;
+	case  60: __it_mof(d, s, 32); goto jmp_56;
+	case  52: __it_mof(d, s, 32); goto jmp_48;
+	case  44: __it_mof(d, s, 32); goto jmp_40;
+	case  36: __it_mof(d, s, 32); goto jmp_32;
+	case  28: __it_mof(d, s, 32); goto jmp_24;
+	case  20: __it_mof(d, s, 32); goto jmp_16;
+	case  12: __it_mof(d, s, 32); goto jmp_8;
+	case   4: __it_mof(d, s, 32);
 		break;
 
-	case 90: __it_mof(d, s, 16); goto jmp_88;
-	case 82: __it_mof(d, s, 16); goto jmp_80;
-	case 74: __it_mof(d, s, 16); goto jmp_72;
-	case 66: __it_mof(d, s, 16); goto jmp_64;
-	case 58: __it_mof(d, s, 16); goto jmp_56;
-	case 50: __it_mof(d, s, 16); goto jmp_48;
-	case 42: __it_mof(d, s, 16); goto jmp_40;
-	case 34: __it_mof(d, s, 16); goto jmp_32;
-	case 26: __it_mof(d, s, 16); goto jmp_24;
-	case 18: __it_mof(d, s, 16); goto jmp_16;
-	case 10: __it_mof(d, s, 16); goto jmp_8;
-	case  2: __it_mof(d, s, 16);
+	case 122: __it_mof(d, s, 16); goto jmp_120;
+	case 114: __it_mof(d, s, 16); goto jmp_112;
+	case 106: __it_mof(d, s, 16); goto jmp_104;
+	case  98: __it_mof(d, s, 16); goto jmp_96;
+	case  90: __it_mof(d, s, 16); goto jmp_88;
+	case  82: __it_mof(d, s, 16); goto jmp_80;
+	case  74: __it_mof(d, s, 16); goto jmp_72;
+	case  66: __it_mof(d, s, 16); goto jmp_64;
+	case  58: __it_mof(d, s, 16); goto jmp_56;
+	case  50: __it_mof(d, s, 16); goto jmp_48;
+	case  42: __it_mof(d, s, 16); goto jmp_40;
+	case  34: __it_mof(d, s, 16); goto jmp_32;
+	case  26: __it_mof(d, s, 16); goto jmp_24;
+	case  18: __it_mof(d, s, 16); goto jmp_16;
+	case  10: __it_mof(d, s, 16); goto jmp_8;
+	case   2: __it_mof(d, s, 16);
 		break;
 
 	case  1: __it_mof(d, s, 8);
@@ -455,9 +517,6 @@ static __always_inline void __bpf_memmove_fwd(void *d, const void *s, __u64 len)
 		 */
 		__throw_build_bug();
 	}
-#else
-	__bpf_memmove_builtin(d, s, len);
-#endif
 }
 
 static __always_inline __maybe_unused void
@@ -493,5 +552,3 @@ static __always_inline __nobuiltin("memmove") void memmove(void *d,
 {
 	return __bpf_memmove(d, s, len);
 }
-
-#endif /* __BPF_BUILTINS__ */

@@ -6,13 +6,13 @@
 package v2
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	ciliumiov2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	apisciliumiov2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	versioned "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
 	internalinterfaces "github.com/cilium/cilium/pkg/k8s/client/informers/externalversions/internalinterfaces"
-	v2 "github.com/cilium/cilium/pkg/k8s/client/listers/cilium.io/v2"
+	ciliumiov2 "github.com/cilium/cilium/pkg/k8s/client/listers/cilium.io/v2"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
@@ -23,7 +23,7 @@ import (
 // CiliumLocalRedirectPolicies.
 type CiliumLocalRedirectPolicyInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v2.CiliumLocalRedirectPolicyLister
+	Lister() ciliumiov2.CiliumLocalRedirectPolicyLister
 }
 
 type ciliumLocalRedirectPolicyInformer struct {
@@ -44,21 +44,33 @@ func NewCiliumLocalRedirectPolicyInformer(client versioned.Interface, namespace 
 // one. This reduces memory footprint and number of connections to the server.
 func NewFilteredCiliumLocalRedirectPolicyInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
 	return cache.NewSharedIndexInformer(
-		&cache.ListWatch{
+		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
 			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CiliumV2().CiliumLocalRedirectPolicies(namespace).List(context.TODO(), options)
+				return client.CiliumV2().CiliumLocalRedirectPolicies(namespace).List(context.Background(), options)
 			},
 			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CiliumV2().CiliumLocalRedirectPolicies(namespace).Watch(context.TODO(), options)
+				return client.CiliumV2().CiliumLocalRedirectPolicies(namespace).Watch(context.Background(), options)
 			},
-		},
-		&ciliumiov2.CiliumLocalRedirectPolicy{},
+			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+				if tweakListOptions != nil {
+					tweakListOptions(&options)
+				}
+				return client.CiliumV2().CiliumLocalRedirectPolicies(namespace).List(ctx, options)
+			},
+			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+				if tweakListOptions != nil {
+					tweakListOptions(&options)
+				}
+				return client.CiliumV2().CiliumLocalRedirectPolicies(namespace).Watch(ctx, options)
+			},
+		}, client),
+		&apisciliumiov2.CiliumLocalRedirectPolicy{},
 		resyncPeriod,
 		indexers,
 	)
@@ -69,9 +81,9 @@ func (f *ciliumLocalRedirectPolicyInformer) defaultInformer(client versioned.Int
 }
 
 func (f *ciliumLocalRedirectPolicyInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&ciliumiov2.CiliumLocalRedirectPolicy{}, f.defaultInformer)
+	return f.factory.InformerFor(&apisciliumiov2.CiliumLocalRedirectPolicy{}, f.defaultInformer)
 }
 
-func (f *ciliumLocalRedirectPolicyInformer) Lister() v2.CiliumLocalRedirectPolicyLister {
-	return v2.NewCiliumLocalRedirectPolicyLister(f.Informer().GetIndexer())
+func (f *ciliumLocalRedirectPolicyInformer) Lister() ciliumiov2.CiliumLocalRedirectPolicyLister {
+	return ciliumiov2.NewCiliumLocalRedirectPolicyLister(f.Informer().GetIndexer())
 }

@@ -5,13 +5,16 @@ package node_test
 
 import (
 	"context"
-	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/assert"
+
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	. "github.com/cilium/cilium/pkg/node"
 )
 
@@ -54,9 +57,9 @@ func TestLocalNodeStore(t *testing.T) {
 
 	// update adds a start hook to the application that modifies
 	// the local node.
-	update := func(lc hive.Lifecycle, store *LocalNodeStore) {
-		lc.Append(hive.Hook{
-			OnStart: func(hive.HookContext) error {
+	update := func(lc cell.Lifecycle, store *LocalNodeStore) {
+		lc.Append(cell.Hook{
+			OnStart: func(cell.HookContext) error {
 				// emit 2, 3, 4, 5
 				for _, i := range expected[1:] {
 					if i == 5 {
@@ -74,8 +77,14 @@ func TestLocalNodeStore(t *testing.T) {
 	}
 
 	hive := hive.New(
-		cell.Provide(NewLocalNodeStore),
+		LocalNodeStoreCell,
 
+		cell.Provide(func() cmtypes.ClusterInfo {
+			return cmtypes.ClusterInfo{
+				Name: "test",
+				ID:   1,
+			}
+		}),
 		cell.Provide(func() LocalNodeSynchronizer { return ts }),
 		cell.Invoke(observe),
 		cell.Invoke(update),
@@ -84,18 +93,31 @@ func TestLocalNodeStore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	if err := hive.Start(ctx); err != nil {
+	tlog := hivetest.Logger(t)
+	if err := hive.Start(tlog, ctx); err != nil {
 		t.Fatalf("Failed to start: %s", err)
 	}
 
 	// Wait until all values have been observed
 	waitObserve.Wait()
 
-	if err := hive.Stop(ctx); err != nil {
+	if err := hive.Stop(tlog, ctx); err != nil {
 		t.Fatalf("Failed to stop: %s", err)
 	}
 
-	if !slices.Equal(observed, expected) {
-		t.Fatalf("Unexpected values observed: %v, expected: %v", observed, expected)
+	// Observed should be an ordered subset of [expected] since some intermediate
+	// states may get skipped.
+	assert.NotEmpty(t, observed)
+	assert.Subset(t, expected, observed)
+}
+
+func BenchmarkLocalNodeStoreGet(b *testing.B) {
+	ctx := context.Background()
+	lns := NewTestLocalNodeStore(LocalNode{})
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		_, _ = lns.Get(ctx)
 	}
 }

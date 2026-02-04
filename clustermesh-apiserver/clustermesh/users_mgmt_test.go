@@ -11,15 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 
-	"github.com/cilium/cilium/operator/watchers"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/kvstore"
-	"github.com/cilium/cilium/pkg/promise"
+	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
 const (
@@ -28,6 +28,7 @@ const (
 )
 
 type fakeUserMgmtClient struct {
+	mu      lock.RWMutex
 	created map[string]string
 	deleted map[string]int
 }
@@ -38,35 +39,26 @@ func (f *fakeUserMgmtClient) init() {
 }
 
 func (f *fakeUserMgmtClient) UserEnforcePresence(_ context.Context, name string, roles []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	// The existing value (if any) is concatenated, to detect if this is called twice for the same name
 	f.created[name] = f.created[name] + strings.Join(roles, "|")
 	return nil
 }
 
 func (f *fakeUserMgmtClient) UserEnforceAbsence(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.deleted[name]++
 	return nil
 }
 
-func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(
-		m,
-		// To ignore goroutine started from sigs.k8s.io/controller-runtime/pkg/log.go
-		// init function
-		goleak.IgnoreTopFunction("time.Sleep"),
-		// Delaying workqueues used by resource.Resource[T].Events leaks this waitingLoop goroutine.
-		// It does stop when shutting down but is not guaranteed to before we actually exit.
-		goleak.IgnoreTopFunction("k8s.io/client-go/util/workqueue.(*delayingType).waitingLoop"),
-	)
-}
-
 func TestUsersManagement(t *testing.T) {
-	defer func() {
-		// force cleanup of goroutines run from initialization of watchers.nodeQueue,
-		// otherwise goleak complains
-		watchers.NodeQueueShutDown()
-		time.Sleep(50 * time.Millisecond)
-	}()
+	// Catch any leaked goroutines. Ignoring goroutines possibly left by other tests.
+	leakOpts := testutils.GoleakIgnoreCurrent()
+	t.Cleanup(func() { testutils.GoleakVerifyNone(t, leakOpts) })
 
 	var client fakeUserMgmtClient
 	client.init()
@@ -90,29 +82,30 @@ func TestUsersManagement(t *testing.T) {
 			return cmtypes.ClusterInfo{ID: 10, Name: "fred"}
 		}),
 
-		cell.Provide(func(lc hive.Lifecycle) promise.Promise[kvstore.BackendOperationsUserMgmt] {
-			resolver, promise := promise.New[kvstore.BackendOperationsUserMgmt]()
-			resolver.Resolve(&client)
-			return promise
+		cell.Provide(func() kvstore.BackendOperationsUserMgmt {
+			return &client
 		}),
 
 		cell.Invoke(registerUsersManager),
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
-	if err := hive.Start(ctx); err != nil {
+	tlog := hivetest.Logger(t)
+	if err := hive.Start(tlog, ctx); err != nil {
 		t.Fatalf("failed to start: %s", err)
 	}
 
 	defer func() {
-		if err := hive.Stop(ctx); err != nil {
+		if err := hive.Stop(tlog, ctx); err != nil {
 			t.Fatalf("failed to stop: %s", err)
 		}
 	}()
 
 	require.Eventuallyf(t, func() bool {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+
 		return len(client.created) == 3 && len(client.deleted) == 0
 	}, time.Second, 10*time.Millisecond,
 		"Failed waiting for events to be triggered: created: %v, deleted: %v",
@@ -133,6 +126,9 @@ func TestUsersManagement(t *testing.T) {
 	require.NoError(t, os.Rename(cfgPath2, cfgPath))
 
 	require.Eventuallyf(t, func() bool {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+
 		return len(client.created) == 2 && len(client.deleted) == 1
 	}, time.Second, 10*time.Millisecond,
 		"Failed waiting for events to be triggered: created: %v, deleted: %v",

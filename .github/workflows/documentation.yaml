@@ -19,17 +19,18 @@ concurrency:
 jobs:
   check_changes:
     name: Deduce required tests from code changes
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     outputs:
       docs-tree: ${{ steps.docs-tree.outputs.src }}
     steps:
       - name: Checkout code
         if: ${{ !github.event.pull_request }}
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Check code changes
-        uses: dorny/paths-filter@4512585405083f25c027a35db413c2b3b9006d50 # v2.11.1
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
         id: docs-tree
         with:
           # For `push` events, compare against the `ref` base branch
@@ -54,14 +55,16 @@ jobs:
     needs: check_changes
     if: ${{ needs.check_changes.outputs.docs-tree == 'true' }}
     name: Validate & Build HTML
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          # Needed to detect missing redirects
+          fetch-depth: 0
       - name: Build HTML
-        uses: docker://quay.io/cilium/docs-builder:d88a9684e1be32661e9e56d6b7e1e1350db7a1b1@sha256:f051371b2a910088a43dc5bd4289c9ca3a8754a8afb15f60f86f385660c1fd09
+        uses: docker://quay.io/cilium/docs-builder:c3cbf68c945e23a4a717eab7fd1448ceb99e1c8a@sha256:185913958528f99208d9efa6b76f8ef4b4f6559da0b6be2564163b7d2b5dc1e1
         with:
           entrypoint: ./Documentation/check-build.sh
           args: html
@@ -69,40 +72,19 @@ jobs:
   check-generated-documentation:
     name: Check generated documentation
     if: ${{ github.event_name != 'merge_group' }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          # Needed to detect missing redirects
+          fetch-depth: 0
       - name: Install Go
-        uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe # v4.1.0
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           # renovate: datasource=golang-version depName=go
-          go-version: 1.21.5
-
-      - name: Set clang directory
-        id: set_clang_dir
-        run: echo "clang_dir=$HOME/.clang" >> $GITHUB_OUTPUT
-
-      - name: Cache LLVM and Clang
-        id: cache-llvm
-        uses: actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84 # v3.3.2
-        with:
-          path: ${{ steps.set_clang_dir.outputs.clang_dir }}
-          key: llvm-10.0
-
-      - name: Install LLVM and Clang prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libtinfo5
-
-      - name: Install LLVM and Clang
-        uses: KyleMayes/install-llvm-action@be40c5af3a4adc3e4a03199995ab73aa37536712 # v1.9.0
-        with:
-          version: "10.0"
-          directory: ${{ steps.set_clang_dir.outputs.clang_dir }}
-          cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+          go-version: 1.25.6
 
       # Building Cilium as precondition to generate documentation artifacts.
       - name: Build Cilium

@@ -29,6 +29,9 @@ can talk to each other. Layer 3 policies can be specified using the following me
   to the local host serving the endpoints or all connectivity to outside of
   the cluster.
 
+* `Node based`: This is an extension of ``remote-node`` entity. Optionally nodes
+  can have unique identity that can be used to allow/block access only from specific ones.
+
 * `CIDR based`: This is used to describe the relationship to or from external
   services if the remote peer is not an endpoint. This requires to hardcode either
   IP addresses or subnets into the policies. This construct should be used as a
@@ -36,12 +39,13 @@ can talk to each other. Layer 3 policies can be specified using the following me
 
 * `DNS based`: Selects remote, non-cluster, peers using DNS names converted to
   IPs via DNS lookups. It shares all limitations of the `CIDR based` rules
-  above. DNS information is acquired by routing DNS traffic via a proxy.
+  above. DNS information is acquired by routing DNS traffic via `DNS Proxy`
+  with a separate policy rule.
   DNS TTLs are respected.
 
 .. _Endpoints based:
 
-Endpoints Based
+Endpoints based
 ---------------
 
 Endpoints-based L3 policy is used to establish rules between endpoints inside
@@ -70,19 +74,8 @@ The following example illustrates how to use a simple ingress rule to allow
 communication from endpoints with the label ``role=frontend`` to endpoints with
 the label ``role=backend``.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/simple/l3.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/simple/l3.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/simple/l3.json
+.. literalinclude:: ../../../examples/policies/l3/simple/l3.yaml
+  :language: yaml
 
 
 Ingress Allow All Endpoints
@@ -91,19 +84,8 @@ Ingress Allow All Endpoints
 An empty `EndpointSelector` will select all endpoints, thus writing a rule that will allow
 all ingress traffic to an endpoint may be done as follows:
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/ingress-allow-all/ingress-allow-all.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/ingress-allow-all/ingress-allow-all.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/ingress-allow-all/ingress-allow-all.json
+.. literalinclude:: ../../../examples/policies/l3/ingress-allow-all/ingress-allow-all.yaml
+  :language: yaml
 
 Note that while the above examples allow all ingress traffic to an endpoint, this does not
 mean that all endpoints are allowed to send traffic to this endpoint per their policies.
@@ -125,20 +107,8 @@ The following example illustrates how to use a simple egress rule to allow
 communication to endpoints with the label ``role=backend`` from endpoints with
 the label ``role=frontend``.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/simple/l3_egress.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/simple/l3_egress.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/simple/l3_egress.json
-
+.. literalinclude:: ../../../examples/policies/l3/simple/l3_egress.yaml
+  :language: yaml
 
 Egress Allow All Endpoints
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -148,24 +118,23 @@ based on the `CiliumNetworkPolicy` namespace (``default`` by default). The
 following rule allows all egress traffic from endpoints with the label
 ``role=frontend`` to all other endpoints in the same namespace:
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/egress-allow-all/egress-allow-all.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/egress-allow-all/egress-allow-all.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/egress-allow-all/egress-allow-all.json
-
+.. literalinclude:: ../../../examples/policies/l3/egress-allow-all/egress-allow-all.yaml
+  :language: yaml
 
 Note that while the above examples allow all egress traffic from an endpoint, the receivers
 of the egress traffic may have ingress rules that deny the traffic. In other words,
 policy must be configured on both sides (sender and receiver).
+
+Simple Egress Deny
+~~~~~~~~~~~~~~~~~~
+
+The following example illustrates how to deny communication to endpoints with
+the label ``role=backend`` from endpoints with the label ``role=frontend``.
+If an ``egressDeny`` rule matches, egress traffic is denied even if the policy
+contains ``egress`` rules that would otherwise allow it.
+
+.. literalinclude:: ../../../examples/policies/l3/egress-deny/egress-deny.yaml
+   :language: yaml
 
 Ingress/Egress Default Deny
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -178,22 +147,16 @@ egress.
           illustrates how to put an endpoint into default deny mode without
           whitelisting other peers at the same time.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/egress-default-deny/egress-default-deny.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/egress-default-deny/egress-default-deny.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/egress-default-deny/egress-default-deny.json
+.. literalinclude:: ../../../examples/policies/l3/egress-default-deny/egress-default-deny.yaml
+  :language: yaml
 
 Additional Label Requirements
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. warning::
+
+   The ``fromRequires`` and ``toRequires`` fields are deprecated as of Cilium
+   1.17.x. They have been removed as of Cilium 1.19.
 
 It is often required to apply the principle of *separation of concern* when defining
 policies. For this reason, an additional construct exists which allows to establish
@@ -211,22 +174,26 @@ The purpose of this rule is to allow establishing base requirements such as, any
 endpoint in ``env=prod`` can only be accessed if the source endpoint also carries
 the label ``env=prod``.
 
+.. warning::
+
+   ``toRequires`` and ``fromRequires`` apply to all rules that share the same
+   endpoint selector and are not limited by other egress or ingress rules.
+   As a result ``toRequires`` and ``fromRequires`` limits all ingress and egress traffic
+   that applies to its endpoint selector. An important implication of the fact
+   that ``toRequires`` and ``fromRequires`` limit all ingress and egress traffic
+   that applies to an endpoint selector is that the other egress and ingress rules
+   (such as ``fromEndpoints``, ``fromPorts``, ``toEntities``, ``toServices``, and the rest)
+   do not limit the scope of the ``toRequires`` of ``fromRequires`` fields. Pairing other
+   ingress and egress rules with a ``toRequires`` or ``fromRequires`` will result in valid
+   policy, but the requirements set in ``toRequires`` and ``fromRequires`` stay in effect
+   no matter what would otherwise be allowed by the other rules.
+
+
 This example shows how to require every endpoint with the label ``env=prod`` to
 be only accessible if the source endpoint also has the label ``env=prod``.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/requires/requires.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/requires/requires.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/requires/requires.json
+.. literalinclude:: ../../../examples/policies/l3/requires/requires.yaml
+  :language: yaml
 
 This ``fromRequires`` rule doesn't allow anything on its own and needs to be
 combined with other rules to allow traffic. For example, when combined with the
@@ -234,83 +201,46 @@ example policy below, the endpoint with label ``env=prod`` will become
 accessible from endpoints that have both labels ``env=prod`` and
 ``role=frontend``.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/requires/endpoints.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/requires/endpoints.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/requires/endpoints.json
+.. literalinclude:: ../../../examples/policies/l3/requires/endpoints.yaml
+  :language: yaml
 
 .. _Services based:
 
 Services based
 --------------
 
+Traffic from endpoints to services running in your cluster can be allowed via
+``toServices`` statements in Egress rules. Policies can reference
+`Kubernetes Services <https://kubernetes.io/docs/concepts/services-networking/service>`_
+by name or label selector.
+
+This feature uses the discovered services' `label selector <https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors>`_
+as an :ref:`endpoint selector <endpoints based>` within the policy.
+
 .. note::
 
-	Services based rules rules will only take effect on Kubernetes services
-        without a selector.
+   `Services without selectors <https://kubernetes.io/docs/concepts/services-networking/service/#services-without-selectors>`_
+   are handled differently. The IPs in the service's EndpointSlices are, converted to
+   :ref:`CIDR <cidr based>` selectors. CIDR selectors cannot select pods,
+   and that limitation applies here as well.
 
-Traffic from pods to services running in your cluster can be allowed via
-``toServices`` statements in Egress rules. Currently Kubernetes
-`Services without a Selector
-<https://kubernetes.io/docs/concepts/services-networking/service/#services-without-selectors>`_
-are supported when defined by their name and namespace or label selector.
-For services backed by pods, use `Endpoints Based` rules on the backend pod
-labels.
+   The special Kubernetes Service ``default/kubernetes`` does not use a label
+   selector. It is **not recommended** to grant access to the Kubernetes API server
+   with a ``toServices``-based policy. Use instead the
+   `kube-apiserver entity <kube_apiserver_entity>`.
 
-This example shows how to allow all endpoints with the label ``id=app2``
-to talk to all endpoints of kubernetes service ``myservice`` in kubernetes
-namespace ``default``.
-
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/service/service.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/service/service.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/service/service.json
 
 This example shows how to allow all endpoints with the label ``id=app2``
-to talk to all endpoints of all kubernetes services without selectors which
-have ``external:yes`` set as the label.
+to talk to all endpoints of Kubernetes Service ``myservice`` in kubernetes
+namespace ``default`` as well as all services with label ``env=staging`` in
+namespace ``another-namespace``.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/service/service-labels.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/service/service-labels.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/service/service-labels.json
-
-Limitations
-~~~~~~~~~~~
-
-``toServices`` statements must not be combined with ``toPorts`` statements in the
-same rule. If a rule combines both these statements, the policy is rejected.
+.. literalinclude:: ../../../examples/policies/l3/service/service.yaml
+  :language: yaml
 
 .. _Entities based:
 
-Entities Based
+Entities based
 --------------
 
 ``fromEntities`` is used to describe the entities that can access the selected
@@ -325,7 +255,7 @@ host
 remote-node
     Any node in any of the connected clusters other than the local host. This
     also includes all containers running in host-networking mode on remote
-    nodes. (Requires the option ``enable-remote-node-identity`` to be enabled)
+    nodes.
 kube-apiserver
     The kube-apiserver entity represents the kube-apiserver in a Kubernetes
     cluster. This entity represents both deployments of the kube-apiserver:
@@ -338,7 +268,8 @@ cluster
     Cluster is the logical group of all network endpoints inside of the local
     cluster. This includes all Cilium-managed endpoints of the local cluster,
     unmanaged endpoints in the local cluster, as well as the host,
-    remote-node, and init identities.
+    remote-node, and init identities. This also includes all remote nodes
+    in a clustermesh scenario.
 init
     The init entity contains all endpoints in bootstrap phase for which the
     security identity has not been resolved yet. This is typically only
@@ -361,6 +292,23 @@ all
     The all entity represents the combination of all known clusters as well
     world and whitelists all communication.
 
+.. note:: The ``kube-apiserver`` entity may not work for *ingress traffic* in some Kubernetes
+   distributions, such as Azure AKS and GCP GKE. This is due to the fact that ingress
+   control-plane traffic is being tunneled through worker nodes, which does not preserve
+   the original source IP. You may be able to use a broader ``fromEntities: cluster`` rule
+   instead. Restricting *egress traffic* via ``toEntities: kube-apiserver`` however is expected
+   to work on these Kubernetes distributions.
+
+.. _kube_apiserver_entity:
+
+Access to/from kube-apiserver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Allow all endpoints with the label ``env=dev`` to access the kube-apiserver.
+
+.. literalinclude:: ../../../examples/policies/l3/entities/apiserver.yaml
+  :language: yaml
+
 Access to/from local host
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -372,41 +320,19 @@ serving the particular endpoint.
 	  option ``--allow-localhost=policy`` to disable this behavior which
 	  will give you control over this via policy.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/entities/host.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/entities/host.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/entities/host.json
+.. literalinclude:: ../../../examples/policies/l3/entities/host.yaml
+  :language: yaml
 
 .. _policy-remote-node:
 
-Access to/from all nodes in the cluster
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Access to/from all nodes in the cluster (or clustermesh)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Allow all endpoints with the label ``env=dev`` to receive traffic from any host
 in the cluster that Cilium is running on.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/entities/nodes.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/entities/nodes.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/entities/nodes.json
+.. literalinclude:: ../../../examples/policies/l3/entities/nodes.yaml
+  :language: yaml
 
 Access to/from outside cluster
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -414,19 +340,41 @@ Access to/from outside cluster
 This example shows how to enable access from outside of the cluster to all
 endpoints that have the label ``role=public``.
 
-.. only:: html
+.. literalinclude:: ../../../examples/policies/l3/entities/world.yaml
+  :language: yaml
 
-   .. tabs::
-     .. group-tab:: k8s YAML
+.. _policy_node_based:
+.. _Node based:
 
-        .. literalinclude:: ../../../examples/policies/l3/entities/world.yaml
-     .. group-tab:: JSON
+Node based
+----------
 
-        .. literalinclude:: ../../../examples/policies/l3/entities/world.json
+.. note:: Example below with ``fromNodes/toNodes`` fields will only take effect when
+     ``enable-node-selector-labels`` flag is set to true (or equivalent Helm value
+     ``nodeSelectorLabels: true``).
 
-.. only:: epub or latex
+When ``--enable-node-selector-labels=true`` is specified, every cilium-agent
+allocates a different local :ref:`security identity <arch_id_security>` for all
+other nodes. But instead of using :ref:`local scoped identity <local_scoped_identity>`
+it uses :ref:`remote-node scoped identity<remote_node_scoped_identity>` identity range.
 
-        .. literalinclude:: ../../../examples/policies/l3/entities/world.json
+By default all labels that ``Node`` object has attached are taken into account,
+which might result in allocation of **unique** identity for each remote-node.
+For these cases it is also possible to filter only
+:ref:`security relevant labels <security relevant labels>` with ``--node-labels`` flag.
+
+This example shows how to allow all endpoints with the label ``env=prod`` to receive
+traffic **only** from control plane (labeled
+``node-role.kubernetes.io/control-plane=""``) nodes in the cluster (or clustermesh).
+
+Note that by default policies automatically select nodes from all the clusters in
+a Cluster Mesh environment unless it is explicitly specified. To restrict node
+selection to the local cluster by default you can enable the option
+``--policy-default-local-cluster`` via the ConfigMap option ``policy-default-local-cluster``
+or the Helm value ``clustermesh.policyDefaultLocalCluster``.
+
+.. literalinclude:: ../../../examples/policies/l3/entities/customnodes.yaml
+  :language: yaml
 
 .. _policy_cidr:
 .. _CIDR based:
@@ -468,6 +416,8 @@ fromCIDRSet
   prefixes/CIDRs per source prefix/CIDR that are subnets of the source
   prefix/CIDR from which communication is not allowed.
 
+  ``fromCIDRSet`` may also reference prefixes/CIDRs indirectly via a :ref:`CiliumCIDRGroup`.
+
 Egress
 ~~~~~~
 
@@ -478,10 +428,12 @@ toCIDR
   the respective destination endpoints.
 
 toCIDRSet
-  List of destination prefixes/CIDRs that are allowed to talk to all endpoints
-  selected by the ``endpointSelector``, along with an optional list of
+  List of destination prefixes/CIDRs that endpoints selected by
+  ``endpointSelector`` are allowed to talk to, along with an optional list of
   prefixes/CIDRs per source prefix/CIDR that are subnets of the destination
   prefix/CIDR to which communication is not allowed.
+
+  ``toCIDRSet`` may also reference prefixes/CIDRs indirectly via a :ref:`CiliumCIDRGroup`.
 
 Allow to external CIDR block
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -490,19 +442,8 @@ This example shows how to allow all endpoints with the label ``app=myService``
 to talk to the external IP ``20.1.1.1``, as well as the CIDR prefix ``10.0.0.0/8``,
 but not CIDR prefix ``10.96.0.0/12``
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/cidr/cidr.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/cidr/cidr.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/cidr/cidr.json
+.. literalinclude:: ../../../examples/policies/l3/cidr/cidr.yaml
+  :language: yaml
 
 .. _cidr_select_nodes:
 
@@ -537,7 +478,7 @@ DNS policies are used to define Layer 3 policies to endpoints that are not
 managed by Cilium, but have DNS queryable domain names. The IP addresses
 provided in DNS responses are allowed by Cilium in a similar manner to IPs in
 `CIDR based`_ policies. They are an alternative when the remote IPs may change
-or are not know a priori, or when DNS is more convenient. To enforce policy on
+or are not know prior, or when DNS is more convenient. To enforce policy on
 DNS requests themselves, see `Layer 7 Examples`_.
 
 .. note::
@@ -587,10 +528,13 @@ IPs to be allowed are selected via:
     ``part-extra-ial.com``.
   * ``*`` alone matches all names, and inserts all cached DNS IPs into this
     rule.
+  * ``**.`` is a special prefix supported in DNS match pattern to wildcard all cascaded
+    subdomains in the prefix. For example: ``**.cilium.io`` pattern will match both
+    ``app.cilium.io`` and ``test.app.cilium.io`` but not ``cilium.io``.
 
 The example below allows all DNS traffic on port 53 to the DNS service and
 intercepts it via the `DNS Proxy`_. If using a non-standard DNS port for
-a DNS application behind a Kubernetes service, the port must match the backend
+a DNS application behind a Kubernetes Service, the port must match the backend
 port. When the application makes a request for my-remote-service.com, Cilium
 learns the IP address and will allow traffic due to the match on the name under
 the ``toFQDNs.matchName`` rule.
@@ -598,20 +542,8 @@ the ``toFQDNs.matchName`` rule.
 Example
 ~~~~~~~
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/fqdn/fqdn.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/fqdn/fqdn.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/fqdn/fqdn.json
-
+.. literalinclude:: ../../../examples/policies/l3/fqdn/fqdn.yaml
+  :language: yaml
 
 Managing Short-Lived Connections & Maximum IPs per FQDN/endpoint
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -655,10 +587,15 @@ which is defined as follows:
 
         // PortProtocol specifies an L4 port with an optional transport protocol
         type PortProtocol struct {
-                // Port is an L4 port number. For now the string will be strictly
-                // parsed as a single uint16. In the future, this field may support
-                // ranges in the form "1024-2048"
+                // Port can be an L4 port number, or a name in the form of "http"
+                // or "http-8080". EndPort is ignored if Port is a named port.
                 Port string `json:"port"`
+
+                // EndPort can only be an L4 port number. It is ignored when
+                // Port is a named port.
+                //
+                // +optional
+                EndPort int32 `json:"endPort,omitempty"`
 
                 // Protocol is the L4 protocol. If omitted or empty, any protocol
                 // matches. Accepted values: "TCP", "UDP", ""/"ANY"
@@ -675,19 +612,19 @@ Example (L4)
 The following rule limits all endpoints with the label ``app=myService`` to
 only be able to emit packets using TCP on port 80, to any layer 3 destination:
 
-.. only:: html
+.. literalinclude:: ../../../examples/policies/l4/l4.yaml
+  :language: yaml
 
-   .. tabs::
-     .. group-tab:: k8s YAML
+Example Port Ranges
+~~~~~~~~~~~~~~~~~~~
 
-        .. literalinclude:: ../../../examples/policies/l4/l4.yaml
-     .. group-tab:: JSON
+The following rule limits all endpoints with the label ``app=myService`` to
+only be able to emit packets using TCP on ports 80-444, to any layer 3 destination:
 
-        .. literalinclude:: ../../../examples/policies/l4/l4.json
+.. literalinclude:: ../../../examples/policies/l4/l4_port_range.yaml
+  :language: yaml
 
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l4/l4.json
+.. note:: Layer 7 rules support port ranges, except for DNS rules.
 
 Labels-dependent Layer 4 rule
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -699,19 +636,8 @@ able to communicate with the endpoints with the label ``role=backend``, and
 endpoints with the label ``role=frontend`` will not be able to communicate with
 ``role=backend`` on ports other than 80.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l4/l3_l4_combined.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l4/l3_l4_combined.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l4/l3_l4_combined.json
+.. literalinclude:: ../../../examples/policies/l4/l3_l4_combined.yaml
+  :language: yaml
 
 CIDR-dependent Layer 4 Rule
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -724,26 +650,15 @@ without the label ``role=crawler`` to communicate with destinations in the CIDR
 not be able to communicate with destinations in the CIDR ``192.0.2.0/24`` on
 ports other than port 80.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l4/cidr_l4_combined.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l4/cidr_l4_combined.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l4/cidr_l4_combined.json
+.. literalinclude:: ../../../examples/policies/l4/cidr_l4_combined.yaml
+  :language: yaml
 
 Limit ICMP/ICMPv6 types
 -----------------------
 
 ICMP policy can be specified in addition to layer 3 policies or independently.
 It restricts the ability of an endpoint to emit and/or receive packets on a
-particular ICMP/ICMPv6 type (currently ICMP/ICMPv6 code is not supported).
+particular ICMP/ICMPv6 type (both type (integer) and corresponding CamelCase message (string) are supported).
 If any ICMP policy is specified, layer 4 and ICMP communication will be blocked
 unless it's related to a connection that is otherwise allowed by the policy.
 
@@ -754,45 +669,95 @@ which is defined as follows:
 .. code-block:: go
 
         // ICMPField is a ICMP field.
+        //
+        // +deepequal-gen=true
+        // +deepequal-gen:private-method=true
         type ICMPField struct {
-        	// Family is a IP address version.
-        	// Currently, we support `IPv4` and `IPv6`.
-        	// `IPv4` is set as default.
-        	//
-        	// +default=IPv4
-        	// +optional
-        	Family string `json:"family,omitempty"`
+            // Family is a IP address version.
+            // Currently, we support `IPv4` and `IPv6`.
+            // `IPv4` is set as default.
+            //
+            // +kubebuilder:default=IPv4
+            // +kubebuilder:validation:Optional
+            // +kubebuilder:validation:Enum=IPv4;IPv6
+            Family string `json:"family,omitempty"`
 
-        	// Type is a ICMP-type.
-        	// It should be 0-255 (8bit).
-        	Type uint8 `json:"type"`
+	        // Type is a ICMP-type.
+	        // It should be an 8bit code (0-255), or it's CamelCase name (for example, "EchoReply").
+	        // Allowed ICMP types are:
+	        //     Ipv4: EchoReply | DestinationUnreachable | Redirect | Echo | EchoRequest |
+	        //		     RouterAdvertisement | RouterSelection | TimeExceeded | ParameterProblem |
+	        //			 Timestamp | TimestampReply | Photuris | ExtendedEcho Request | ExtendedEcho Reply
+	        //     Ipv6: DestinationUnreachable | PacketTooBig | TimeExceeded | ParameterProblem |
+	        //			 EchoRequest | EchoReply | MulticastListenerQuery| MulticastListenerReport |
+	        // 			 MulticastListenerDone | RouterSolicitation | RouterAdvertisement | NeighborSolicitation |
+	        // 			 NeighborAdvertisement | RedirectMessage | RouterRenumbering | ICMPNodeInformationQuery |
+	        // 			 ICMPNodeInformationResponse | InverseNeighborDiscoverySolicitation | InverseNeighborDiscoveryAdvertisement |
+	        // 			 HomeAgentAddressDiscoveryRequest | HomeAgentAddressDiscoveryReply | MobilePrefixSolicitation |
+	        // 			 MobilePrefixAdvertisement | DuplicateAddressRequestCodeSuffix | DuplicateAddressConfirmationCodeSuffix |
+	        // 			 ExtendedEchoRequest | ExtendedEchoReply
+	        //
+	        // +deepequal-gen=false
+	        // +kubebuilder:validation:XIntOrString
+	        // +kubebuilder:validation:Pattern="^([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]|EchoReply|DestinationUnreachable|Redirect|Echo|RouterAdvertisement|RouterSelection|TimeExceeded|ParameterProblem|Timestamp|TimestampReply|Photuris|ExtendedEchoRequest|ExtendedEcho Reply|PacketTooBig|ParameterProblem|EchoRequest|MulticastListenerQuery|MulticastListenerReport|MulticastListenerDone|RouterSolicitation|RouterAdvertisement|NeighborSolicitation|NeighborAdvertisement|RedirectMessage|RouterRenumbering|ICMPNodeInformationQuery|ICMPNodeInformationResponse|InverseNeighborDiscoverySolicitation|InverseNeighborDiscoveryAdvertisement|HomeAgentAddressDiscoveryRequest|HomeAgentAddressDiscoveryReply|MobilePrefixSolicitation|MobilePrefixAdvertisement|DuplicateAddressRequestCodeSuffix|DuplicateAddressConfirmationCodeSuffix)$"
+            Type *intstr.IntOrString `json:"type"`
         }
 
 Example (ICMP/ICMPv6)
 ~~~~~~~~~~~~~~~~~~~~~
 
 The following rule limits all endpoints with the label ``app=myService`` to
-only be able to emit packets using ICMP with type 8 and ICMPv6 with type 128,
+only be able to emit packets using ICMP with type 8 and ICMPv6 with message EchoRequest,
 to any layer 3 destination:
 
-.. only:: html
+.. literalinclude:: ../../../examples/policies/l4/icmp.yaml
+  :language: yaml
 
-   .. tabs::
-     .. group-tab:: k8s YAML
+Limit TLS Server Name Indication (SNI)
+--------------------------------------
 
-        .. literalinclude:: ../../../examples/policies/l4/icmp.yaml
-           :language: yaml
+When multiple websites are hosted on the same server with a shared IP address,
+Server Name Indication (SNI), an extension of the TLS protocol, ensures that
+the client receives the correct SSL certificate for the website they are
+trying to access. SNI allows the hostname or domain name of the website to be
+specified during the TLS handshake, rather than after the handshake when the
+HTTP connection is established.
 
-     .. group-tab:: JSON
+Cilium Network Policy can limit an endpoint's ability to establish a TLS
+handshake to a specified list of SNIs. The SNI policy is always configured
+at the egress level and is usually set up alongside port policies.
 
-        .. literalinclude:: ../../../examples/policies/l4/icmp.json
-           :language: json
+Example (TLS SNI)
+~~~~~~~~~~~~~~~~~
 
-.. only:: epub or latex
+.. note:: TLS SNI policy enforcement requires L7 proxy enabled.
 
-        .. literalinclude:: ../../../examples/policies/l4/icmp.json
-           :language: json
+The following rule limits all endpoints with the label ``app=myService`` to
+only be able to establish TLS connections with ``one.one.one.one`` SNI. Any
+other attempt to another SNI (for example, with ``cilium.io``) will be rejected.
 
+.. literalinclude:: ../../../examples/policies/l4/l4_sni.yaml
+  :language: yaml
+
+Below is the same SSL error while trying to connect to ``cilium.io`` from curl.
+
+.. code-block:: shell-session
+
+    $ kubectl exec <my-service-pod> -- curl -v https://cilium.io
+    * Host cilium.io:443 was resolved.
+    * IPv6: (none)
+    * IPv4: 104.198.14.52
+    *   Trying 104.198.14.52:443...
+    * Connected to cilium.io (104.198.14.52) port 443
+    * ALPN: curl offers h2,http/1.1
+    * TLSv1.3 (OUT), TLS handshake, Client hello (1):
+    *  CAfile: /etc/ssl/certs/ca-certificates.crt
+    *  CApath: /etc/ssl/certs
+    * Recv failure: Connection reset by peer
+    * OpenSSL SSL_connect: Connection reset by peer in connection to cilium.io:443
+    * Closing connection
+    curl: (35) Recv failure: Connection reset by peer
+    command terminated with exit code 35
 
 
 .. _l7_policy:
@@ -800,7 +765,7 @@ to any layer 3 destination:
 Layer 7 Examples
 ================
 
-Layer 7 policy rules are embedded into `l4_policy` rules and can be specified
+Layer 7 policy rules are embedded into Layer 4 rules and can be specified
 for ingress and egress. ``L7Rules`` structure is a base type containing an
 enumeration of protocol specific fields.
 
@@ -845,17 +810,22 @@ latter rule will have no effect.
           an *HTTP 403 access denied* is sent back for HTTP requests which
           violate the policy, or a *DNS REFUSED* response for DNS requests.
 
-.. note:: There is currently a max limit of 40 ports with layer 7 policies per
-          endpoint. This might change in the future when support for ranges is
-          added.
+.. note:: Layer 7 rules support port ranges, except for DNS rules.
 
-.. note:: Layer 7 rules are not currently supported in `HostPolicies`, i.e.,
-          policies that use :ref:`NodeSelector`.
+.. note:: In `HostPolicies`, i.e. policies that use :ref:`NodeSelector`,
+          only DNS layer 7 rules are currently functional.
+          Other types of layer 7 rules cannot be specified in `HostPolicies`.
 
-.. note:: Layer 7 policies will proxy traffic through an Envoy instance provided 
-          in each Cilium agent pod. As a result, L7 traffic targeted by policies 
-          depend on the availability of the Cilium agent pod. This includes L7 
-          policies (:ref:`proxy_visibility`).
+          Host layer 7 DNS policies are a beta feature.
+          Please provide feedback and file a GitHub issue if you experience any problems.
+
+.. note:: Layer 7 policies will proxy traffic through a node-local :ref:`envoy`
+          instance, which will either be deployed as a DaemonSet or embedded in the agent pod.
+          When Envoy is embedded in the agent pod, Layer 7 traffic targeted by policies
+          will therefore depend on the availability of the Cilium agent pod.
+
+.. note:: L7 policies for SNATed IPv6 traffic (e.g., pod-to-world) require a kernel with the `fix <https://patchwork.kernel.org/project/netdevbpf/patch/20250318161516.3791383-1-maxim@isovalent.com/>`__ applied.
+          The stable kernel versions with the fix are 6.14.1, 6.12.22, 6.6.86, 6.1.133, 5.15.180, 5.10.236. See :gh-issue:`37932` for the reference.
 
 HTTP
 ----
@@ -882,27 +852,21 @@ Headers
   Headers is a list of HTTP headers which must be present in the request. If
   omitted or empty, requests are allowed regardless of headers present.
 
+  It's also possible to do some more advanced header matching against header
+  values. ``HeaderMatches`` is a list of HTTP headers which must be present and
+  match against the given values. Mismatch field can be used to specify what
+  to do when there is no match.
+
 Allow GET /public
 ~~~~~~~~~~~~~~~~~
 
 The following example allows ``GET`` requests to the URL ``/public`` from the
-endpoints with the labels ``env=prod`` to endpoints with the labels 
+endpoints with the labels ``env=prod`` to endpoints with the labels
 ``app=service``, but requests to any other URL, or using another method, will
 be rejected. Requests on ports other than port 80 will be dropped.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l7/http/simple/l7.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l7/http/simple/l7.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l7/http/simple/l7.json
+.. literalinclude:: ../../../examples/policies/l7/http/simple/l7.yaml
+  :language: yaml
 
 All GET /path1 and PUT /path2 when header set
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -913,26 +877,15 @@ While communicating on this port, the only API endpoints allowed will be ``GET
 /path1``, and ``PUT /path2`` with the HTTP header ``X-My-Header`` set to
 ``true``:
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l7/http/http.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l7/http/http.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l7/http/http.json
+.. literalinclude:: ../../../examples/policies/l7/http/http.yaml
+  :language: yaml
 
 .. _kafka_policy:
 
 Kafka (beta)
 ------------
 
-.. include:: ../../beta.rst
+.. include:: ../../deprecated.rst
 
 PortRuleKafka is a list of Kafka protocol constraints. All fields are optional,
 if all fields are empty or missing, the rule will match all Kafka messages.
@@ -997,37 +950,14 @@ Topic
 Allow producing to topic empire-announce using Role
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l7/kafka/kafka-role.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l7/kafka/kafka-role.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l7/kafka/kafka-role.json
+.. literalinclude:: ../../../examples/policies/l7/kafka/kafka-role.yaml
+  :language: yaml
 
 Allow producing to topic empire-announce using apiKeys
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l7/kafka/kafka.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l7/kafka/kafka.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l7/kafka/kafka.json
-
+.. literalinclude:: ../../../examples/policies/l7/kafka/kafka.yaml
+  :language: yaml
 
 .. _dns_discovery:
 
@@ -1036,7 +966,7 @@ DNS Policy and IP Discovery
 
 Policy may be applied to DNS traffic, allowing or disallowing specific DNS
 query names or patterns of names (other DNS fields, such as query type, are not
-considered). This policy is effected via a DNS proxy, which is also used to
+considered). This policy is effected via a `DNS Proxy`, which is also used to
 collect IPs used to populate L3 `DNS based`_ ``toFQDNs`` rules.
 
 .. note::  While Layer 7 DNS policy can be applied without any other Layer 3
@@ -1077,20 +1007,8 @@ allowed but connections to the returned IPs are not, as there is no L3
 ``toFQDNs`` rule selecting them. L4 and L7 policy may also be applied (see
 `DNS based`_), restricting connections to TCP port 80 in this case.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l7/dns/dns.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l7/dns/dns.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l7/dns/dns.json
-
+.. literalinclude:: ../../../examples/policies/l7/dns/dns.yaml
+  :language: yaml
 
 .. note:: When applying DNS policy in kubernetes, queries for
           service.namespace.svc.cluster.local. must be explicitly allowed
@@ -1102,50 +1020,42 @@ allowed but connections to the returned IPs are not, as there is no L3
           ``servicename.namespace.svc.cluster.local.`` must have the latter
           allowed with ``matchName`` or ``matchPattern``. See `Alpine/musl deployments and DNS Refused`_.
 
+.. note:: DNS policies do not support port ranges.
+
 .. _DNS Obtaining Data:
 
 Obtaining DNS Data for use by ``toFQDNs``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-IPs are obtained via intercepting DNS requests with a proxy or DNS polling, and
-matching names are inserted irrespective of how the data is obtained. These IPs
-can be selected with ``toFQDN`` rules. DNS responses are cached within Cilium
-agent respecting TTL.
+IPs are obtained via intercepting DNS requests with a proxy. These IPs can be
+selected with ``toFQDN`` rules. DNS responses are cached within Cilium agent
+respecting TTL.
 
 .. _DNS Proxy:
 
-DNS Proxy 
-"""""""""
-  A DNS Proxy intercepts egress DNS traffic and records IPs seen in the
-  responses. This interception is, itself, a separate policy rule governing the
-  DNS requests, and must be specified separately. For details on how to enforce
-  policy on DNS requests and configuring the DNS proxy, see `Layer 7
-  Examples`_.
+DNS Proxy
+~~~~~~~~~
+A DNS Proxy in the agent intercepts egress DNS traffic and records IPs seen
+in the responses. This interception is, itself, a separate policy rule governing
+DNS requests, and must be specified separately. For details on how to enforce
+policy on DNS requests and configuring the DNS proxy, see `Layer 7 Examples`_.
 
-  Only IPs in intercepted DNS responses to an application will be allowed in
-  the Cilium policy rules. For a given domain name, IPs from responses to all
-  pods managed by a Cilium instance are allowed by policy (respecting TTLs).
-  This ensures that allowed IPs are consistent with those returned to
-  applications. The DNS Proxy is the only method to allow IPs from responses
-  allowed by wildcard L7 DNS ``matchPattern`` rules for use in ``toFQDNs``
-  rules.
+Only IPs in intercepted DNS responses to an application will be allowed in
+the Cilium policy rules. For a given domain name, IPs from responses to all
+pods managed by a Cilium instance are allowed by policy (respecting TTLs).
+This ensures that allowed IPs are consistent with those returned to
+applications. The DNS Proxy is the only method to allow IPs from responses
+allowed by wildcard L7 DNS ``matchPattern`` rules for use in ``toFQDNs``
+rules.
 
-  The following example obtains DNS data by interception without blocking any
-  DNS requests. It allows L3 connections to ``cilium.io``, ``sub.cilium.io``
-  and any subdomains of ``sub.cilium.io``.
+The following example obtains DNS data by interception without blocking any
+DNS requests. It allows L3 connections to ``cilium.io``, ``sub.cilium.io``
+and any subdomains of ``sub.cilium.io``.
 
-.. only:: html
+.. literalinclude:: ../../../examples/policies/l7/dns/dns-visibility.yaml
+  :language: yaml
 
-   .. tabs::
-     .. group-tab:: k8s YAML
+.. note:: DNS policies do not support port ranges.
 
-        .. literalinclude:: ../../../examples/policies/l7/dns/dns-visibility.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l7/dns/dns-visibility.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l7/dns/dns-visibility.json
 
 Alpine/musl deployments and DNS Refused
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1224,21 +1134,46 @@ The following policy will deny ingress from "world" on all namespaces on all
 Pods managed by Cilium. Existing inter-cluster policies will still be allowed
 as this policy is allowing traffic from everywhere except from "world".
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/entities/from_world_deny.yaml
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/entities/from_world_deny.yaml
+.. literalinclude:: ../../../examples/policies/l3/entities/from_world_deny.yaml
+  :language: yaml
 
 Deny policies do not support: policy enforcement at L7, i.e., specifically
 denying an URL and ``toFQDNs``, i.e., specifically denying traffic to a specific
 domain name.
 
+.. _disk_policies:
+
+Disk based Cilium Network Policies
+==================================
+This functionality enables users to place network policy YAML files directly into
+the node's filesystem, bypassing the need for definition via k8s CRD.
+By setting the config field ``static-cnp-path``, users specify the directory from
+which policies will be loaded. The Cilium agent then processes all policy YAML files
+present in this directory, transforming them into rules that are incorporated into
+the policy engine. Additionally, the Cilium agent monitors this directory for any
+new policy YAML files as well as any updates or deletions, making corresponding
+updates to the policy engine's rules. It is important to note that this feature
+only supports CiliumNetworkPolicy and CiliumClusterwideNetworkPolicy.
+
+The directory that the Cilium agent needs to monitor should be mounted from the host
+using volume mounts. For users deploying via Helm, this can be enabled via ``extraArgs``
+and ``extraHostPathMounts`` as follows:
+
+.. code-block:: yaml
+
+   extraArgs:
+   - --static-cnp-path=/policies
+   extraHostPathMounts:
+   - name: static-policies
+      mountPath: /policies
+      hostPath: /policies
+      hostPathType: Directory
+
+To determine whether a policy was established via Kubernetes CRD or directly from a directory,
+execute the command ``cilium policy get`` and examine the source attribute within the policy.
+In output, you could notice policies that have been sourced from a directory will have the
+``source`` field set as ``directory``. Additionally, ``cilium endpoint get <endpoint_id>`` also have
+fields to show the source of policy associated with that endpoint.
 
 Previous limitations and known issues
 -------------------------------------
@@ -1253,58 +1188,160 @@ external traffic to your cluster.
 Host Policies
 =============
 
-Host policies take the form of a `CiliumClusterwideNetworkPolicy` with a
-:ref:`NodeSelector` instead of an `EndpointSelector`. Host policies can have
-layer 3 and layer 4 rules on both ingress and egress. They cannot have layer
-7 rules.
+Host policies take the form of a :ref:`CiliumClusterwideNetworkPolicy` with a
+:ref:`NodeSelector` instead of an :ref:`EndpointSelector`. Host policies can
+have layer 3 and layer 4 rules on both ingress and egress. They can also have
+layer 7 DNS rules, but no other kinds of layer 7 rules.
+
+.. note::
+
+    Host L7 DNS policies are a beta feature.
+    Please provide feedback and file a GitHub issue if you experience any problems.
+
+.. attention::
+
+    Adding layer 7 DNS rules to a host policy enables :ref:`DNS based`
+    host policies at the cost of making all host DNS requests go through
+    the :ref:`DNS Proxy` provided in each Cilium agent.
+    This includes DNS requests for kube-apiserver if it is configured as a FQDN
+    (e.g. in managed Kubernetes clusters) by critical processes such as kubelet.
+    This has important implications for the proper functioning of the node,
+    because while Cilium agent is restarting, :ref:`DNS Proxy` is not available,
+    and all DNS requests redirected to it will time out.
+
+    - When upgrading Cilium agent image on a set of nodes, the new image must be
+      :ref:`pre-pulled <pre_flight>`, because kubelet will not be able to contact
+      the container registry after it stops the old Cilium agent pod.
+
+    - If Kubernetes feature gate `KubeletEnsureSecretPulledImages`_ is enabled
+      and kubelet is configured with `image credential providers`_ relying on
+      remote authentication and authorization services (common in managed Kubernetes),
+      image pull credentials verification policy must be configured in such a way
+      that the Cilium agent image is exempted from image credential verification.
+      Otherwise kubelet may be unable to verify image pull credentials for the new
+      Cilium agent pod, and it will fail to start (rendering the node unusable)
+      despite the new agent image having been pre-pulled.
+
+
+.. _KubeletEnsureSecretPulledImages: https://kubernetes.io/docs/concepts/containers/images/#ensureimagepullcredentialverification
+.. _image credential providers: https://kubernetes.io/docs/tasks/administer-cluster/kubelet-credential-provider
 
 Host policies apply to all the nodes selected by their :ref:`NodeSelector`. In
 each selected node, they apply only to the host namespace, including
-host-networking pods. They therefore don't apply to communications between
+host-networking pods. They don't apply to communications between
 non-host-networking pods and locations outside of the cluster.
 
 Installation of Host Policies requires the addition of the following ``helm``
 flags when installing Cilium:
 
-* ``--set devices='{interface}'`` where ``interface`` refers to the
-  network device Cilium is configured on such as ``eth0``. Omitting this option
-  leads Cilium to auto-detect what interface the host firewall applies to.
+* ``--set devices='{interface}'`` where ``interface`` refers to the network
+  device Cilium is configured on, for example ``eth0``. If you omit this
+  option, Cilium auto-detects what interface the host firewall applies to.
 * ``--set hostFirewall.enabled=true``
 
-The following policy will allow ingress traffic for any node with the label
-``type=ingress-worker`` on TCP ports 22, 6443 (kube-apiserver), 2379 (etcd) and 4240
-(health checks), as well as UDP port 8472 (VXLAN).
+As an example, the following policy allows ingress traffic for any node with
+the label ``type=ingress-worker`` on TCP ports 22, 6443 (kube-apiserver), 2379
+(etcd), and 4240 (health checks), as well as UDP port 8472 (VXLAN).
 
-Replace the ``port:`` value with ports used in your environment.
+.. literalinclude:: ../../../examples/policies/host/lock-down-ingress.yaml
+  :language: yaml
 
-.. only:: html
+To reuse this policy, replace the ``port:`` values with ports used in your
+environment.
 
-   .. tabs::
-     .. group-tab:: k8s YAML
+In order to allow protocols such as VRRP and IGMP that don't have any transport-layer
+ports, set ``--enable-extended-ip-protocols`` flag to true. By default, such traffic is
+dropped with ``DROP_CT_UNKNOWN_PROTO`` error.
 
-        .. literalinclude:: ../../../examples/policies/host/lock-down-ingress.yaml
+As an example, the following policy allows egress traffic on any node with
+the label ``type=egress-worker`` on TCP ports 22, 6443/443 (kube-apiserver), 2379
+(etcd), and 4240 (health checks), UDP port 8472 (VXLAN), and traffic with VRRP protocol.
 
-.. only:: epub or latex
+.. literalinclude:: ../../../examples/policies/host/allow-extended-protocols.yaml
+  :language: yaml
 
-        .. literalinclude:: ../../../examples/policies/host/lock-down-ingress.yaml
+.. _troubleshooting_host_policies:
 
 Troubleshooting Host Policies
 -----------------------------
 
-If you're having troubles with Host Policies please ensure the ``helm`` options
-listed above were applied during installation. To verify that your policy has
-been applied, you can run ``kubectl get CiliumClusterwideNetworkPolicy -o yaml``
-to validate the policy was accepted.
+If you have troubles with Host Policies, try the following steps:
 
-If policies don't seem to be applied to your nodes, verify the ``nodeSelector``
-is labeled correctly in your environment. In the example configuration, you can
-run ``kubectl get nodes -o wide|grep type=ingress-worker`` to verify labels
-match the policy.
+- Ensure the ``helm`` options listed in :ref:`the Host Policies description
+  <HostPolicies>` were applied during installation.
 
-You can verify the policy was applied by running ``kubectl exec -n $CILIUM_NAMESPACE cilium-xxxx -- cilium-dbg policy get``
-for the Cilium agent pod. Verify that the host is selected by the policy using
-``cilium-dbg endpoint list`` and look for the endpoint with ``reserved:host`` as the
-label and ensure that policy is enabled in the selected direction. Ensure the
-traffic is arriving on the device visible on the ``NodePort`` field of the
-``cilium-dbg status list`` output. Use ``cilium-dbg monitor`` with ``--related-to`` and
-the endpoint ID of the ``reserved:host`` endpoint to view traffic.
+- To verify that your policy has been accepted and applied by the Cilium agent,
+  run ``kubectl get CiliumClusterwideNetworkPolicy -o yaml`` and make sure the
+  policy is listed.
+
+- If policies don't seem to be applied to your nodes, verify the
+  ``nodeSelector`` is labeled correctly in your environment. In the example
+  configuration, you can run ``kubectl get nodes -o
+  custom-columns=NAME:.metadata.name,LABELS:.metadata.labels | grep
+  type:ingress-worker`` to verify labels match the policy.
+
+To troubleshoot policies for a given node, try the following steps. For all
+steps, run ``cilium-dbg`` in the relevant namespace, on the Cilium agent pod
+for the node, for example with:
+
+.. code-block:: shell-session
+
+   $ kubectl exec -n $CILIUM_NAMESPACE $CILIUM_POD_NAME -- cilium-dbg ...
+
+Retrieve the endpoint ID for the host endpoint on the node with ``cilium-dbg
+endpoint get -l reserved:host -o jsonpath='{[0].id}'``. Use this ID to replace
+``$HOST_EP_ID`` in the next steps:
+
+- If policies are applied, but not enforced for the node, check the status of
+  the policy audit mode with ``cilium-dbg endpoint config $HOST_EP_ID | grep
+  PolicyAuditMode``. If necessary, :ref:`disable the audit mode
+  <disable_policy_audit_mode>`.
+
+- Run ``cilium-dbg endpoint list``, and look for the host endpoint, with
+  ``$HOST_EP_ID`` and the ``reserved:host`` label. Ensure that policy is
+  enabled in the selected direction.
+
+- Run ``cilium-dbg status list`` and check the devices listed in the ``Host
+  firewall`` field. Verify that traffic actually reaches the listed devices.
+
+- Use ``cilium-dbg monitor`` with ``--related-to $HOST_EP_ID`` to examine
+  traffic for the host endpoint.
+
+.. _host_policies_known_issues:
+
+Host Policies known issues
+--------------------------
+
+- The first time Cilium enforces Host Policies in the cluster, it may drop
+  reply traffic for legitimate connections that should be allowed by the
+  policies in place. Connections should stabilize again after a few seconds.
+  One workaround is to enable, disable, then re-enable Host Policies
+  enforcement. For details, see :gh-issue:`25448`.
+
+- In the context of ClusterMesh, the following combination of options is not
+  supported:
+
+  - Cilium operating in CRD mode (as opposed to KVstore mode),
+  - Host Policies enabled,
+  - tunneling enabled,
+  - kube-proxy-replacement enabled, and
+  - WireGuard enabled.
+
+  This combination results in a failure to connect to the
+  clustermesh-apiserver. For details, refer to :gh-issue:`31209`.
+
+- Host Policies do not work on host WireGuard interfaces. For details, see
+  :gh-issue:`17636`.
+
+- When Host Policies are enabled, hosts drop traffic from layer-2 protocols
+  that they consider as unknown, even if no Host Policies are loaded. For
+  example, this affects LLC traffic (see :gh-issue:`17877`) or VRRP traffic
+  (see :gh-issue:`18347`).
+
+- When kube-proxy-replacement is disabled, or configured not to implement
+  services for the native device (such as NodePort), hosts will enforce Host
+  Policies on service addresses rather than the service endpoints. For details,
+  refer to :gh-issue:`12545`.
+
+- Host Firewall and thus Host Policies do not work together with IPsec.
+  For details, refer to :gh-issue:`41854`.

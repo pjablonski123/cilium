@@ -6,13 +6,13 @@
 package v2alpha1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	ciliumiov2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
+	apisciliumiov2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	versioned "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
 	internalinterfaces "github.com/cilium/cilium/pkg/k8s/client/informers/externalversions/internalinterfaces"
-	v2alpha1 "github.com/cilium/cilium/pkg/k8s/client/listers/cilium.io/v2alpha1"
+	ciliumiov2alpha1 "github.com/cilium/cilium/pkg/k8s/client/listers/cilium.io/v2alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
@@ -23,7 +23,7 @@ import (
 // CiliumBGPAdvertisements.
 type CiliumBGPAdvertisementInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v2alpha1.CiliumBGPAdvertisementLister
+	Lister() ciliumiov2alpha1.CiliumBGPAdvertisementLister
 }
 
 type ciliumBGPAdvertisementInformer struct {
@@ -43,21 +43,33 @@ func NewCiliumBGPAdvertisementInformer(client versioned.Interface, resyncPeriod 
 // one. This reduces memory footprint and number of connections to the server.
 func NewFilteredCiliumBGPAdvertisementInformer(client versioned.Interface, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
 	return cache.NewSharedIndexInformer(
-		&cache.ListWatch{
+		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
 			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CiliumV2alpha1().CiliumBGPAdvertisements().List(context.TODO(), options)
+				return client.CiliumV2alpha1().CiliumBGPAdvertisements().List(context.Background(), options)
 			},
 			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CiliumV2alpha1().CiliumBGPAdvertisements().Watch(context.TODO(), options)
+				return client.CiliumV2alpha1().CiliumBGPAdvertisements().Watch(context.Background(), options)
 			},
-		},
-		&ciliumiov2alpha1.CiliumBGPAdvertisement{},
+			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+				if tweakListOptions != nil {
+					tweakListOptions(&options)
+				}
+				return client.CiliumV2alpha1().CiliumBGPAdvertisements().List(ctx, options)
+			},
+			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+				if tweakListOptions != nil {
+					tweakListOptions(&options)
+				}
+				return client.CiliumV2alpha1().CiliumBGPAdvertisements().Watch(ctx, options)
+			},
+		}, client),
+		&apisciliumiov2alpha1.CiliumBGPAdvertisement{},
 		resyncPeriod,
 		indexers,
 	)
@@ -68,9 +80,9 @@ func (f *ciliumBGPAdvertisementInformer) defaultInformer(client versioned.Interf
 }
 
 func (f *ciliumBGPAdvertisementInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&ciliumiov2alpha1.CiliumBGPAdvertisement{}, f.defaultInformer)
+	return f.factory.InformerFor(&apisciliumiov2alpha1.CiliumBGPAdvertisement{}, f.defaultInformer)
 }
 
-func (f *ciliumBGPAdvertisementInformer) Lister() v2alpha1.CiliumBGPAdvertisementLister {
-	return v2alpha1.NewCiliumBGPAdvertisementLister(f.Informer().GetIndexer())
+func (f *ciliumBGPAdvertisementInformer) Lister() ciliumiov2alpha1.CiliumBGPAdvertisementLister {
+	return ciliumiov2alpha1.NewCiliumBGPAdvertisementLister(f.Informer().GetIndexer())
 }

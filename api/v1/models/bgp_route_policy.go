@@ -11,6 +11,7 @@ package models
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"strconv"
 
 	"github.com/go-openapi/errors"
@@ -34,7 +35,7 @@ type BgpRoutePolicy struct {
 	Statements []*BgpRoutePolicyStatement `json:"statements"`
 
 	// Type of the route policy
-	// Enum: [export import]
+	// Enum: ["export","import"]
 	Type string `json:"type,omitempty"`
 }
 
@@ -68,11 +69,15 @@ func (m *BgpRoutePolicy) validateStatements(formats strfmt.Registry) error {
 
 		if m.Statements[i] != nil {
 			if err := m.Statements[i].Validate(formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
+				ve := new(errors.Validation)
+				if stderrors.As(err, &ve) {
 					return ve.ValidateName("statements" + "." + strconv.Itoa(i))
-				} else if ce, ok := err.(*errors.CompositeError); ok {
+				}
+				ce := new(errors.CompositeError)
+				if stderrors.As(err, &ce) {
 					return ce.ValidateName("statements" + "." + strconv.Itoa(i))
 				}
+
 				return err
 			}
 		}
@@ -82,7 +87,7 @@ func (m *BgpRoutePolicy) validateStatements(formats strfmt.Registry) error {
 	return nil
 }
 
-var bgpRoutePolicyTypeTypePropEnum []interface{}
+var bgpRoutePolicyTypeTypePropEnum []any
 
 func init() {
 	var res []string
@@ -143,12 +148,21 @@ func (m *BgpRoutePolicy) contextValidateStatements(ctx context.Context, formats 
 	for i := 0; i < len(m.Statements); i++ {
 
 		if m.Statements[i] != nil {
+
+			if swag.IsZero(m.Statements[i]) { // not required
+				return nil
+			}
+
 			if err := m.Statements[i].ContextValidate(ctx, formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
+				ve := new(errors.Validation)
+				if stderrors.As(err, &ve) {
 					return ve.ValidateName("statements" + "." + strconv.Itoa(i))
-				} else if ce, ok := err.(*errors.CompositeError); ok {
+				}
+				ce := new(errors.CompositeError)
+				if stderrors.As(err, &ce) {
 					return ce.ValidateName("statements" + "." + strconv.Itoa(i))
 				}
+
 				return err
 			}
 		}

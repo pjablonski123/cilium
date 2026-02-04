@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 45
     name: Build and Push Images
     environment: release
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         include:
@@ -50,26 +50,34 @@ jobs:
 
     steps:
       - name: Checkout main branch to access local actions
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      - name: Cleanup Disk space in runner
+        uses: ./.github/actions/disk-cleanup
+
       - name: Set Environment Variables
         uses: ./.github/actions/set-env-variables
 
+      - name: Copy runtime image action to base branch directory
+        run: |
+          mkdir -p ../cilium-base-branch
+          cp -r .github/actions/set-runtime-image ../cilium-base-branch
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Login to DockerHub
-        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         if: ${{ env.PUSH_TO_DOCKER_HUB == 'true' }}
         with:
           username: ${{ secrets.DOCKER_HUB_RELEASE_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_RELEASE_PASSWORD }}
 
       - name: Login to quay.io
-        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: quay.io
           username: ${{ secrets.QUAY_USERNAME_RELEASE_USERNAME }}
@@ -87,12 +95,21 @@ jobs:
           fi
 
       - name: Checkout Source Code
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
+      - name: Copy runtime image tag from stable branch
+        run: |
+          cp -r .github/actions/set-runtime-image/runtime-image*.txt ../cilium-base-branch/set-runtime-image/
+
+      - name: Set runtime image environment variable
+        uses: ./../cilium-base-branch/set-runtime-image
+        with:
+          repository: ${{ env.CILIUM_RUNTIME_IMAGE_PREFIX }}
+
       - name: Release Build ${{ matrix.name }}
-        uses: docker/build-push-action@4a13e500e55cf31b7a5d59a38ab2040ab0f42f56 # v5.1.0
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         id: docker_build_release
         with:
           provenance: false
@@ -103,56 +120,26 @@ jobs:
           tags: ${{ steps.tag.outputs.image_tags }}
           target: release
           build-args: |
+            CILIUM_RUNTIME_IMAGE=${{ env.CILIUM_RUNTIME_IMAGE }}
             OPERATOR_VARIANT=${{ matrix.name }}
 
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@1fc5bd396d372bee37d608f955b336615edf79c8 # v3.2.0
+      - name: Generate SBOM, Sign Images, and Attach Attestations
+        uses: ./.github/actions/cosign
+        with:
+          image: "quay.io/${{ env.QUAY_ORGANIZATION }}/${{ matrix.name }}@${{ steps.docker_build_release.outputs.digest }}"
+          image_tag: "quay.io/${{ env.QUAY_ORGANIZATION }}/${{ matrix.name }}:${{ steps.tag.outputs.tag }}"
+          sbom_name: "${{ matrix.name }}_${{ steps.tag.outputs.tag }}"
+          upload_sbom_release_assets: 'false'
 
-      - name: Sign Container Image
-        run: |
-          if [ "${{ env.PUSH_TO_DOCKER_HUB }}" == "true" ]; then
-            cosign sign -y docker.io/${{ github.repository_owner }}/${{ matrix.name }}@${{ steps.docker_build_release.outputs.digest }}
-          fi
-          cosign sign -y quay.io/${{ env.QUAY_ORGANIZATION }}/${{ matrix.name }}@${{ steps.docker_build_release.outputs.digest }}
-
-      - name: Install Bom
-        shell: bash
-        env:
-          # renovate: datasource=github-releases depName=kubernetes-sigs/bom
-          BOM_VERSION: v0.5.1
-        run: |
-          curl -L https://github.com/kubernetes-sigs/bom/releases/download/${{ env.BOM_VERSION }}/bom-amd64-linux -o bom
-          sudo mv ./bom /usr/local/bin/bom
-          sudo chmod +x /usr/local/bin/bom
-
-      - name: Generate SBOM
-        shell: bash
-        # To-Do: generate SBOM from source after https://github.com/kubernetes-sigs/bom/issues/202 is fixed
-        # To-Do: format SBOM output to json after cosign v2.0 is released with https://github.com/sigstore/cosign/pull/2479
-        run: |
-          bom generate -o sbom_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx \
-          --image=quay.io/${{ env.QUAY_ORGANIZATION }}/${{ matrix.name }}:${{ steps.tag.outputs.tag }}
-
-      - name: Attach SBOM to container images
-        run: |
-          if [ "${{ env.PUSH_TO_DOCKER_HUB }}" == "true" ]; then
-            cosign attach sbom --sbom sbom_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx docker.io/${{ github.repository_owner }}/${{ matrix.name }}@${{ steps.docker_build_release.outputs.digest }}
-          fi
-          cosign attach sbom --sbom sbom_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx quay.io/${{ env.QUAY_ORGANIZATION }}/${{ matrix.name }}@${{ steps.docker_build_release.outputs.digest }}
-
-      - name: Sign SBOM Image
-        run: |
-          if [ "${{ env.PUSH_TO_DOCKER_HUB }}" == "true" ]; then
-            docker_build_release_digest="${{ steps.docker_build_release.outputs.digest }}"
-            image_name="docker.io/${{ github.repository_owner }}/${{ matrix.name }}:${docker_build_release_digest/:/-}.sbom"
-            docker_build_release_sbom_digest="sha256:$(docker buildx imagetools inspect --raw ${image_name} | sha256sum | head -c 64)"
-            cosign sign -y "docker.io/${{ github.repository_owner }}/${{ matrix.name }}@${docker_build_release_sbom_digest}"
-          fi
-
-          docker_build_release_digest="${{ steps.docker_build_release.outputs.digest }}"
-          image_name="quay.io/${{ env.QUAY_ORGANIZATION }}/${{ matrix.name }}:${docker_build_release_digest/:/-}.sbom"
-          docker_build_release_sbom_digest="sha256:$(docker buildx imagetools inspect --raw ${image_name} | sha256sum | head -c 64)"
-          cosign sign -y "quay.io/${{ env.QUAY_ORGANIZATION }}/${{ matrix.name }}@${docker_build_release_sbom_digest}"
+      - name: Generate SBOM, Sign Images, and Attach Attestations
+        if: ${{ env.PUSH_TO_DOCKER_HUB == 'true' }}
+        uses: ./.github/actions/cosign
+        with:
+          image: "docker.io/${{ github.repository_owner }}/${{ matrix.name }}@${{ steps.docker_build_release.outputs.digest }}"
+          sbom_name: "${{ matrix.name }}_${{ steps.tag.outputs.tag }}"
+          generate_sbom: 'false'
+          install_cosign: 'false'
+          upload_sbom_release_assets: 'false'
 
       - name: Image Release Digest
         shell: bash
@@ -173,15 +160,14 @@ jobs:
 
       # Upload artifact digests
       - name: Upload artifact digests
-        uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: image-digest ${{ matrix.name }}
           path: image-digest
-          retention-days: 10
 
   image-digests:
     name: Display Digests
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     needs: build-and-push
     steps:
       - name: Getting image tag
@@ -194,9 +180,10 @@ jobs:
           mkdir -p image-digest/
 
       - name: Download digests of all images built
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3.0.2
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: image-digest/
+          pattern: "*image-digest *"
 
       - name: Image Digests Output
         shell: bash
@@ -204,30 +191,73 @@ jobs:
           cd image-digest/
           echo "## Docker Manifests" > ../image-digest-output.txt
           echo "" >> ../image-digest-output.txt
-          find -type f -not -name "makefile-digest.txt" | sort | xargs -d '\n' cat >> ../image-digest-output.txt
+          find -type f -regex ".*image-digest .*" -not -name "makefile-digest.txt" | sort | xargs -d '\n' cat >> ../image-digest-output.txt
 
       - name: Image Makefile Digests
         shell: bash
         run: |
           cd image-digest/
           echo "# File generated by .github/workflows/build-images-releases.yaml; DO NOT EDIT." > ../Makefile.digests
-          echo "# Copyright "$(date +'%Y')" Authors of Cilium" >> ../Makefile.digests
+          echo "# Copyright $(date +'%Y') Authors of Cilium" >> ../Makefile.digests
           echo "# SPDX-License-Identifier: Apache-2.0" >> ../Makefile.digests
           echo "" >> ../Makefile.digests
+          # shellcheck disable=SC2016
           find -type f  -name "makefile-digest.txt" | sort | xargs -d '\n' awk '{print "export " $0}' >> ../Makefile.digests
 
       # Upload artifact digests
       - name: Upload artifact digests
-        uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: image-digest-output.txt-${{ steps.tag.outputs.tag }}
           path: image-digest-output.txt
-          retention-days: 10
 
       # Upload artifact digests
       - name: Upload artifact digests
-        uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: Makefile.digests-${{ steps.tag.outputs.tag }}
           path: Makefile.digests
-          retention-days: 10
+
+  call-post-release:
+    if: github.repository_owner == 'cilium'
+    name: Call Post-Release Tool
+    uses: cilium/cilium/.github/workflows/release.yaml@main
+    needs: image-digests
+    with:
+      step: "4-post-release"
+      version: ${{ github.ref_name }}
+    # This is the intended behavior of GitHub Actions. Declaring entries under
+    # "secrets:" grants the called workflow permission to read
+    # CILIUM_RELEASE_BOT_PEM and CILIUM_RELEASE_BOT_APP_ID. It does not pass
+    # literal values here; the values are resolved only in the called
+    # workflow's scope. If the called workflow sets an environment
+    # (e.g., environment: TestEnvironment), environment-scoped secrets are
+    # populated there and become available to its steps.
+    secrets:
+      CILIUM_RELEASE_BOT_PEM: ${{ secrets.CILIUM_RELEASE_BOT_PEM }}
+      CILIUM_RELEASE_BOT_APP_ID: ${{ secrets.CILIUM_RELEASE_BOT_APP_ID }}
+
+  call-publish-helm:
+    if: github.repository_owner == 'cilium'
+    name: Publish Helm Chart
+    permissions:
+      contents: read
+      # Required to generate OIDC tokens for `sigstore/cosign-installer` authentication
+      id-token: write
+    uses: cilium/cilium/.github/workflows/release.yaml@main
+    needs: image-digests
+    with:
+      step: "5-publish-helm"
+      version: ${{ github.ref_name }}
+    # This is the intended behavior of GitHub Actions. Declaring entries under
+    # "secrets:" grants the called workflow permission to read
+    # CILIUM_RELEASE_BOT_PEM and CILIUM_RELEASE_BOT_APP_ID. It does not pass
+    # literal values here; the values are resolved only in the called
+    # workflow's scope. If the called workflow sets an environment
+    # (e.g., environment: TestEnvironment), environment-scoped secrets are
+    # populated there and become available to its steps.
+    secrets:
+      CILIUM_RELEASE_BOT_PEM: ${{ secrets.CILIUM_RELEASE_BOT_PEM }}
+      CILIUM_RELEASE_BOT_APP_ID: ${{ secrets.CILIUM_RELEASE_BOT_APP_ID }}
+      QUAY_USERNAME_HELM_RELEASE_USERNAME: ${{ secrets.QUAY_USERNAME_HELM_RELEASE_USERNAME }}
+      QUAY_PASSWORD_HELM_RELEASE_PASSWORD: ${{ secrets.QUAY_PASSWORD_HELM_RELEASE_PASSWORD }}

@@ -6,20 +6,12 @@ package types
 import (
 	"testing"
 
-	check "github.com/cilium/checkmate"
+	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/pkg/ipam/types"
 )
 
-func Test(t *testing.T) {
-	check.TestingT(t)
-}
-
-type TypesSuite struct{}
-
-var _ = check.Suite(&TypesSuite{})
-
-func (e *TypesSuite) TestForeachAddresses(c *check.C) {
+func TestForeachAddresses(t *testing.T) {
 	m := types.NewInstanceMap()
 	m.Update("i-1", types.InterfaceRevision{
 		Resource: &AzureInterface{ID: "1", Addresses: []AzureAddress{
@@ -40,7 +32,7 @@ func (e *TypesSuite) TestForeachAddresses(c *check.C) {
 		addresses++
 		return nil
 	})
-	c.Assert(addresses, check.Equals, 4)
+	require.Equal(t, 4, addresses)
 
 	// Iterate over "i-1"
 	addresses = 0
@@ -48,7 +40,7 @@ func (e *TypesSuite) TestForeachAddresses(c *check.C) {
 		addresses++
 		return nil
 	})
-	c.Assert(addresses, check.Equals, 2)
+	require.Equal(t, 2, addresses)
 
 	// Iterate over all interfaces
 	interfaces := 0
@@ -56,18 +48,41 @@ func (e *TypesSuite) TestForeachAddresses(c *check.C) {
 		interfaces++
 		return nil
 	})
-	c.Assert(interfaces, check.Equals, 2)
+	require.Equal(t, 2, interfaces)
 }
 
-func (e *TypesSuite) TestExtractIDs(c *check.C) {
-	vmssIntf := AzureInterface{}
-	vmssIntf.SetID("/subscriptions/xxx/resourceGroups/MC_aks-test_aks-test_westeurope/providers/Microsoft.Compute/virtualMachineScaleSets/aks-nodepool1-10706209-vmss/virtualMachines/3/networkInterfaces/aks-nodepool1-10706209-vmss")
+func TestExtractIDs(t *testing.T) {
+	tests := []struct {
+		name             string
+		resourceID       string
+		expectedRG       string
+		expectedVMID     string
+		expectedVMSSName string
+	}{
+		{
+			name:             "VMSS network interface",
+			resourceID:       "/subscriptions/xxx/resourceGroups/MC_aks-test_aks-test_westeurope/providers/Microsoft.Compute/virtualMachineScaleSets/aks-nodepool1-10706209-vmss/virtualMachines/3/networkInterfaces/aks-nodepool1-10706209-vmss",
+			expectedRG:       "MC_aks-test_aks-test_westeurope",
+			expectedVMID:     "3",
+			expectedVMSSName: "aks-nodepool1-10706209-vmss",
+		},
+		{
+			name:             "Standalone VM network interface",
+			resourceID:       "/subscriptions/xxx/resourceGroups/az-test-rg/providers/Microsoft.Network/networkInterfaces/pods-interface",
+			expectedRG:       "az-test-rg",
+			expectedVMID:     "",
+			expectedVMSSName: "",
+		},
+	}
 
-	vmIntf := AzureInterface{}
-	vmIntf.SetID("/subscriptions/xxx/resourceGroups/az-test-rg/providers/Microsoft.Network/networkInterfaces/pods-interface")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			intf := AzureInterface{}
+			intf.SetID(tt.resourceID)
 
-	c.Assert(vmssIntf.GetResourceGroup(), check.Equals, "MC_aks-test_aks-test_westeurope")
-	c.Assert(vmssIntf.GetVMID(), check.Equals, "3")
-	c.Assert(vmssIntf.GetVMScaleSetName(), check.Equals, "aks-nodepool1-10706209-vmss")
-	c.Assert(vmIntf.GetResourceGroup(), check.Equals, "az-test-rg")
+			require.Equal(t, tt.expectedRG, intf.GetResourceGroup())
+			require.Equal(t, tt.expectedVMID, intf.GetVMID())
+			require.Equal(t, tt.expectedVMSSName, intf.GetVMScaleSetName())
+		})
+	}
 }

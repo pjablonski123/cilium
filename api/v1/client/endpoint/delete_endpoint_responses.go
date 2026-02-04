@@ -9,6 +9,8 @@ package endpoint
 // Editing this file might prove futile when you re-run the swagger generate command
 
 import (
+	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 
@@ -22,7 +24,7 @@ type DeleteEndpointReader struct {
 }
 
 // ReadResponse reads a server response into the received o.
-func (o *DeleteEndpointReader) ReadResponse(response runtime.ClientResponse, consumer runtime.Consumer) (interface{}, error) {
+func (o *DeleteEndpointReader) ReadResponse(response runtime.ClientResponse, consumer runtime.Consumer) (any, error) {
 	switch response.Code() {
 	case 200:
 		result := NewDeleteEndpointOK()
@@ -54,8 +56,14 @@ func (o *DeleteEndpointReader) ReadResponse(response runtime.ClientResponse, con
 			return nil, err
 		}
 		return nil, result
+	case 503:
+		result := NewDeleteEndpointServiceUnavailable()
+		if err := result.readResponse(response, consumer, o.formats); err != nil {
+			return nil, err
+		}
+		return nil, result
 	default:
-		return nil, runtime.NewAPIError("response status code does not match any response statuses defined for this endpoint in the swagger spec", response, response.Code())
+		return nil, runtime.NewAPIError("[DELETE /endpoint] DeleteEndpoint", response, response.Code())
 	}
 }
 
@@ -97,12 +105,17 @@ func (o *DeleteEndpointOK) IsCode(code int) bool {
 	return code == 200
 }
 
+// Code gets the status code for the delete endpoint o k response
+func (o *DeleteEndpointOK) Code() int {
+	return 200
+}
+
 func (o *DeleteEndpointOK) Error() string {
-	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointOK ", 200)
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointOK", 200)
 }
 
 func (o *DeleteEndpointOK) String() string {
-	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointOK ", 200)
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointOK", 200)
 }
 
 func (o *DeleteEndpointOK) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
@@ -149,12 +162,19 @@ func (o *DeleteEndpointErrors) IsCode(code int) bool {
 	return code == 206
 }
 
+// Code gets the status code for the delete endpoint errors response
+func (o *DeleteEndpointErrors) Code() int {
+	return 206
+}
+
 func (o *DeleteEndpointErrors) Error() string {
-	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointErrors  %+v", 206, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointErrors %s", 206, payload)
 }
 
 func (o *DeleteEndpointErrors) String() string {
-	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointErrors  %+v", 206, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointErrors %s", 206, payload)
 }
 
 func (o *DeleteEndpointErrors) GetPayload() int64 {
@@ -164,7 +184,7 @@ func (o *DeleteEndpointErrors) GetPayload() int64 {
 func (o *DeleteEndpointErrors) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
 
 	// response payload
-	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && err != io.EOF {
+	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && !stderrors.Is(err, io.EOF) {
 		return err
 	}
 
@@ -209,12 +229,17 @@ func (o *DeleteEndpointInvalid) IsCode(code int) bool {
 	return code == 400
 }
 
+// Code gets the status code for the delete endpoint invalid response
+func (o *DeleteEndpointInvalid) Code() int {
+	return 400
+}
+
 func (o *DeleteEndpointInvalid) Error() string {
-	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointInvalid ", 400)
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointInvalid", 400)
 }
 
 func (o *DeleteEndpointInvalid) String() string {
-	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointInvalid ", 400)
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointInvalid", 400)
 }
 
 func (o *DeleteEndpointInvalid) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
@@ -260,12 +285,17 @@ func (o *DeleteEndpointNotFound) IsCode(code int) bool {
 	return code == 404
 }
 
+// Code gets the status code for the delete endpoint not found response
+func (o *DeleteEndpointNotFound) Code() int {
+	return 404
+}
+
 func (o *DeleteEndpointNotFound) Error() string {
-	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointNotFound ", 404)
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointNotFound", 404)
 }
 
 func (o *DeleteEndpointNotFound) String() string {
-	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointNotFound ", 404)
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointNotFound", 404)
 }
 
 func (o *DeleteEndpointNotFound) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
@@ -311,15 +341,76 @@ func (o *DeleteEndpointTooManyRequests) IsCode(code int) bool {
 	return code == 429
 }
 
+// Code gets the status code for the delete endpoint too many requests response
+func (o *DeleteEndpointTooManyRequests) Code() int {
+	return 429
+}
+
 func (o *DeleteEndpointTooManyRequests) Error() string {
-	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointTooManyRequests ", 429)
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointTooManyRequests", 429)
 }
 
 func (o *DeleteEndpointTooManyRequests) String() string {
-	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointTooManyRequests ", 429)
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointTooManyRequests", 429)
 }
 
 func (o *DeleteEndpointTooManyRequests) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
+
+	return nil
+}
+
+// NewDeleteEndpointServiceUnavailable creates a DeleteEndpointServiceUnavailable with default headers values
+func NewDeleteEndpointServiceUnavailable() *DeleteEndpointServiceUnavailable {
+	return &DeleteEndpointServiceUnavailable{}
+}
+
+/*
+DeleteEndpointServiceUnavailable describes a response with status code 503, with default header values.
+
+Service Unavailable
+*/
+type DeleteEndpointServiceUnavailable struct {
+}
+
+// IsSuccess returns true when this delete endpoint service unavailable response has a 2xx status code
+func (o *DeleteEndpointServiceUnavailable) IsSuccess() bool {
+	return false
+}
+
+// IsRedirect returns true when this delete endpoint service unavailable response has a 3xx status code
+func (o *DeleteEndpointServiceUnavailable) IsRedirect() bool {
+	return false
+}
+
+// IsClientError returns true when this delete endpoint service unavailable response has a 4xx status code
+func (o *DeleteEndpointServiceUnavailable) IsClientError() bool {
+	return false
+}
+
+// IsServerError returns true when this delete endpoint service unavailable response has a 5xx status code
+func (o *DeleteEndpointServiceUnavailable) IsServerError() bool {
+	return true
+}
+
+// IsCode returns true when this delete endpoint service unavailable response a status code equal to that given
+func (o *DeleteEndpointServiceUnavailable) IsCode(code int) bool {
+	return code == 503
+}
+
+// Code gets the status code for the delete endpoint service unavailable response
+func (o *DeleteEndpointServiceUnavailable) Code() int {
+	return 503
+}
+
+func (o *DeleteEndpointServiceUnavailable) Error() string {
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointServiceUnavailable", 503)
+}
+
+func (o *DeleteEndpointServiceUnavailable) String() string {
+	return fmt.Sprintf("[DELETE /endpoint][%d] deleteEndpointServiceUnavailable", 503)
+}
+
+func (o *DeleteEndpointServiceUnavailable) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
 
 	return nil
 }
